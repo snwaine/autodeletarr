@@ -163,13 +163,8 @@ def normalize_job(j: Dict[str, Any]) -> Dict[str, Any]:
     d["id"] = str(d.get("id") or make_job_id())
     d["name"] = str(d.get("name") or "Job").strip()[:60] or "Job"
 
-    # robust enabled coercion (handles "0"/"1", 0/1, True/False)
-    en = d.get("enabled", True)
-    if isinstance(en, str):
-        en = en.strip().lower()
-        d["enabled"] = en in ("1", "true", "yes", "on")
-    else:
-        d["enabled"] = bool(en)
+    # IMPORTANT: normalize enabled + booleans strictly (avoid "0" truthiness bugs)
+    d["enabled"] = bool(d.get("enabled", True))
 
     d["APP"] = str(d.get("APP") or "radarr").lower()
     if d["APP"] not in ("radarr", "sonarr"):
@@ -315,10 +310,7 @@ def load_config() -> Dict[str, Any]:
         cfg["UI_SCALE"] = float(cfg.get("UI_SCALE", 1.0))
     except Exception:
         cfg["UI_SCALE"] = 1.0
-    if cfg["UI_SCALE"] < 0.75:
-        cfg["UI_SCALE"] = 0.75
-    if cfg["UI_SCALE"] > 1.5:
-        cfg["UI_SCALE"] = 1.5
+    cfg["UI_SCALE"] = max(0.75, min(1.5, cfg["UI_SCALE"]))
 
     jobs = cfg.get("JOBS") or []
     if not isinstance(jobs, list):
@@ -542,6 +534,10 @@ BASE_HEAD = """
     --bad:#ef4444;
     --shadow: 0 12px 28px rgba(0,0,0,.28);
 
+    /* Layout sizing */
+    --top-h: 74px;
+    --sidebar-w: 260px;
+
     /* UI Scale */
     --ui: 1;
 
@@ -617,8 +613,8 @@ BASE_HEAD = """
       var(--bg);
     background-attachment: fixed;
 
-    display:flex;
-    flex-direction: column;
+    /* IMPORTANT: prevent body scroll — mainArea will scroll */
+    overflow: hidden;
   }
 
   body[data-theme="reaparr"]{
@@ -642,6 +638,7 @@ BASE_HEAD = """
     height: 140px;
     pointer-events: none;
     background: linear-gradient(to bottom, rgba(0,0,0,0), rgba(0,0,0,.35));
+    z-index: 1;
   }
   body[data-theme="light"]:after{
     background: linear-gradient(to bottom, rgba(255,255,255,0), rgba(0,0,0,.08));
@@ -653,41 +650,76 @@ BASE_HEAD = """
   a{ color: var(--text); text-decoration: none; }
   a:hover{ text-decoration: underline; }
 
-  /* ---- Wrap fills screen (no centered container) ---- */
-  .wrap{
-    width: 100vw;
-    max-width: none;
-    margin: 0;
-    padding: 0;
-    min-height: 100vh;
+  /* ---- Full-width fixed top bar ---- */
+  .pageTop{
+    position: fixed;
+    top: 0; left: 0; right: 0;
+    height: var(--top-h);
+    z-index: 8000;
+    border-bottom: 1px solid var(--line);
+    background: var(--panel);
+    box-shadow: var(--shadow);
 
-    flex: 1 1 auto;
-    display: flex;
+    display:flex;
+    align-items:center;
+    justify-content: space-between;
+    padding: 0 16px;
+  }
+  .pageTop .ptLeft{
+    display:flex;
     flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+  }
+  .pageTop .ptTitle{
+    font-size: var(--fs-3);
+    font-weight: 900;
+    letter-spacing: .2px;
+    line-height: 1.15;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .pageTop .ptSub{
+    font-size: var(--fs-0);
+    color: var(--muted);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .pageTop .ptRight{
+    font-size: var(--fs-0);
+    color: var(--muted);
+    white-space: nowrap;
   }
 
-  /* Radarr-like layout (ONLY layout now) */
-  .layoutRadarr{
-    display:grid;
-    grid-template-columns: 260px minmax(0, 1fr);
-    gap: 0 !important;
+  /* ---- Wrap fills screen ---- */
+  .wrap{
+    width: 100vw;
+    height: 100vh;
+    padding-top: var(--top-h);
+  }
 
-    min-height: 100vh;
-    align-items: stretch;
+  /* ---- Fixed sidebar + scrollable main ---- */
+  .layoutRadarr{
+    height: calc(100vh - var(--top-h));
   }
 
   .sidebar{
-    position: sticky;
-    top: 0;
-    align-self: stretch;
-    height: 100vh;
+    position: fixed;
+    top: var(--top-h);
+    left: 0;
+    width: var(--sidebar-w);
+    height: calc(100vh - var(--top-h));
+
     border-right: 1px solid var(--line);
     background: var(--panel);
     box-shadow: var(--shadow);
-    overflow:hidden;
+    overflow: hidden;
 
     display:flex;
     flex-direction: column;
+    z-index: 7000;
   }
 
   .sidebar .sbHd{
@@ -706,7 +738,7 @@ BASE_HEAD = """
     flex-direction: column;
     gap: 8px;
     flex: 1 1 auto;
-    overflow: auto;
+    overflow: auto; /* internal scroll ok if nav grows */
     min-height: 0;
   }
 
@@ -721,6 +753,8 @@ BASE_HEAD = """
     background: var(--panel2);
     font-size: var(--fs-1);
     cursor:pointer;
+
+    border-radius: 12px;
   }
   .sbItem:hover{
     border-color: rgba(34,197,94,.45);
@@ -748,50 +782,17 @@ BASE_HEAD = """
   }
 
   .mainArea{
+    margin-left: var(--sidebar-w);
+    height: calc(100vh - var(--top-h));
+    overflow: auto;            /* ONLY scroll area */
     min-width: 0;
-    min-height: 100%;
-    display:flex;
-    flex-direction: column;
-    gap: 0 !important;
-    padding: 0 !important;
-  }
-
-  .mainArea .grid{
-    margin-top: 0 !important;
-  }
-
-  .pageTop{
-    border: 1px solid var(--line);
-    background: var(--panel);
-    box-shadow: var(--shadow);
-    overflow:hidden;
-    margin: 0 !important;
-  }
-
-  .pageTop .ptIn{
     padding: 14px 16px;
-    background: var(--panel2);
-    border-bottom: 1px solid var(--line);
-    display:flex;
-    align-items:center;
-    justify-content: space-between;
-    gap: 12px;
-  }
-  .pageTop .ptIn h2{
-    margin:0;
-    font-size: var(--fs-3);
-    letter-spacing:.2px;
-  }
-  .pageTop .ptBd{
-    padding: 10px 16px;
-    color: var(--muted);
-    font-size: var(--fs-1);
+    position: relative;
+    z-index: 2; /* above body:after */
   }
 
   @media (max-width: 900px){
-    .layoutRadarr{ grid-template-columns: 1fr; }
-    .sidebar{ position: relative; height: auto; top: auto; }
-    .mainArea{ padding: 10px; }
+    :root{ --sidebar-w: 220px; }
   }
 
   /* Main content grid/cards */
@@ -824,8 +825,7 @@ BASE_HEAD = """
   body[data-theme="reaparr"] .card .hd,
   body[data-theme="reaparr"] .jobHeader,
   body[data-theme="reaparr"] .modal .mh,
-  body[data-theme="reaparr"] .modal .mf,
-  body[data-theme="reaparr"] .pageTop .ptIn{
+  body[data-theme="reaparr"] .modal .mf{
     background: linear-gradient(180deg, rgba(255,255,255,.03), transparent), var(--panel2);
   }
 
@@ -847,6 +847,7 @@ BASE_HEAD = """
     display: inline-flex;
     align-items: center;
 
+    border-radius: 999px; /* round buttons */
     transition: box-shadow .18s ease, border-color .18s ease, transform .18s ease, filter .18s ease;
   }
   a.btn:hover{ text-decoration: none; }
@@ -900,9 +901,17 @@ BASE_HEAD = """
     background: linear-gradient(135deg, rgba(255,92,108,.20), rgba(255,92,108,.08));
   }
 
-  /* Forms */
-  .form{ display:grid; grid-template-columns: minmax(0, 1fr); gap: 12px; }
-  @media (min-width: 900px){ .form{ grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); } }
+  /* Forms (deduped) */
+  .form{
+    display:grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 12px;
+  }
+  @media (min-width: 900px){
+    .form{
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    }
+  }
 
   .field{
     border: 1px solid var(--line);
@@ -910,6 +919,7 @@ BASE_HEAD = """
     background: var(--panel2);
     position: relative;
     min-width: 0;
+    border-radius: 14px;
   }
   [data-theme="light"] .field{ background: var(--panel); }
 
@@ -928,6 +938,7 @@ BASE_HEAD = """
     color: var(--text);
     padding: 10px 10px;
     outline: none;
+    border-radius: 12px;
   }
 
   body[data-theme="reaparr"] .field input[type=text],
@@ -979,6 +990,7 @@ BASE_HEAD = """
     border: 1px solid var(--line);
     padding: 10px 12px;
     background: var(--panel2);
+    border-radius: 14px;
   }
   [data-theme="light"] .check{ background: #ffffff; }
   .check input{ transform: scale(calc(1.2 * var(--ui))); }
@@ -992,6 +1004,7 @@ BASE_HEAD = """
     padding: 10px 12px;
     background: var(--panel2);
     margin-bottom: 12px;
+    border-radius: 14px;
   }
   [data-theme="light"] .toggleRow{ background: #ffffff; }
 
@@ -1005,6 +1018,7 @@ BASE_HEAD = """
     background: rgba(255,255,255,.10);
     border: 1px solid var(--line2);
     transition: .18s ease;
+    border-radius: 999px;
   }
   .slider:before{
     position: absolute;
@@ -1017,6 +1031,7 @@ BASE_HEAD = """
     background: rgba(255,255,255,.85);
     transition: .18s ease;
     box-shadow: 0 4px 10px rgba(0,0,0,.25);
+    border-radius: 999px;
   }
   .switch input:checked + .slider{
     background: linear-gradient(135deg, rgba(34,197,94,.60), rgba(22,163,74,.35));
@@ -1136,6 +1151,7 @@ BASE_HEAD = """
     display:flex;
     flex-direction: column;
     min-height: 0;
+    border-radius: 18px;
   }
   .modal .mh{
     padding: 14px 16px;
@@ -1207,6 +1223,7 @@ BASE_HEAD = """
     transform: translateY(10px);
     animation: toastIn .18s ease-out forwards, toastOut .25s ease-in forwards;
     animation-delay: 0s, 5s;
+    border-radius: 14px;
   }
   .toast.ok{ border-color: rgba(34,197,94,.45); }
   .toast.err{ border-color: rgba(239,68,68,.55); }
@@ -1359,7 +1376,7 @@ BASE_HEAD = """
     setChecked("job_dry", true);
     setChecked("job_delete", true);
     setChecked("job_excl", false);
-    setChecked("job_enabled", true);
+    setVal("job_enabled", "1");
 
     const t = $("jobTitle");
     if (t) t.textContent = "Add Job";
@@ -1391,7 +1408,7 @@ BASE_HEAD = """
     setChecked("job_dry", (btn.getAttribute("data-dry") || "1") === "1");
     setChecked("job_delete", (btn.getAttribute("data-del") || "1") === "1");
     setChecked("job_excl", (btn.getAttribute("data-excl") || "0") === "1");
-    setChecked("job_enabled", (btn.getAttribute("data-enabled") || "1") === "1");
+    setVal("job_enabled", (btn.getAttribute("data-enabled") || "1"));
 
     const t = $("jobTitle");
     if (t) t.textContent = "Edit Job";
@@ -1440,9 +1457,6 @@ BASE_HEAD = """
     if (form) form.submit();
   }
 
-  // -------------------
-  // Settings save enablement (consistent with backend rules)
-  // -------------------
   function isDirty(settingsForm){
     if (!settingsForm) return false;
     const els = settingsForm.querySelectorAll("input, select, textarea");
@@ -1471,29 +1485,16 @@ BASE_HEAD = """
     const radarrEnabled = $("radarr_enabled")?.checked ?? true;
     const sonarrEnabled = $("sonarr_enabled")?.checked ?? false;
 
-    const radarrUrl = (document.querySelector('input[name="RADARR_URL"]')?.value || "").trim();
-    const radarrKey = (document.querySelector('input[name="RADARR_API_KEY"]')?.value || "").trim();
-
     const sonarrUrl = (document.querySelector('input[name="SONARR_URL"]')?.value || "").trim();
     const sonarrKey = (document.querySelector('input[name="SONARR_API_KEY"]')?.value || "").trim();
+    const sonarrConfigured = !!(sonarrUrl || sonarrKey);
 
-    const radarrPartial = (!!radarrUrl) !== (!!radarrKey);
-    const sonarrPartial = (!!sonarrUrl) !== (!!sonarrKey);
+    const radarrReady = !radarrEnabled || radarrOk;
+    const sonarrReady = !sonarrEnabled || (!sonarrConfigured) || sonarrOk;
 
-    const radarrConfigured = !!(radarrUrl && radarrKey);
-    const sonarrConfigured = !!(sonarrUrl && sonarrKey);
+    saveBtn.disabled = !(radarrReady && sonarrReady && dirty);
 
-    const radarrReady = !radarrEnabled || (!radarrConfigured && !radarrPartial) || radarrOk;
-    const sonarrReady = !sonarrEnabled || (!sonarrConfigured && !sonarrPartial) || sonarrOk;
-
-    // If enabled and partial, block save
-    const partialOk = !(radarrEnabled && radarrPartial) && !(sonarrEnabled && sonarrPartial);
-
-    saveBtn.disabled = !(radarrReady && sonarrReady && partialOk && dirty);
-
-    if (radarrEnabled && radarrPartial) saveBtn.title = "Radarr enabled: fill both URL and API key (or clear both)";
-    else if (!radarrReady) saveBtn.title = "Radarr enabled: test connection first (or disable Radarr)";
-    else if (sonarrEnabled && sonarrPartial) saveBtn.title = "Sonarr enabled: fill both URL and API key (or clear both)";
+    if (!radarrReady) saveBtn.title = "Radarr enabled: test connection first (or disable Radarr)";
     else if (!sonarrReady) saveBtn.title = "Sonarr enabled: test connection first (or disable Sonarr / clear fields)";
     else saveBtn.title = dirty ? "Save settings" : "No changes to save";
   }
@@ -1533,18 +1534,22 @@ BASE_HEAD = """
     updateSaveState();
   }
 
-  function handleAnyChange(e){
+  document.addEventListener("input", (e) => {
     onSettingsEdited(e);
-
     const back = $("jobBack");
     if (back && back.style.display === "flex") {
       const form = $("jobForm");
       if (form && form.contains(e.target)) jobModalUpdateDirty();
     }
-  }
-
-  document.addEventListener("input", handleAnyChange);
-  document.addEventListener("change", handleAnyChange);
+  });
+  document.addEventListener("change", (e) => {
+    onSettingsEdited(e);
+    const back = $("jobBack");
+    if (back && back.style.display === "flex") {
+      const form = $("jobForm");
+      if (form && form.contains(e.target)) jobModalUpdateDirty();
+    }
+  });
 
   document.addEventListener("DOMContentLoaded", () => {
     const radSec = $("radarrSection");
@@ -1592,7 +1597,7 @@ BASE_HEAD = """
       setChecked("job_dry", dry);
       setChecked("job_delete", del);
       setChecked("job_excl", excl);
-      setChecked("job_enabled", enabled === "1");
+      setVal("job_enabled", enabled);
 
       showModal("jobBack");
       setTimeout(jobModalMarkClean, 0);
@@ -1644,7 +1649,7 @@ def shell(page_title: str, active: str, body: str):
     logo_html = (
         '<div class="logoWrap"><img class="logoImg" src="/logo" alt="logo" style="width:38px;height:38px;object-fit:contain;display:block;background:var(--panel2);"></div>'
         if has_logo
-        else '<div style="width:38px;height:38px;border:1px solid var(--line2);background:linear-gradient(135deg, rgba(34,197,94,.92), rgba(22,163,74,.65));"></div>'
+        else '<div style="width:38px;height:38px;border:1px solid var(--line2);background:linear-gradient(135deg, rgba(34,197,94,.92), rgba(22,163,74,.65)); border-radius:12px;"></div>'
     )
 
     page_name = {
@@ -1686,21 +1691,23 @@ def shell(page_title: str, active: str, body: str):
   {BASE_HEAD}
 </head>
 <body data-theme="{safe_html(theme)}" style="--ui:{cfg.get('UI_SCALE',1.0)};">
+  <div class="pageTop">
+    <div class="ptLeft">
+      <div class="ptTitle">{safe_html(page_name)}</div>
+      <div class="ptSub">MediaReaparr colour scheme • sidebar navigation</div>
+    </div>
+    <div class="ptRight">Theme: <b>{safe_html(theme)}</b></div>
+  </div>
+
   <div class="wrap">
     <div class="layoutRadarr">
       {sidebar}
       <div class="mainArea">
-        <div class="pageTop">
-          <div class="ptIn">
-            <h2>{safe_html(page_name)}</h2>
-            <div class="muted" style="font-size:var(--fs-0);">Theme: <b>{safe_html(theme)}</b></div>
-          </div>
-          <div class="ptBd">MediaReaparr colour scheme • sidebar navigation</div>
-        </div>
         {body}
       </div>
     </div>
   </div>
+
   {toasts}
 </body>
 </html>
@@ -2053,8 +2060,8 @@ def settings():
 
 @app.post("/save-settings")
 def save_settings():
+    old = load_config()
     cfg = load_config()
-    old = dict(cfg)
 
     cfg["RADARR_ENABLED"] = checkbox("RADARR_ENABLED")
     cfg["SONARR_ENABLED"] = checkbox("SONARR_ENABLED")
@@ -2071,49 +2078,26 @@ def save_settings():
         cfg["UI_SCALE"] = float(request.form.get("UI_SCALE") or cfg.get("UI_SCALE", 1.0))
     except Exception:
         cfg["UI_SCALE"] = float(cfg.get("UI_SCALE", 1.0))
-    if cfg["UI_SCALE"] < 0.75:
-        cfg["UI_SCALE"] = 0.75
-    if cfg["UI_SCALE"] > 1.5:
-        cfg["UI_SCALE"] = 1.5
+    cfg["UI_SCALE"] = max(0.75, min(1.5, cfg["UI_SCALE"]))
 
     if cfg["UI_THEME"] not in ("dark", "light", "reaparr"):
         cfg["UI_THEME"] = "dark"
 
-    # Clear OK flags if creds changed
     if old.get("RADARR_URL") != cfg["RADARR_URL"] or old.get("RADARR_API_KEY") != cfg["RADARR_API_KEY"]:
         cfg["RADARR_OK"] = False
     if old.get("SONARR_URL") != cfg["SONARR_URL"] or old.get("SONARR_API_KEY") != cfg["SONARR_API_KEY"]:
         cfg["SONARR_OK"] = False
 
-    # Radarr: if enabled, require both URL+KEY and OK
-    radarr_url = (cfg.get("RADARR_URL") or "").strip()
-    radarr_key = (cfg.get("RADARR_API_KEY") or "").strip()
-    radarr_partial = bool(radarr_url) != bool(radarr_key)
-    radarr_configured = bool(radarr_url and radarr_key)
-
     if cfg.get("RADARR_ENABLED", True):
-        if radarr_partial:
-            flash("Radarr enabled: fill both URL and API key (or clear both).", "error")
-            save_config(cfg)
-            return redirect("/settings")
-        if radarr_configured and not cfg.get("RADARR_OK", False):
+        if not cfg.get("RADARR_OK", False):
             flash("Radarr enabled: click Test Connection and make sure it shows Connected before saving.", "error")
             save_config(cfg)
             return redirect("/settings")
     else:
         cfg["RADARR_OK"] = False
 
-    # Sonarr: if enabled, require both URL+KEY and OK
-    sonarr_url = (cfg.get("SONARR_URL") or "").strip()
-    sonarr_key = (cfg.get("SONARR_API_KEY") or "").strip()
-    sonarr_partial = bool(sonarr_url) != bool(sonarr_key)
-    sonarr_configured = bool(sonarr_url and sonarr_key)
-
+    sonarr_configured = bool((cfg.get("SONARR_URL") or "").strip() or (cfg.get("SONARR_API_KEY") or "").strip())
     if cfg.get("SONARR_ENABLED", False):
-        if sonarr_partial:
-            flash("Sonarr enabled: fill both URL and API key (or clear both).", "error")
-            save_config(cfg)
-            return redirect("/settings")
         if sonarr_configured and not cfg.get("SONARR_OK", False):
             flash("Sonarr enabled: click Test Connection (or clear Sonarr fields) before saving.", "error")
             save_config(cfg)
@@ -2258,13 +2242,10 @@ def jobs_page():
 
               <div class="field">
                 <label>Enabled</label>
-                <div class="enableWrap" style="justify-content: space-between;">
-                  <div class="muted" style="font-size:12px;">Run this job on schedule</div>
-                  <label class="switch" title="Enable/Disable Job">
-                    <input type="checkbox" name="enabled" id="job_enabled" checked>
-                    <span class="slider"></span>
-                  </label>
-                </div>
+                <select name="enabled" id="job_enabled">
+                  <option value="1">Enabled</option>
+                  <option value="0">Disabled</option>
+                </select>
               </div>
             </div>
 
@@ -2480,7 +2461,7 @@ def jobs_save():
     try:
         job_id = (request.form.get("job_id") or "").strip()
         name = (request.form.get("name") or "Job").strip()
-        enabled = checkbox("enabled")  # unified (checkbox in modal + toggle on card)
+        enabled = (request.form.get("enabled") or "1").strip() == "1"
 
         app_key = (request.form.get("APP") or "radarr").strip().lower()
         if app_key not in ("radarr", "sonarr"):
@@ -2539,7 +2520,7 @@ def jobs_save():
             "job_id": request.form.get("job_id", ""),
             "APP": request.form.get("APP", "radarr"),
             "name": request.form.get("name", ""),
-            "enabled": "1" if checkbox("enabled") else "0",
+            "enabled": request.form.get("enabled", "1"),
             "TAG_LABEL": request.form.get("TAG_LABEL", ""),
             "SONARR_DELETE_MODE": request.form.get("SONARR_DELETE_MODE", "episodes_only"),
             "DAYS_OLD": request.form.get("DAYS_OLD", ""),
@@ -2594,10 +2575,8 @@ def jobs_run_now():
 @app.post("/apply-cron")
 def apply_cron():
     cfg = load_config()
-
-    # normalize first, then filter (prevents truthy "0"/"1" bugs)
-    jobs = [normalize_job(j) for j in (cfg.get("JOBS") or [])]
-    enabled_jobs = [j for j in jobs if j["enabled"]]
+    jobs = cfg.get("JOBS") or []
+    enabled_jobs = [j for j in jobs if normalize_job(j).get("enabled")]
 
     if not enabled_jobs:
         flash("No enabled jobs to schedule.", "error")
@@ -2605,7 +2584,8 @@ def apply_cron():
 
     log_path = "/var/log/mediareaparr.log"
     lines = []
-    for j in enabled_jobs:
+    for j0 in enabled_jobs:
+        j = normalize_job(j0)
         cron = cron_from_day_hour(j.get("SCHED_DAY", "daily"), int(j.get("SCHED_HOUR", 3)))
         jid = str(j.get("id"))
         lines.append(f"{cron} python /app/app.py --job-id {jid} >> {log_path} 2>&1")
