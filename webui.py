@@ -162,7 +162,14 @@ def normalize_job(j: Dict[str, Any]) -> Dict[str, Any]:
 
     d["id"] = str(d.get("id") or make_job_id())
     d["name"] = str(d.get("name") or "Job").strip()[:60] or "Job"
-    d["enabled"] = bool(d.get("enabled", True))
+
+    # robust enabled coercion (handles "0"/"1", 0/1, True/False)
+    en = d.get("enabled", True)
+    if isinstance(en, str):
+        en = en.strip().lower()
+        d["enabled"] = en in ("1", "true", "yes", "on")
+    else:
+        d["enabled"] = bool(en)
 
     d["APP"] = str(d.get("APP") or "radarr").lower()
     if d["APP"] not in ("radarr", "sonarr"):
@@ -675,7 +682,6 @@ BASE_HEAD = """
     align-self: stretch;
     height: 100vh;
     border-right: 1px solid var(--line);
-    /* border: 1px solid var(--line); */
     background: var(--panel);
     box-shadow: var(--shadow);
     overflow:hidden;
@@ -895,12 +901,8 @@ BASE_HEAD = """
   }
 
   /* Forms */
-  .form{ display:grid; grid-template-columns: 1fr; gap: 12px; }
-  @media(min-width: 900px){ .form{ grid-template-columns: 1fr 1fr; } }
-
-  /* Allow grid children to shrink inside columns */
-  .form { grid-template-columns: minmax(0, 1fr); }
-  @media (min-width: 900px){ .form { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); } }
+  .form{ display:grid; grid-template-columns: minmax(0, 1fr); gap: 12px; }
+  @media (min-width: 900px){ .form{ grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); } }
 
   .field{
     border: 1px solid var(--line);
@@ -1215,7 +1217,6 @@ BASE_HEAD = """
 
   /* ---- Flat cards only ---- */
   .card, .jobCard{ border-radius: 0 !important; }
-
   .card .hd, .card .bd{ border-radius: 0 !important; }
 </style>
 
@@ -1358,7 +1359,7 @@ BASE_HEAD = """
     setChecked("job_dry", true);
     setChecked("job_delete", true);
     setChecked("job_excl", false);
-    setVal("job_enabled", "1");
+    setChecked("job_enabled", true);
 
     const t = $("jobTitle");
     if (t) t.textContent = "Add Job";
@@ -1390,7 +1391,7 @@ BASE_HEAD = """
     setChecked("job_dry", (btn.getAttribute("data-dry") || "1") === "1");
     setChecked("job_delete", (btn.getAttribute("data-del") || "1") === "1");
     setChecked("job_excl", (btn.getAttribute("data-excl") || "0") === "1");
-    setVal("job_enabled", (btn.getAttribute("data-enabled") || "1"));
+    setChecked("job_enabled", (btn.getAttribute("data-enabled") || "1") === "1");
 
     const t = $("jobTitle");
     if (t) t.textContent = "Edit Job";
@@ -1439,6 +1440,9 @@ BASE_HEAD = """
     if (form) form.submit();
   }
 
+  // -------------------
+  // Settings save enablement (consistent with backend rules)
+  // -------------------
   function isDirty(settingsForm){
     if (!settingsForm) return false;
     const els = settingsForm.querySelectorAll("input, select, textarea");
@@ -1467,16 +1471,29 @@ BASE_HEAD = """
     const radarrEnabled = $("radarr_enabled")?.checked ?? true;
     const sonarrEnabled = $("sonarr_enabled")?.checked ?? false;
 
+    const radarrUrl = (document.querySelector('input[name="RADARR_URL"]')?.value || "").trim();
+    const radarrKey = (document.querySelector('input[name="RADARR_API_KEY"]')?.value || "").trim();
+
     const sonarrUrl = (document.querySelector('input[name="SONARR_URL"]')?.value || "").trim();
     const sonarrKey = (document.querySelector('input[name="SONARR_API_KEY"]')?.value || "").trim();
-    const sonarrConfigured = !!(sonarrUrl || sonarrKey);
 
-    const radarrReady = !radarrEnabled || radarrOk;
-    const sonarrReady = !sonarrEnabled || (!sonarrConfigured) || sonarrOk;
+    const radarrPartial = (!!radarrUrl) !== (!!radarrKey);
+    const sonarrPartial = (!!sonarrUrl) !== (!!sonarrKey);
 
-    saveBtn.disabled = !(radarrReady && sonarrReady && dirty);
+    const radarrConfigured = !!(radarrUrl && radarrKey);
+    const sonarrConfigured = !!(sonarrUrl && sonarrKey);
 
-    if (!radarrReady) saveBtn.title = "Radarr enabled: test connection first (or disable Radarr)";
+    const radarrReady = !radarrEnabled || (!radarrConfigured && !radarrPartial) || radarrOk;
+    const sonarrReady = !sonarrEnabled || (!sonarrConfigured && !sonarrPartial) || sonarrOk;
+
+    // If enabled and partial, block save
+    const partialOk = !(radarrEnabled && radarrPartial) && !(sonarrEnabled && sonarrPartial);
+
+    saveBtn.disabled = !(radarrReady && sonarrReady && partialOk && dirty);
+
+    if (radarrEnabled && radarrPartial) saveBtn.title = "Radarr enabled: fill both URL and API key (or clear both)";
+    else if (!radarrReady) saveBtn.title = "Radarr enabled: test connection first (or disable Radarr)";
+    else if (sonarrEnabled && sonarrPartial) saveBtn.title = "Sonarr enabled: fill both URL and API key (or clear both)";
     else if (!sonarrReady) saveBtn.title = "Sonarr enabled: test connection first (or disable Sonarr / clear fields)";
     else saveBtn.title = dirty ? "Save settings" : "No changes to save";
   }
@@ -1516,22 +1533,18 @@ BASE_HEAD = """
     updateSaveState();
   }
 
-  document.addEventListener("input", (e) => {
+  function handleAnyChange(e){
     onSettingsEdited(e);
+
     const back = $("jobBack");
     if (back && back.style.display === "flex") {
       const form = $("jobForm");
       if (form && form.contains(e.target)) jobModalUpdateDirty();
     }
-  });
-  document.addEventListener("change", (e) => {
-    onSettingsEdited(e);
-    const back = $("jobBack");
-    if (back && back.style.display === "flex") {
-      const form = $("jobForm");
-      if (form && form.contains(e.target)) jobModalUpdateDirty();
-    }
-  });
+  }
+
+  document.addEventListener("input", handleAnyChange);
+  document.addEventListener("change", handleAnyChange);
 
   document.addEventListener("DOMContentLoaded", () => {
     const radSec = $("radarrSection");
@@ -1579,7 +1592,7 @@ BASE_HEAD = """
       setChecked("job_dry", dry);
       setChecked("job_delete", del);
       setChecked("job_excl", excl);
-      setVal("job_enabled", enabled);
+      setChecked("job_enabled", enabled === "1");
 
       showModal("jobBack");
       setTimeout(jobModalMarkClean, 0);
@@ -2040,8 +2053,8 @@ def settings():
 
 @app.post("/save-settings")
 def save_settings():
-    old = load_config()
     cfg = load_config()
+    old = dict(cfg)
 
     cfg["RADARR_ENABLED"] = checkbox("RADARR_ENABLED")
     cfg["SONARR_ENABLED"] = checkbox("SONARR_ENABLED")
@@ -2066,21 +2079,41 @@ def save_settings():
     if cfg["UI_THEME"] not in ("dark", "light", "reaparr"):
         cfg["UI_THEME"] = "dark"
 
+    # Clear OK flags if creds changed
     if old.get("RADARR_URL") != cfg["RADARR_URL"] or old.get("RADARR_API_KEY") != cfg["RADARR_API_KEY"]:
         cfg["RADARR_OK"] = False
     if old.get("SONARR_URL") != cfg["SONARR_URL"] or old.get("SONARR_API_KEY") != cfg["SONARR_API_KEY"]:
         cfg["SONARR_OK"] = False
 
+    # Radarr: if enabled, require both URL+KEY and OK
+    radarr_url = (cfg.get("RADARR_URL") or "").strip()
+    radarr_key = (cfg.get("RADARR_API_KEY") or "").strip()
+    radarr_partial = bool(radarr_url) != bool(radarr_key)
+    radarr_configured = bool(radarr_url and radarr_key)
+
     if cfg.get("RADARR_ENABLED", True):
-        if not cfg.get("RADARR_OK", False):
+        if radarr_partial:
+            flash("Radarr enabled: fill both URL and API key (or clear both).", "error")
+            save_config(cfg)
+            return redirect("/settings")
+        if radarr_configured and not cfg.get("RADARR_OK", False):
             flash("Radarr enabled: click Test Connection and make sure it shows Connected before saving.", "error")
             save_config(cfg)
             return redirect("/settings")
     else:
         cfg["RADARR_OK"] = False
 
-    sonarr_configured = bool((cfg.get("SONARR_URL") or "").strip() or (cfg.get("SONARR_API_KEY") or "").strip())
+    # Sonarr: if enabled, require both URL+KEY and OK
+    sonarr_url = (cfg.get("SONARR_URL") or "").strip()
+    sonarr_key = (cfg.get("SONARR_API_KEY") or "").strip()
+    sonarr_partial = bool(sonarr_url) != bool(sonarr_key)
+    sonarr_configured = bool(sonarr_url and sonarr_key)
+
     if cfg.get("SONARR_ENABLED", False):
+        if sonarr_partial:
+            flash("Sonarr enabled: fill both URL and API key (or clear both).", "error")
+            save_config(cfg)
+            return redirect("/settings")
         if sonarr_configured and not cfg.get("SONARR_OK", False):
             flash("Sonarr enabled: click Test Connection (or clear Sonarr fields) before saving.", "error")
             save_config(cfg)
@@ -2225,10 +2258,13 @@ def jobs_page():
 
               <div class="field">
                 <label>Enabled</label>
-                <select name="enabled" id="job_enabled">
-                  <option value="1">Enabled</option>
-                  <option value="0">Disabled</option>
-                </select>
+                <div class="enableWrap" style="justify-content: space-between;">
+                  <div class="muted" style="font-size:12px;">Run this job on schedule</div>
+                  <label class="switch" title="Enable/Disable Job">
+                    <input type="checkbox" name="enabled" id="job_enabled" checked>
+                    <span class="slider"></span>
+                  </label>
+                </div>
               </div>
             </div>
 
@@ -2444,7 +2480,7 @@ def jobs_save():
     try:
         job_id = (request.form.get("job_id") or "").strip()
         name = (request.form.get("name") or "Job").strip()
-        enabled = (request.form.get("enabled") or "1").strip() == "1"
+        enabled = checkbox("enabled")  # unified (checkbox in modal + toggle on card)
 
         app_key = (request.form.get("APP") or "radarr").strip().lower()
         if app_key not in ("radarr", "sonarr"):
@@ -2503,7 +2539,7 @@ def jobs_save():
             "job_id": request.form.get("job_id", ""),
             "APP": request.form.get("APP", "radarr"),
             "name": request.form.get("name", ""),
-            "enabled": request.form.get("enabled", "1"),
+            "enabled": "1" if checkbox("enabled") else "0",
             "TAG_LABEL": request.form.get("TAG_LABEL", ""),
             "SONARR_DELETE_MODE": request.form.get("SONARR_DELETE_MODE", "episodes_only"),
             "DAYS_OLD": request.form.get("DAYS_OLD", ""),
@@ -2558,8 +2594,10 @@ def jobs_run_now():
 @app.post("/apply-cron")
 def apply_cron():
     cfg = load_config()
-    jobs = cfg.get("JOBS") or []
-    enabled_jobs = [j for j in jobs if j.get("enabled")]
+
+    # normalize first, then filter (prevents truthy "0"/"1" bugs)
+    jobs = [normalize_job(j) for j in (cfg.get("JOBS") or [])]
+    enabled_jobs = [j for j in jobs if j["enabled"]]
 
     if not enabled_jobs:
         flash("No enabled jobs to schedule.", "error")
