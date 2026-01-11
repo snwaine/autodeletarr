@@ -667,6 +667,8 @@ BASE_HEAD = """
   a:hover{ text-decoration: underline; }
 
   .wrap{
+    flex: 1 1 auto;
+    min-height: 100vh;
     max-width: min(1900px, 98vw);
     margin: 0 auto;
     padding: 22px 18px 0px;
@@ -674,7 +676,6 @@ BASE_HEAD = """
     box-sizing: border-box;
     display: flex;
     flex-direction: column;
-    min-height: 100vh;
   }
 
   /* ---------------------------
@@ -756,10 +757,20 @@ BASE_HEAD = """
   }
 
   .mainArea{
+    min-height: 100%;
     min-width: 0;
     display:flex;
     flex-direction: column;
     gap: 14px;
+  }
+
+  /* Page content should expand, not collapse */
+  .mainArea > .pageTop {
+    flex: 0 0 auto;
+  }
+
+  .mainArea > *:last-child {
+    flex: 1 1 auto;
   }
 
   .pageTop{
@@ -803,6 +814,7 @@ BASE_HEAD = """
     background: var(--panel);
     box-shadow: var(--shadow);
     overflow:hidden;
+    min-height: 100%;
   }
   .card .hd{
     padding: 14px 16px;
