@@ -1,4 +1,3 @@
-
 import os
 import json
 import signal
@@ -304,11 +303,15 @@ def load_config() -> Dict[str, Any]:
     cfg["RADARR_ENABLED"] = bool(cfg.get("RADARR_ENABLED", True))
     cfg["SONARR_ENABLED"] = bool(cfg.get("SONARR_ENABLED", False))
     cfg["HTTP_TIMEOUT_SECONDS"] = clamp_int(cfg.get("HTTP_TIMEOUT_SECONDS", 30), 5, 300, 30)
+
     try:
         cfg["UI_SCALE"] = float(cfg.get("UI_SCALE", 1.0))
     except Exception:
         cfg["UI_SCALE"] = 1.0
-    cfg["UI_SCALE"] = max(0.75, min(1.5, cfg["UI_SCALE"]))
+    if cfg["UI_SCALE"] < 0.75:
+        cfg["UI_SCALE"] = 0.75
+    if cfg["UI_SCALE"] > 1.5:
+        cfg["UI_SCALE"] = 1.5
 
     jobs = cfg.get("JOBS") or []
     if not isinstance(jobs, list):
@@ -540,14 +543,9 @@ BASE_HEAD = """
     --fs-2: calc(14px * var(--ui));
     --fs-3: calc(16px * var(--ui));
 
-    --pill-fs: var(--fs-1);
-    --pill-py: calc(8px * var(--ui));
-    --pill-px: calc(11px * var(--ui));
-
     --btn-fs: calc(10px * var(--ui));
     --btn-py: calc(7px * var(--ui));
     --btn-px: calc(9px * var(--ui));
-    --btn-radius: 0px; /* square */
     --btn-gap: calc(6px * var(--ui));
 
     --switch-w: calc(42px * var(--ui));
@@ -594,14 +592,16 @@ BASE_HEAD = """
     --shadow: 0 12px 28px rgba(0,0,0,.55);
   }
 
-  *, *::before, *::after { box-sizing: border-box; border-radius: 0 !important; }
+  *, *::before, *::after { box-sizing: border-box; }
 
   html, body{ height: 100%; }
 
   body{
-    min-height: 100vh;
     margin:0;
+    min-height: 100vh;
     font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial, "Apple Color Emoji","Segoe UI Emoji";
+    color: var(--text);
+
     background:
       radial-gradient(900px 520px at 18% 8%, rgba(34,197,94,.22), transparent 62%),
       radial-gradient(880px 520px at 92% 10%, rgba(22,163,74,.16), transparent 60%),
@@ -609,13 +609,11 @@ BASE_HEAD = """
       linear-gradient(135deg, rgba(34,197,94,.10), rgba(22,163,74,.06)),
       var(--bg);
     background-attachment: fixed;
-    color: var(--text);
 
     display:flex;
     flex-direction: column;
   }
 
-  /* Reaparr theme background override (Radarr-ish bloom) */
   body[data-theme="reaparr"]{
     background:
       radial-gradient(900px 450px at 20% -10%, rgba(38,224,138,.14), transparent 60%),
@@ -624,6 +622,10 @@ BASE_HEAD = """
       linear-gradient(180deg, #070a0d, #0b0f14 40%, #070a0d);
     background-attachment: fixed;
   }
+
+  body[data-theme="dark"] { color-scheme: dark; }
+  body[data-theme="light"] { color-scheme: light; }
+  body[data-theme="reaparr"] { color-scheme: dark; }
 
   /* Soft bottom “landing” gradient */
   body:after{
@@ -641,14 +643,10 @@ BASE_HEAD = """
     background: linear-gradient(to bottom, rgba(7,10,13,0), rgba(7,10,13,.92));
   }
 
-  body[data-theme="dark"] { color-scheme: dark; }
-  body[data-theme="light"] { color-scheme: light; }
-  body[data-theme="reaparr"] { color-scheme: dark; }
-
   a{ color: var(--text); text-decoration: none; }
   a:hover{ text-decoration: underline; }
 
-  /* Wrap fills the whole screen */
+  /* ---- Wrap fills screen (no centered container) ---- */
   .wrap{
     width: 100vw;
     max-width: none;
@@ -656,21 +654,19 @@ BASE_HEAD = """
     padding: 0;
     min-height: 100vh;
 
+    flex: 1 1 auto;
     display: flex;
     flex-direction: column;
-    flex: 1 1 auto;
   }
 
-  /* ---------------------------
-     Radarr-like layout (ONLY layout)
-  --------------------------- */
+  /* Radarr-like layout (ONLY layout now) */
   .layoutRadarr{
     display:grid;
     grid-template-columns: 260px minmax(0, 1fr);
-    gap: 0;
-    align-items: stretch;
+    gap: 14px;
+
     min-height: 100vh;
-    width: 100%;
+    align-items: stretch;
   }
 
   .sidebar{
@@ -678,10 +674,12 @@ BASE_HEAD = """
     top: 0;
     align-self: stretch;
     height: 100vh;
-    border-right: 1px solid var(--line);
+
+    border: 1px solid var(--line);
     background: var(--panel);
     box-shadow: var(--shadow);
     overflow:hidden;
+
     display:flex;
     flex-direction: column;
   }
@@ -690,6 +688,7 @@ BASE_HEAD = """
     padding: 14px 14px;
     border-bottom: 1px solid var(--line);
     background: var(--panel2);
+
     display:flex;
     gap: 12px;
     align-items:center;
@@ -700,6 +699,9 @@ BASE_HEAD = """
     display:flex;
     flex-direction: column;
     gap: 8px;
+    flex: 1 1 auto;
+    overflow: auto;
+    min-height: 0;
   }
 
   .sbItem{
@@ -707,6 +709,7 @@ BASE_HEAD = """
     align-items:center;
     justify-content: space-between;
     gap: 10px;
+
     padding: 10px 12px;
     border: 1px solid var(--line);
     background: var(--panel2);
@@ -740,25 +743,11 @@ BASE_HEAD = """
 
   .mainArea{
     min-width: 0;
-    min-height: 100vh;
-    display:flex;
-    flex-direction: column;
-  }
-
-  /* Inner padding moved here (wrap is edge-to-edge) */
-  .mainIn{
-    padding: 14px;
+    min-height: 100%;
     display:flex;
     flex-direction: column;
     gap: 14px;
-    flex: 1 1 auto;
-    min-height: 0;
-  }
-  @media (max-width: 900px){
-    .layoutRadarr{ grid-template-columns: 1fr; }
-    .sidebar{ position: relative; height: auto; }
-    .mainArea{ min-height: auto; }
-    .mainIn{ padding: 10px; }
+    padding: 14px;
   }
 
   .pageTop{
@@ -766,7 +755,6 @@ BASE_HEAD = """
     background: var(--panel);
     box-shadow: var(--shadow);
     overflow:hidden;
-    flex: 0 0 auto;
   }
   .pageTop .ptIn{
     padding: 14px 16px;
@@ -788,15 +776,20 @@ BASE_HEAD = """
     font-size: var(--fs-1);
   }
 
-  .grid{ display:grid; grid-template-columns: repeat(12, 1fr); gap: 14px; }
+  @media (max-width: 900px){
+    .layoutRadarr{ grid-template-columns: 1fr; }
+    .sidebar{ position: relative; height: auto; top: auto; }
+    .mainArea{ padding: 10px; }
+  }
 
+  /* Main content grid/cards */
+  .grid{ display:grid; grid-template-columns: repeat(12, 1fr); gap: 14px; }
   .card{
     grid-column: span 12;
     border: 1px solid var(--line);
     background: var(--panel);
     box-shadow: var(--shadow);
     overflow:hidden;
-    min-height: 0;
   }
   .card .hd{
     padding: 14px 16px;
@@ -804,10 +797,25 @@ BASE_HEAD = """
     display:flex; align-items:center; justify-content: space-between;
     gap:12px;
     background: var(--panel2);
+    overflow: hidden;
   }
   [data-theme="light"] .card .hd{ background: #f3f4f6; }
   .card .hd h2{ margin:0; font-size: 14px; letter-spacing:.2px; }
-  .card .bd{ padding: 14px 16px; background: var(--panel); min-height: 0; overflow: auto; }
+  .card .bd{ padding: 14px 16px; background: var(--panel); overflow: auto; }
+
+  /* Subtle Reaparr surfaces */
+  body[data-theme="reaparr"] .card,
+  body[data-theme="reaparr"] .jobCard,
+  body[data-theme="reaparr"] .modal{
+    background: linear-gradient(180deg, rgba(255,255,255,.02), transparent 45%), var(--panel);
+  }
+  body[data-theme="reaparr"] .card .hd,
+  body[data-theme="reaparr"] .jobHeader,
+  body[data-theme="reaparr"] .modal .mh,
+  body[data-theme="reaparr"] .modal .mf,
+  body[data-theme="reaparr"] .pageTop .ptIn{
+    background: linear-gradient(180deg, rgba(255,255,255,.03), transparent), var(--panel2);
+  }
 
   .muted{ color: var(--muted); }
 
@@ -826,9 +834,9 @@ BASE_HEAD = """
     cursor:pointer;
     display: inline-flex;
     align-items: center;
+
     transition: box-shadow .18s ease, border-color .18s ease, transform .18s ease, filter .18s ease;
   }
-
   a.btn:hover{ text-decoration: none; }
 
   .btn:hover{
@@ -844,6 +852,9 @@ BASE_HEAD = """
   .btn:active{
     transform: translateY(0);
     box-shadow: 0 0 0 2px rgba(34,197,94,.08), 0 6px 14px rgba(0,0,0,.18);
+  }
+  body[data-theme="reaparr"] .btn:active{
+    box-shadow: 0 0 0 2px rgba(38,224,138,.08), 0 6px 14px rgba(0,0,0,.40);
   }
 
   .btn:disabled{
@@ -878,8 +889,12 @@ BASE_HEAD = """
   }
 
   /* Forms */
-  .form{ display:grid; grid-template-columns: minmax(0, 1fr); gap: 12px; }
-  @media(min-width: 900px){ .form{ grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); } }
+  .form{ display:grid; grid-template-columns: 1fr; gap: 12px; }
+  @media(min-width: 900px){ .form{ grid-template-columns: 1fr 1fr; } }
+
+  /* Allow grid children to shrink inside columns */
+  .form { grid-template-columns: minmax(0, 1fr); }
+  @media (min-width: 900px){ .form { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); } }
 
   .field{
     border: 1px solid var(--line);
@@ -892,7 +907,11 @@ BASE_HEAD = """
 
   .field label{ display:block; font-size: 12px; color: var(--muted); margin-bottom: 8px; }
 
-  .field input[type=text], .field input[type=password], .field input[type=number], .field select{
+  .field input[type=text],
+  .field input[type=password],
+  .field input[type=number],
+  .field select,
+  .field textarea{
     width: 100%;
     max-width: 100%;
     min-width: 0;
@@ -902,13 +921,18 @@ BASE_HEAD = """
     padding: 10px 10px;
     outline: none;
   }
+
   body[data-theme="reaparr"] .field input[type=text],
   body[data-theme="reaparr"] .field input[type=password],
   body[data-theme="reaparr"] .field input[type=number],
-  body[data-theme="reaparr"] .field select{
+  body[data-theme="reaparr"] .field select,
+  body[data-theme="reaparr"] .field textarea{
     background: rgba(0,0,0,.22);
   }
-  [data-theme="light"] .field input, [data-theme="light"] .field select{ background: #ffffff; }
+
+  [data-theme="light"] .field input,
+  [data-theme="light"] .field select,
+  [data-theme="light"] .field textarea{ background: #ffffff; }
 
   .field select{
     appearance: none;
@@ -930,12 +954,13 @@ BASE_HEAD = """
   body[data-theme="light"] .field select option{ background-color: #ffffff; color: #0b1220; }
   body[data-theme="reaparr"] .field select option{ background-color: #0f1620; color: rgba(255,255,255,.92); }
 
-  .field input:focus, .field select:focus{
+  .field input:focus, .field select:focus, .field textarea:focus{
     border-color: rgba(34,197,94,.55);
     box-shadow: 0 0 0 3px rgba(34,197,94,.14);
   }
   body[data-theme="reaparr"] .field input:focus,
-  body[data-theme="reaparr"] .field select:focus{
+  body[data-theme="reaparr"] .field select:focus,
+  body[data-theme="reaparr"] .field textarea:focus{
     border-color: rgba(38,224,138,.55);
     box-shadow: 0 0 0 3px rgba(38,224,138,.14);
   }
@@ -962,6 +987,7 @@ BASE_HEAD = """
   }
   [data-theme="light"] .toggleRow{ background: #ffffff; }
 
+  /* Switch */
   .switch{ position: relative; width: var(--switch-w); height: var(--switch-h); display: inline-block; flex: 0 0 auto; }
   .switch input{ opacity: 0; width: 0; height: 0; }
   .slider{
@@ -999,20 +1025,33 @@ BASE_HEAD = """
 
   .disabledSection{ opacity: .55; filter: grayscale(.12); pointer-events: none; }
 
+  /* Jobs */
   .jobsGrid{
     display:grid;
     gap: 12px;
     grid-template-columns: 1fr;
+    justify-content: center;
   }
   .jobCard{
     border: 1px solid var(--line);
     background: var(--panel2);
     overflow:hidden;
+    max-width: none;
     width: 100%;
   }
-  @media (min-width: 700px){ .jobsGrid{ grid-template-columns: repeat(2, minmax(300px, 1fr));}}
-  @media (min-width: 1200px){ .jobsGrid{ grid-template-columns: repeat(3, minmax(300px, 1fr)); gap: 16px;}}
-  @media (min-width: 1800px){ .jobsGrid{ grid-template-columns: repeat(4, minmax(300px, 1fr)); gap: 20px;}}
+  @media (min-width: 700px){ .jobsGrid{ grid-template-columns: repeat(2, minmax(300px, 1fr)); } }
+  @media (min-width: 1200px){ .jobsGrid{ grid-template-columns: repeat(3, minmax(300px, 1fr)); gap: 16px; } }
+  @media (min-width: 1800px){ .jobsGrid{ grid-template-columns: repeat(4, minmax(300px, 1fr)); gap: 20px; } }
+
+  [data-theme="light"] .jobCard{ background: #ffffff; }
+
+  body[data-theme="reaparr"] .jobCard:hover,
+  body[data-theme="reaparr"] .card:hover{
+    border-color: rgba(38,224,138,.25);
+    box-shadow: 0 0 0 3px rgba(38,224,138,.10), var(--shadow);
+    transform: translateY(-1px);
+    transition: .18s ease;
+  }
 
   .jobHeader{
     padding: 12px 12px;
@@ -1068,6 +1107,7 @@ BASE_HEAD = """
   .metaLabel{ width: 100px; color: var(--muted); flex: 0 0 auto; }
   .metaVal{ color: var(--text); flex: 1 1 auto; min-width: 0; word-break: break-word; }
 
+  /* Modal */
   .modalBack{
     position: fixed; inset: 0;
     background: rgba(0,0,0,.68);
@@ -1128,12 +1168,14 @@ BASE_HEAD = """
   }
   [data-theme="light"] .modal .mf{ background: #f3f4f6; }
 
+  /* Tables */
   table{ width:100%; border-collapse: collapse; overflow:hidden; border: 1px solid var(--line); }
   th, td{ padding: 10px 10px; border-bottom: 1px solid var(--line); font-size: var(--fs-1); vertical-align: top; }
   th{ text-align:left; color:#cbd5e1; background: rgba(255,255,255,.04); position: sticky; top: 0; }
   [data-theme="light"] th{ color:#111827; background: rgba(0,0,0,.03); }
   .tablewrap{ max-height: 420px; overflow:auto; border: 1px solid var(--line); }
 
+  /* Toasts */
   .toastHost{
     position: fixed;
     right: 16px;
@@ -1165,32 +1207,32 @@ BASE_HEAD = """
   @keyframes toastIn { to { opacity: 1; transform: translateY(0); } }
   @keyframes toastOut { to { opacity: 0; transform: translateY(10px); } }
 
-  /* Sidebar logo */
-  .logoWrap{
-    width: 38px; height: 38px;
-    border: 1px solid var(--line2);
-    background: var(--panel2);
-    overflow:hidden;
-    display:flex; align-items:center; justify-content:center;
-    flex: 0 0 auto;
-  }
-  .logoBadge{
-    width: 38px; height: 38px;
-    background: linear-gradient(135deg, rgba(34,197,94,.92), rgba(22,163,74,.65));
-    box-shadow: 0 10px 24px rgba(34,197,94,.18);
-  }
-  body[data-theme="reaparr"] .logoBadge{
-    background: linear-gradient(135deg, rgba(38,224,138,.92), rgba(22,184,110,.65));
-    box-shadow: 0 10px 24px rgba(38,224,138,.18);
-  }
-  .logoImg{
-    width: 100%;
-    height: 100%;
-    object-fit: contain;
-    display:block;
-    background: var(--panel2);
+  /* ---- NO ROUNDED CORNERS (global override) ---- */
+  .sidebar,
+  .pageTop,
+  .card,
+  .jobCard,
+  .modal,
+  .logoWrap,
+  .sbItem,
+  .field,
+  .check,
+  .toggleRow,
+  .tablewrap,
+  table,
+  .toast,
+  .slider,
+  .switch,
+  .btn{
+    border-radius: 0 !important;
   }
 
+  .card .hd,
+  .modal .mh,
+  .modal .mf,
+  .jobHeader{
+    border-radius: 0 !important;
+  }
 </style>
 
 <script>
@@ -1603,9 +1645,9 @@ def shell(page_title: str, active: str, body: str):
 
     has_logo = find_logo_path() is not None
     logo_html = (
-        '<div class="logoWrap"><img class="logoImg" src="/logo" alt="logo"></div>'
+        '<div class="logoWrap"><img class="logoImg" src="/logo" alt="logo" style="width:38px;height:38px;object-fit:contain;display:block;background:var(--panel2);"></div>'
         if has_logo
-        else '<div class="logoBadge"></div>'
+        else '<div style="width:38px;height:38px;border:1px solid var(--line2);background:linear-gradient(135deg, rgba(34,197,94,.92), rgba(22,163,74,.65));"></div>'
     )
 
     page_name = {
@@ -1614,8 +1656,6 @@ def shell(page_title: str, active: str, body: str):
         "settings": "Settings",
         "status": "Status",
     }.get(active, "mediareaparr")
-
-    toasts = render_toasts()
 
     sidebar = f"""
       <div class="sidebar">
@@ -1639,6 +1679,8 @@ def shell(page_title: str, active: str, body: str):
       </div>
     """
 
+    toasts = render_toasts()
+
     return f"""
 <!doctype html>
 <html>
@@ -1651,17 +1693,14 @@ def shell(page_title: str, active: str, body: str):
     <div class="layoutRadarr">
       {sidebar}
       <div class="mainArea">
-        <div class="mainIn">
-          <div class="pageTop">
-            <div class="ptIn">
-              <h2>{safe_html(page_name)}</h2>
-              <div class="muted" style="font-size:var(--fs-0);">UI Scale: <b>{int(float(cfg.get('UI_SCALE',1.0))*100)}%</b></div>
-            </div>
-            <div class="ptBd">MediaReaparr • sidebar layout (default)</div>
+        <div class="pageTop">
+          <div class="ptIn">
+            <h2>{safe_html(page_name)}</h2>
+            <div class="muted" style="font-size:var(--fs-0);">Theme: <b>{safe_html(theme)}</b></div>
           </div>
-
-          {body}
+          <div class="ptBd">MediaReaparr colour scheme • sidebar navigation</div>
         </div>
+        {body}
       </div>
     </div>
   </div>
@@ -2035,7 +2074,10 @@ def save_settings():
         cfg["UI_SCALE"] = float(request.form.get("UI_SCALE") or cfg.get("UI_SCALE", 1.0))
     except Exception:
         cfg["UI_SCALE"] = float(cfg.get("UI_SCALE", 1.0))
-    cfg["UI_SCALE"] = max(0.75, min(1.5, cfg["UI_SCALE"]))
+    if cfg["UI_SCALE"] < 0.75:
+        cfg["UI_SCALE"] = 0.75
+    if cfg["UI_SCALE"] > 1.5:
+        cfg["UI_SCALE"] = 1.5
 
     if cfg["UI_THEME"] not in ("dark", "light", "reaparr"):
         cfg["UI_THEME"] = "dark"
