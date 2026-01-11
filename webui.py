@@ -663,7 +663,7 @@ BASE_HEAD = """
   .layoutRadarr{
     display:grid;
     grid-template-columns: 260px minmax(0, 1fr);
-    gap: 14px;
+    gap: 0 !important;
 
     min-height: 100vh;
     align-items: stretch;
@@ -674,8 +674,8 @@ BASE_HEAD = """
     top: 0;
     align-self: stretch;
     height: 100vh;
-
-    border: 1px solid var(--line);
+    border-right: 1px solid var(--line);
+    /* border: 1px solid var(--line); */
     background: var(--panel);
     box-shadow: var(--shadow);
     overflow:hidden;
@@ -746,8 +746,12 @@ BASE_HEAD = """
     min-height: 100%;
     display:flex;
     flex-direction: column;
-    gap: 14px;
-    padding: 14px;
+    gap: 0 !important;
+    padding: 0 !important;
+  }
+
+  .mainArea .grid{
+    margin-top: 0 !important;
   }
 
   .pageTop{
@@ -755,7 +759,9 @@ BASE_HEAD = """
     background: var(--panel);
     box-shadow: var(--shadow);
     overflow:hidden;
+    margin: 0 !important;
   }
+
   .pageTop .ptIn{
     padding: 14px 16px;
     background: var(--panel2);
@@ -1207,32 +1213,10 @@ BASE_HEAD = """
   @keyframes toastIn { to { opacity: 1; transform: translateY(0); } }
   @keyframes toastOut { to { opacity: 0; transform: translateY(10px); } }
 
-  /* ---- NO ROUNDED CORNERS (global override) ---- */
-  .sidebar,
-  .pageTop,
-  .card,
-  .jobCard,
-  .modal,
-  .logoWrap,
-  .sbItem,
-  .field,
-  .check,
-  .toggleRow,
-  .tablewrap,
-  table,
-  .toast,
-  .slider,
-  .switch,
-  .btn{
-    border-radius: 0 !important;
-  }
+  /* ---- Flat cards only ---- */
+  .card, .jobCard{ border-radius: 0 !important; }
 
-  .card .hd,
-  .modal .mh,
-  .modal .mf,
-  .jobHeader{
-    border-radius: 0 !important;
-  }
+  .card .hd, .card .bd{ border-radius: 0 !important; }
 </style>
 
 <script>
