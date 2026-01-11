@@ -1,3 +1,4 @@
+
 import os
 import json
 import signal
@@ -59,6 +60,7 @@ def now_iso() -> str:
 
 
 def safe_html(s: Any) -> str:
+    # Safe for both text and attributes (escapes quotes)
     return html_escape(str(s or ""), quote=True)
 
 
@@ -302,15 +304,11 @@ def load_config() -> Dict[str, Any]:
     cfg["RADARR_ENABLED"] = bool(cfg.get("RADARR_ENABLED", True))
     cfg["SONARR_ENABLED"] = bool(cfg.get("SONARR_ENABLED", False))
     cfg["HTTP_TIMEOUT_SECONDS"] = clamp_int(cfg.get("HTTP_TIMEOUT_SECONDS", 30), 5, 300, 30)
-
     try:
         cfg["UI_SCALE"] = float(cfg.get("UI_SCALE", 1.0))
     except Exception:
         cfg["UI_SCALE"] = 1.0
-    if cfg["UI_SCALE"] < 0.75:
-        cfg["UI_SCALE"] = 0.75
-    if cfg["UI_SCALE"] > 1.5:
-        cfg["UI_SCALE"] = 1.5
+    cfg["UI_SCALE"] = max(0.75, min(1.5, cfg["UI_SCALE"]))
 
     jobs = cfg.get("JOBS") or []
     if not isinstance(jobs, list):
@@ -549,7 +547,7 @@ BASE_HEAD = """
     --btn-fs: calc(10px * var(--ui));
     --btn-py: calc(7px * var(--ui));
     --btn-px: calc(9px * var(--ui));
-    --btn-radius: calc(9px * var(--ui));
+    --btn-radius: 0px; /* square */
     --btn-gap: calc(6px * var(--ui));
 
     --switch-w: calc(42px * var(--ui));
@@ -557,24 +555,6 @@ BASE_HEAD = """
     --switch-thumb: calc(14px * var(--ui));
     --switch-pad: calc(3px * var(--ui));
     --switch-travel: calc(var(--switch-w) - var(--switch-thumb) - (var(--switch-pad) * 2));
-  }
-
-  /* ✅ CSS FIX: moved out of :root (no nested selectors in :root) */
-  *, *::before, *::after { box-sizing: border-box; }
-
-  /* Allow grid children to shrink inside columns */
-  .form { grid-template-columns: minmax(0, 1fr); }
-  @media (min-width: 900px){ .form { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }}
-
-  /* Inputs/selects should never overflow their field */
-  .field input[type=text],
-  .field input[type=password],
-  .field input[type=number],
-  .field select,
-  .field textarea{
-    width: 100%;
-    max-width: 100%;
-    min-width: 0;
   }
 
   [data-theme="light"]{
@@ -594,7 +574,7 @@ BASE_HEAD = """
     --shadow: 0 12px 30px rgba(0,0,0,.08);
   }
 
-  /* ✅ Third theme: Reaparr */
+  /* Reaparr (Radarr-style dark + MediaReaparr green) */
   [data-theme="reaparr"]{
     --bg:#070a0d;
     --panel:#0f1620;
@@ -614,6 +594,8 @@ BASE_HEAD = """
     --shadow: 0 12px 28px rgba(0,0,0,.55);
   }
 
+  *, *::before, *::after { box-sizing: border-box; border-radius: 0 !important; }
+
   html, body{ height: 100%; }
 
   body{
@@ -629,11 +611,11 @@ BASE_HEAD = """
     background-attachment: fixed;
     color: var(--text);
 
-    /* full-height layout */
     display:flex;
     flex-direction: column;
   }
 
+  /* Reaparr theme background override (Radarr-ish bloom) */
   body[data-theme="reaparr"]{
     background:
       radial-gradient(900px 450px at 20% -10%, rgba(38,224,138,.14), transparent 60%),
@@ -666,36 +648,37 @@ BASE_HEAD = """
   a{ color: var(--text); text-decoration: none; }
   a:hover{ text-decoration: underline; }
 
+  /* Wrap fills the whole screen */
   .wrap{
-    flex: 1 1 auto;
+    width: 100vw;
+    max-width: none;
+    margin: 0;
+    padding: 0;
     min-height: 100vh;
-    max-width: min(1900px, 98vw);
-    margin: 0 auto;
-    padding: 22px 18px 0px;
-    width: 100%;
-    box-sizing: border-box;
+
     display: flex;
     flex-direction: column;
+    flex: 1 1 auto;
   }
 
   /* ---------------------------
-     ✅ Radarr-like layout (ONLY)
+     Radarr-like layout (ONLY layout)
   --------------------------- */
   .layoutRadarr{
     display:grid;
     grid-template-columns: 260px minmax(0, 1fr);
-    gap: 14px;
-    align-items: start;
-    min-height: calc(100vh - 22px);
+    gap: 0;
+    align-items: stretch;
+    min-height: 100vh;
+    width: 100%;
   }
 
   .sidebar{
     position: sticky;
-    top: 14px;
-    align-self: start;
-    height: calc(100vh - 28px);
-    border: 1px solid var(--line);
-    border-radius: 16px;
+    top: 0;
+    align-self: stretch;
+    height: 100vh;
+    border-right: 1px solid var(--line);
     background: var(--panel);
     box-shadow: var(--shadow);
     overflow:hidden;
@@ -726,7 +709,6 @@ BASE_HEAD = """
     gap: 10px;
     padding: 10px 12px;
     border: 1px solid var(--line);
-    border-radius: 14px;
     background: var(--panel2);
     font-size: var(--fs-1);
     cursor:pointer;
@@ -757,28 +739,34 @@ BASE_HEAD = """
   }
 
   .mainArea{
-    min-height: 100%;
     min-width: 0;
+    min-height: 100vh;
+    display:flex;
+    flex-direction: column;
+  }
+
+  /* Inner padding moved here (wrap is edge-to-edge) */
+  .mainIn{
+    padding: 14px;
     display:flex;
     flex-direction: column;
     gap: 14px;
-  }
-
-  /* Page content should expand, not collapse */
-  .mainArea > .pageTop {
-    flex: 0 0 auto;
-  }
-
-  .mainArea > *:last-child {
     flex: 1 1 auto;
+    min-height: 0;
+  }
+  @media (max-width: 900px){
+    .layoutRadarr{ grid-template-columns: 1fr; }
+    .sidebar{ position: relative; height: auto; }
+    .mainArea{ min-height: auto; }
+    .mainIn{ padding: 10px; }
   }
 
   .pageTop{
     border: 1px solid var(--line);
-    border-radius: 16px;
     background: var(--panel);
     box-shadow: var(--shadow);
     overflow:hidden;
+    flex: 0 0 auto;
   }
   .pageTop .ptIn{
     padding: 14px 16px;
@@ -800,21 +788,15 @@ BASE_HEAD = """
     font-size: var(--fs-1);
   }
 
-  @media (max-width: 900px){
-    .layoutRadarr{ grid-template-columns: 1fr; }
-    .sidebar{ position: relative; height: auto; }
-  }
-
   .grid{ display:grid; grid-template-columns: repeat(12, 1fr); gap: 14px; }
 
   .card{
     grid-column: span 12;
     border: 1px solid var(--line);
-    border-radius: 16px;
     background: var(--panel);
     box-shadow: var(--shadow);
     overflow:hidden;
-    min-height: 100%;
+    min-height: 0;
   }
   .card .hd{
     padding: 14px 16px;
@@ -822,21 +804,10 @@ BASE_HEAD = """
     display:flex; align-items:center; justify-content: space-between;
     gap:12px;
     background: var(--panel2);
-    flex: 0 0 auto;
-    min-height: 0;
-    overflow: hidden;
   }
   [data-theme="light"] .card .hd{ background: #f3f4f6; }
   .card .hd h2{ margin:0; font-size: 14px; letter-spacing:.2px; }
   .card .bd{ padding: 14px 16px; background: var(--panel); min-height: 0; overflow: auto; }
-
-  body[data-theme="reaparr"] .card{
-    background: linear-gradient(180deg, rgba(255,255,255,.02), transparent 45%), var(--panel);
-  }
-  body[data-theme="reaparr"] .card .hd,
-  body[data-theme="reaparr"] .pageTop .ptIn{
-    background: linear-gradient(180deg, rgba(255,255,255,.03), transparent), var(--panel2);
-  }
 
   .muted{ color: var(--muted); }
 
@@ -846,11 +817,12 @@ BASE_HEAD = """
     border: 1px solid var(--line2);
     background: var(--panel2);
     color: var(--text);
+
     padding: var(--btn-py) var(--btn-px);
-    border-radius: var(--btn-radius);
     font-weight: 600;
     font-size: var(--btn-fs);
     gap: var(--btn-gap);
+
     cursor:pointer;
     display: inline-flex;
     align-items: center;
@@ -872,9 +844,6 @@ BASE_HEAD = """
   .btn:active{
     transform: translateY(0);
     box-shadow: 0 0 0 2px rgba(34,197,94,.08), 0 6px 14px rgba(0,0,0,.18);
-  }
-  body[data-theme="reaparr"] .btn:active{
-    box-shadow: 0 0 0 2px rgba(38,224,138,.08), 0 6px 14px rgba(0,0,0,.40);
   }
 
   .btn:disabled{
@@ -898,7 +867,6 @@ BASE_HEAD = """
     border-color: rgba(239,68,68,.55);
     background: linear-gradient(135deg, rgba(239,68,68,.20), rgba(239,68,68,.08));
   }
-
   body[data-theme="reaparr"] .btn.primary,
   body[data-theme="reaparr"] .btn.good{
     border-color: rgba(38,224,138,.45);
@@ -909,12 +877,12 @@ BASE_HEAD = """
     background: linear-gradient(135deg, rgba(255,92,108,.20), rgba(255,92,108,.08));
   }
 
-  .form{ display:grid; grid-template-columns: 1fr; gap: 12px; }
-  @media(min-width: 900px){ .form{ grid-template-columns: 1fr 1fr; } }
+  /* Forms */
+  .form{ display:grid; grid-template-columns: minmax(0, 1fr); gap: 12px; }
+  @media(min-width: 900px){ .form{ grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); } }
 
   .field{
     border: 1px solid var(--line);
-    border-radius: 14px;
     padding: 10px 12px;
     background: var(--panel2);
     position: relative;
@@ -926,13 +894,13 @@ BASE_HEAD = """
 
   .field input[type=text], .field input[type=password], .field input[type=number], .field select{
     width: 100%;
+    max-width: 100%;
+    min-width: 0;
     border: 1px solid var(--line2);
     background: var(--panel);
     color: var(--text);
     padding: 10px 10px;
-    border-radius: 12px;
     outline: none;
-    min-width: 0;
   }
   body[data-theme="reaparr"] .field input[type=text],
   body[data-theme="reaparr"] .field input[type=password],
@@ -940,7 +908,6 @@ BASE_HEAD = """
   body[data-theme="reaparr"] .field select{
     background: rgba(0,0,0,.22);
   }
-
   [data-theme="light"] .field input, [data-theme="light"] .field select{ background: #ffffff; }
 
   .field select{
@@ -977,7 +944,6 @@ BASE_HEAD = """
   .check{
     display:flex; align-items:center; gap:10px;
     border: 1px solid var(--line);
-    border-radius: 14px;
     padding: 10px 12px;
     background: var(--panel2);
   }
@@ -990,7 +956,6 @@ BASE_HEAD = """
     justify-content: space-between;
     gap: 12px;
     border: 1px solid var(--line);
-    border-radius: 14px;
     padding: 10px 12px;
     background: var(--panel2);
     margin-bottom: 12px;
@@ -998,7 +963,6 @@ BASE_HEAD = """
   [data-theme="light"] .toggleRow{ background: #ffffff; }
 
   .switch{ position: relative; width: var(--switch-w); height: var(--switch-h); display: inline-block; flex: 0 0 auto; }
-
   .switch input{ opacity: 0; width: 0; height: 0; }
   .slider{
     position: absolute;
@@ -1007,7 +971,6 @@ BASE_HEAD = """
     background: rgba(255,255,255,.10);
     border: 1px solid var(--line2);
     transition: .18s ease;
-    border-radius: 999px;
   }
   .slider:before{
     position: absolute;
@@ -1018,28 +981,21 @@ BASE_HEAD = """
     top: 50%;
     transform: translateY(-50%);
     background: rgba(255,255,255,.85);
-    border-radius: 999px;
     transition: .18s ease;
     box-shadow: 0 4px 10px rgba(0,0,0,.25);
   }
   .switch input:checked + .slider{
-    background: linear-gradient(
-      135deg,
-      rgba(34,197,94,.60),
-      rgba(22,163,74,.35)
-    );
+    background: linear-gradient(135deg, rgba(34,197,94,.60), rgba(22,163,74,.35));
     border-color: rgba(34,197,94,.55);
   }
   body[data-theme="reaparr"] .switch input:checked + .slider{
-    background: linear-gradient(
-      135deg,
-      rgba(38,224,138,.60),
-      rgba(22,184,110,.35)
-    );
+    background: linear-gradient(135deg, rgba(38,224,138,.60), rgba(22,184,110,.35));
     border-color: rgba(38,224,138,.55);
   }
-
-  .switch input:checked + .slider:before{ transform: translate(var(--switch-travel), -50%); background: rgba(255,255,255,.92); }
+  .switch input:checked + .slider:before{
+    transform: translate(var(--switch-travel), -50%);
+    background: rgba(255,255,255,.92);
+  }
 
   .disabledSection{ opacity: .55; filter: grayscale(.12); pointer-events: none; }
 
@@ -1047,31 +1003,16 @@ BASE_HEAD = """
     display:grid;
     gap: 12px;
     grid-template-columns: 1fr;
-    justify-content: center;
   }
-
   .jobCard{
     border: 1px solid var(--line);
-    border-radius: 16px;
     background: var(--panel2);
     overflow:hidden;
-    max-width: none;
     width: 100%;
   }
-
   @media (min-width: 700px){ .jobsGrid{ grid-template-columns: repeat(2, minmax(300px, 1fr));}}
   @media (min-width: 1200px){ .jobsGrid{ grid-template-columns: repeat(3, minmax(300px, 1fr)); gap: 16px;}}
   @media (min-width: 1800px){ .jobsGrid{ grid-template-columns: repeat(4, minmax(300px, 1fr)); gap: 20px;}}
-
-  [data-theme="light"] .jobCard{ background: #ffffff; }
-
-  body[data-theme="reaparr"] .jobCard:hover,
-  body[data-theme="reaparr"] .card:hover{
-    border-color: rgba(38,224,138,.25);
-    box-shadow: 0 0 0 3px rgba(38,224,138,.10), var(--shadow);
-    transform: translateY(-1px);
-    transition: .18s ease;
-  }
 
   .jobHeader{
     padding: 12px 12px;
@@ -1123,7 +1064,6 @@ BASE_HEAD = """
   }
 
   .metaStack{ display:flex; flex-direction: column; gap: 6px; font-size: calc(11px * var(--ui)); }
-
   .metaRow{ display:flex; align-items: baseline; gap: 8px; line-height: 1.35; }
   .metaLabel{ width: 100px; color: var(--muted); flex: 0 0 auto; }
   .metaVal{ color: var(--text); flex: 1 1 auto; min-width: 0; word-break: break-word; }
@@ -1141,7 +1081,6 @@ BASE_HEAD = """
   .modal{
     width: min(720px, 100%);
     border: 1px solid var(--line);
-    border-radius: 16px;
     background: var(--panel);
     box-shadow: var(--shadow);
     overflow:hidden;
@@ -1189,11 +1128,11 @@ BASE_HEAD = """
   }
   [data-theme="light"] .modal .mf{ background: #f3f4f6; }
 
-  table{ width:100%; border-collapse: collapse; overflow:hidden; border-radius: 14px; border: 1px solid var(--line); }
+  table{ width:100%; border-collapse: collapse; overflow:hidden; border: 1px solid var(--line); }
   th, td{ padding: 10px 10px; border-bottom: 1px solid var(--line); font-size: var(--fs-1); vertical-align: top; }
   th{ text-align:left; color:#cbd5e1; background: rgba(255,255,255,.04); position: sticky; top: 0; }
   [data-theme="light"] th{ color:#111827; background: rgba(0,0,0,.03); }
-  .tablewrap{ max-height: 420px; overflow:auto; border-radius: 14px; border: 1px solid var(--line); }
+  .tablewrap{ max-height: 420px; overflow:auto; border: 1px solid var(--line); }
 
   .toastHost{
     position: fixed;
@@ -1211,7 +1150,6 @@ BASE_HEAD = """
     border: 1px solid var(--line2);
     background: var(--panel);
     box-shadow: var(--shadow);
-    border-radius: 14px;
     padding: 12px 12px;
     font-size: var(--fs-1);
     color: var(--text);
@@ -1226,6 +1164,33 @@ BASE_HEAD = """
   body[data-theme="reaparr"] .toast.err{ border-color: rgba(255,92,108,.55); }
   @keyframes toastIn { to { opacity: 1; transform: translateY(0); } }
   @keyframes toastOut { to { opacity: 0; transform: translateY(10px); } }
+
+  /* Sidebar logo */
+  .logoWrap{
+    width: 38px; height: 38px;
+    border: 1px solid var(--line2);
+    background: var(--panel2);
+    overflow:hidden;
+    display:flex; align-items:center; justify-content:center;
+    flex: 0 0 auto;
+  }
+  .logoBadge{
+    width: 38px; height: 38px;
+    background: linear-gradient(135deg, rgba(34,197,94,.92), rgba(22,163,74,.65));
+    box-shadow: 0 10px 24px rgba(34,197,94,.18);
+  }
+  body[data-theme="reaparr"] .logoBadge{
+    background: linear-gradient(135deg, rgba(38,224,138,.92), rgba(22,184,110,.65));
+    box-shadow: 0 10px 24px rgba(38,224,138,.18);
+  }
+  .logoImg{
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+    display:block;
+    background: var(--panel2);
+  }
+
 </style>
 
 <script>
@@ -1626,6 +1591,7 @@ def shell(page_title: str, active: str, body: str):
         cls = "sbItem active" if active == key else "sbItem"
         return f'<a class="{cls}" href="{href}">{safe_html(name)}</a>'
 
+    # Cycle themes: dark -> light -> reaparr -> dark
     next_theme = {"dark": "light", "light": "reaparr", "reaparr": "dark"}.get(theme, "dark")
     next_label = {"dark": "Dark", "light": "Light", "reaparr": "Reaparr"}.get(next_theme, "Dark")
 
@@ -1685,14 +1651,17 @@ def shell(page_title: str, active: str, body: str):
     <div class="layoutRadarr">
       {sidebar}
       <div class="mainArea">
-        <div class="pageTop">
-          <div class="ptIn">
-            <h2>{safe_html(page_name)}</h2>
-            <div class="muted" style="font-size:var(--fs-0);">Layout: <b>Radarr</b></div>
+        <div class="mainIn">
+          <div class="pageTop">
+            <div class="ptIn">
+              <h2>{safe_html(page_name)}</h2>
+              <div class="muted" style="font-size:var(--fs-0);">UI Scale: <b>{int(float(cfg.get('UI_SCALE',1.0))*100)}%</b></div>
+            </div>
+            <div class="ptBd">MediaReaparr • sidebar layout (default)</div>
           </div>
-          <div class="ptBd">Same MediaReaparr colour scheme • sidebar navigation</div>
+
+          {body}
         </div>
-        {body}
       </div>
     </div>
   </div>
@@ -2004,7 +1973,6 @@ def settings():
                   <div class="muted">Global settings</div>
                 </div>
                 <div class="bd">
-
                   <div class="form">
                     <div class="field">
                       <label>HTTP Timeout Seconds</label>
@@ -2067,10 +2035,7 @@ def save_settings():
         cfg["UI_SCALE"] = float(request.form.get("UI_SCALE") or cfg.get("UI_SCALE", 1.0))
     except Exception:
         cfg["UI_SCALE"] = float(cfg.get("UI_SCALE", 1.0))
-    if cfg["UI_SCALE"] < 0.75:
-        cfg["UI_SCALE"] = 0.75
-    if cfg["UI_SCALE"] > 1.5:
-        cfg["UI_SCALE"] = 1.5
+    cfg["UI_SCALE"] = max(0.75, min(1.5, cfg["UI_SCALE"]))
 
     if cfg["UI_THEME"] not in ("dark", "light", "reaparr"):
         cfg["UI_THEME"] = "dark"
@@ -2149,6 +2114,7 @@ def jobs_page():
         default_app = "sonarr"
 
     app_disabled_attr = "disabled" if len(available_apps) == 1 else ""
+
     hour_opts = "".join([f'<option value="{h}">{h:02d}:00</option>' for h in range(0, 24)])
 
     tags_js = f"""
