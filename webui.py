@@ -538,8 +538,8 @@ BASE_HEAD = """
     --ui: 1;
 
     /* Fixed header + sidebar sizing */
-    --top-h: 88px;
-    --sidebar-w: 260px;
+    --top-h: 60px;
+    --sidebar-w: 210px;
 
     --fs-0: calc(12px * var(--ui));
     --fs-1: calc(13px * var(--ui));
@@ -597,7 +597,7 @@ BASE_HEAD = """
 
   /* Collapsed sidebar width */
   body.sbCollapsed{
-    --sidebar-w: 72px;
+    --sidebar-w: 0px;
   }
 
   *, *::before, *::after { box-sizing: border-box; }
@@ -722,16 +722,6 @@ BASE_HEAD = """
     flex-direction: column;
   }
 
-  .sidebar .sbHd{
-    padding: 14px 14px;
-    border-bottom: 1px solid var(--line);
-    background: var(--panel2);
-
-    display:flex;
-    gap: 12px;
-    align-items:center;
-  }
-
   .sbNav{
     padding: 10px;
     display:flex;
@@ -789,7 +779,7 @@ BASE_HEAD = """
 
     overflow: auto;
     min-width: 0;
-    padding: 14px 16px;
+    padding: 0;
     z-index: 2; /* above body gradient layer */
   }
 
@@ -1690,15 +1680,6 @@ def shell(page_title: str, active: str, body: str):
 
     sidebar = f"""
       <div class="sidebar">
-        <div class="sbHd">
-          {logo_html}
-          <div style="min-width:0;">
-            <div style="font-weight:900; letter-spacing:.2px;">mediareaparr</div>
-            <div class="muted" style="font-size:var(--fs-0); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">
-              Radarr/Sonarr cleanup
-            </div>
-          </div>
-        </div>
         <div class="sbNav">
           {sb_item("Dashboard", "/dashboard", "dash")}
           {sb_item("Jobs", "/jobs", "jobs")}
@@ -1721,10 +1702,6 @@ def shell(page_title: str, active: str, body: str):
             <button class="btn" type="button" onclick="toggleSidebar()" title="Toggle sidebar">☰</button>
             <div class="muted" style="font-size:var(--fs-0);">Theme: <b>{safe_html(theme)}</b></div>
           </div>
-        </div>
-        <div class="ptBd">
-          <div>MediaReaparr colour scheme • sidebar navigation</div>
-          <div class="muted" style="font-size:var(--fs-0);">UI Scale: <b>{safe_html(str(cfg.get("UI_SCALE", 1.0)))}</b></div>
         </div>
       </div>
     """
