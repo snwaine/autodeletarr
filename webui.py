@@ -10,34 +10,20 @@ from typing import Optional, Dict, Any, List
 import requests
 from flask import (
     Flask, request, redirect, render_template_string,
-    flash, get_flashed_messages, send_file, send_from_directory
+    flash, get_flashed_messages, send_from_directory
 )
 
-# --------------------------
-# Paths
-# --------------------------
 CONFIG_DIR = Path(os.environ.get("CONFIG_DIR", "/config"))
 CONFIG_PATH = CONFIG_DIR / "config.json"
 STATE_PATH = CONFIG_DIR / "state.json"
 
-LOGO_CANDIDATES = [
-    CONFIG_DIR / "logo.png",
-    CONFIG_DIR / "logo.jpg",
-    CONFIG_DIR / "logo.jpeg",
-    CONFIG_DIR / "logo.svg",
-    CONFIG_DIR / "logo" / "logo.png",
-    CONFIG_DIR / "logo" / "logo.jpg",
-    CONFIG_DIR / "logo" / "logo.jpeg",
-    CONFIG_DIR / "logo" / "logo.svg",
-]
+APP_DIR = Path(__file__).resolve().parent
+LOGO_DIR = APP_DIR / "Logo"   # expects /app/Logo/logo-full.png in container (COPY . /app)
 
 app = Flask(__name__)
 app.secret_key = os.environ.get("FLASK_SECRET_KEY", "mediareaparr-secret")
 
 
-# --------------------------
-# Helpers
-# --------------------------
 def env_default(name: str, default: str = "") -> str:
     return os.environ.get(name, default)
 
@@ -117,9 +103,6 @@ def parse_iso_date(s: str):
         return None
 
 
-# --------------------------
-# Sonarr delete mode labels (single source of truth)
-# --------------------------
 SONARR_DELETE_MODES = [
     "episodes_only",
     "episodes_then_series_if_empty",
@@ -143,7 +126,7 @@ def job_defaults() -> Dict[str, Any]:
         "id": make_job_id(),
         "name": "New Job",
         "enabled": True,
-        "APP": "radarr",  # radarr | sonarr
+        "APP": "radarr",
         "TAG_LABEL": "",
         "DAYS_OLD": 30,
         "SCHED_DAY": "daily",
@@ -263,9 +246,6 @@ def run_now_button_html(job: Dict[str, Any]) -> str:
     """
 
 
-# --------------------------
-# Config / State
-# --------------------------
 def load_config() -> Dict[str, Any]:
     cfg = {
         "RADARR_URL": env_default("RADARR_URL", "http://radarr:7878").rstrip("/"),
@@ -307,10 +287,7 @@ def load_config() -> Dict[str, Any]:
         cfg["UI_SCALE"] = float(cfg.get("UI_SCALE", 1.0))
     except Exception:
         cfg["UI_SCALE"] = 1.0
-    if cfg["UI_SCALE"] < 0.75:
-        cfg["UI_SCALE"] = 0.75
-    if cfg["UI_SCALE"] > 1.5:
-        cfg["UI_SCALE"] = 1.5
+    cfg["UI_SCALE"] = max(0.75, min(1.5, cfg["UI_SCALE"]))
 
     jobs = cfg.get("JOBS") or []
     if not isinstance(jobs, list):
@@ -352,30 +329,6 @@ def is_app_ready(cfg: Dict[str, Any], app_key: str) -> bool:
     return False
 
 
-# --------------------------
-# Logo helpers
-# --------------------------
-def find_logo_path() -> Optional[Path]:
-    for p in LOGO_CANDIDATES:
-        if p.exists() and p.is_file():
-            return p
-    return None
-
-
-def logo_mime(p: Path) -> str:
-    ext = p.suffix.lower()
-    if ext == ".png":
-        return "image/png"
-    if ext in (".jpg", ".jpeg"):
-        return "image/jpeg"
-    if ext == ".svg":
-        return "image/svg+xml"
-    return "application/octet-stream"
-
-
-# --------------------------
-# API helpers
-# --------------------------
 def api_get(base_url: str, api_key: str, timeout_s: int, path: str):
     url = (base_url or "").rstrip("/") + path
     r = requests.get(url, headers={"X-Api-Key": api_key or ""}, timeout=timeout_s)
@@ -395,20 +348,10 @@ def get_tag_labels(cfg: Dict[str, Any], app_key: str) -> List[str]:
     app_key = (app_key or "").lower()
     if not is_app_ready(cfg, app_key):
         return []
-
-    if app_key == "radarr":
-        tags = radarr_get(cfg, "/api/v3/tag")
-    elif app_key == "sonarr":
-        tags = sonarr_get(cfg, "/api/v3/tag")
-    else:
-        return []
-
+    tags = radarr_get(cfg, "/api/v3/tag") if app_key == "radarr" else sonarr_get(cfg, "/api/v3/tag")
     return sorted({t.get("label") for t in (tags or []) if t.get("label")}, key=lambda x: str(x).lower())
 
 
-# --------------------------
-# Preview helpers
-# --------------------------
 def preview_candidates_radarr(cfg: Dict[str, Any], job: Dict[str, Any]):
     if not cfg.get("RADARR_ENABLED", True):
         return {"error": "Radarr is disabled in Settings.", "candidates": [], "cutoff": ""}
@@ -497,9 +440,6 @@ def preview_candidates_sonarr(cfg: Dict[str, Any], job: Dict[str, Any]):
     return {"error": None, "candidates": candidates, "tag_id": tag_id, "cutoff": cutoff.isoformat()}
 
 
-# --------------------------
-# Toasts
-# --------------------------
 def render_toasts() -> str:
     msgs = get_flashed_messages(with_categories=True)
     if not msgs:
@@ -511,9 +451,6 @@ def render_toasts() -> str:
     return f'<div id="toastHost" class="toastHost">{"".join(items)}</div>'
 
 
-# --------------------------
-# UI (base styles + scripts)
-# --------------------------
 BASE_HEAD = """
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -534,16 +471,12 @@ BASE_HEAD = """
     --bad:#ef4444;
     --shadow: 0 12px 28px rgba(0,0,0,.28);
 
-    /* UI Scale */
     --ui: 1;
 
-    /* Fixed header + sidebar sizing */
     --top-h: 60px;
     --sidebar-w: 210px;
 
-    --fs-0: calc(12px * var(--ui));
     --fs-1: calc(13px * var(--ui));
-    --fs-2: calc(14px * var(--ui));
     --fs-3: calc(16px * var(--ui));
 
     --btn-fs: calc(10px * var(--ui));
@@ -575,7 +508,6 @@ BASE_HEAD = """
     --shadow: 0 12px 30px rgba(0,0,0,.08);
   }
 
-  /* Reaparr (Radarr-style dark + MediaReaparr green) */
   [data-theme="reaparr"]{
     --bg:#070a0d;
     --panel:#0f1620;
@@ -595,13 +527,9 @@ BASE_HEAD = """
     --shadow: 0 12px 28px rgba(0,0,0,.55);
   }
 
-  /* Collapsed sidebar width */
-  body.sbCollapsed{
-    --sidebar-w: 0px;
-  }
+  body.sbCollapsed{ --sidebar-w: 0px; }
 
   *, *::before, *::after { box-sizing: border-box; }
-
   html, body{ height: 100%; }
 
   body{
@@ -618,7 +546,7 @@ BASE_HEAD = """
       var(--bg);
     background-attachment: fixed;
 
-    overflow: hidden; /* IMPORTANT: only main content scrolls */
+    overflow: hidden;
   }
 
   body[data-theme="reaparr"]{
@@ -634,7 +562,6 @@ BASE_HEAD = """
   body[data-theme="light"] { color-scheme: light; }
   body[data-theme="reaparr"] { color-scheme: dark; }
 
-  /* Soft bottom “landing” gradient */
   body:after{
     content:"";
     position: fixed;
@@ -644,32 +571,15 @@ BASE_HEAD = """
     background: linear-gradient(to bottom, rgba(0,0,0,0), rgba(0,0,0,.35));
     z-index: 1;
   }
-  body[data-theme="light"]:after{
-    background: linear-gradient(to bottom, rgba(255,255,255,0), rgba(0,0,0,.08));
-  }
-  body[data-theme="reaparr"]:after{
-    background: linear-gradient(to bottom, rgba(7,10,13,0), rgba(7,10,13,.92));
-  }
+  body[data-theme="light"]:after{ background: linear-gradient(to bottom, rgba(255,255,255,0), rgba(0,0,0,.08)); }
+  body[data-theme="reaparr"]:after{ background: linear-gradient(to bottom, rgba(7,10,13,0), rgba(7,10,13,.92)); }
 
   a{ color: var(--text); text-decoration: none; }
   a:hover{ text-decoration: underline; }
 
-  /* Wrap fills screen */
-  .wrap{
-    width: 100vw;
-    height: 100vh;
-    overflow: hidden;
-    position: relative;
-  }
+  .wrap{ width: 100vw; height: 100vh; overflow: hidden; position: relative; }
+  .layoutRadarr{ position: relative; width: 100vw; height: 100vh; }
 
-  /* Layout container */
-  .layoutRadarr{
-    position: relative;
-    width: 100vw;
-    height: 100vh;
-  }
-
-  /* Fixed top header (full width, never scrolls) */
   .pageTop{
     position: fixed;
     top: 0; left: 0; right: 0;
@@ -688,22 +598,6 @@ BASE_HEAD = """
     padding: 0 16px;
     background: var(--panel2);
     border-bottom: 1px solid var(--line);
-  }
-
-  .pageTop .ptIn h2{
-    margin:0;
-    font-size: var(--fs-3);
-    letter-spacing:.2px;
-  }
-
-  .pageTop .ptBd{
-    padding: 8px 16px;
-    color: var(--muted);
-    font-size: var(--fs-1);
-    display:flex;
-    align-items:center;
-    justify-content: space-between;
-    gap: 12px;
   }
 
   .ptRightActions{
@@ -730,8 +624,7 @@ BASE_HEAD = """
     object-fit: contain;
     display: block;
   }
-  
-  /* Fixed sidebar (never scrolls) aligned under pageTop */
+
   .sidebar{
     position: fixed;
     top: var(--top-h);
@@ -743,7 +636,6 @@ BASE_HEAD = """
     box-shadow: var(--shadow);
     overflow: hidden;
     z-index: 7000;
-
     display:flex;
     flex-direction: column;
   }
@@ -754,7 +646,7 @@ BASE_HEAD = """
     flex-direction: column;
     gap: 8px;
     flex: 1 1 auto;
-    overflow: hidden; /* no sidebar scroll */
+    overflow: hidden;
     min-height: 0;
   }
 
@@ -763,7 +655,6 @@ BASE_HEAD = """
     align-items:center;
     justify-content: space-between;
     gap: 10px;
-
     padding: 10px 12px;
     border: 1px solid var(--line);
     background: var(--panel2);
@@ -789,39 +680,23 @@ BASE_HEAD = """
   }
 
   .sbNav form{ margin: 0; }
-  button.sbItem{
-    width: 100%;
-    text-align: left;
-    color: var(--text);
-  }
+  button.sbItem{ width: 100%; text-align: left; color: var(--text); }
 
-  /* Main content: ONLY this scrolls */
+  body.sbCollapsed .sbItem{ justify-content: center; }
+  body.sbCollapsed .sbItem span.sbText{ display:none; }
+
   .mainArea{
     position: fixed;
     top: var(--top-h);
     left: var(--sidebar-w);
     right: 0;
     bottom: 0;
-
     overflow: auto;
     min-width: 0;
     padding: 0;
-    z-index: 2; /* above body gradient layer */
+    z-index: 2;
   }
 
-  /* Collapsed: hide sidebar text and center items */
-  body.sbCollapsed .sidebar .sbHd div[style*="min-width:0"]{ display:none; }
-  body.sbCollapsed .sbItem{ justify-content: center; }
-  body.sbCollapsed .sbItem span.sbText{ display:none; }
-
-  body.sbCollapsed .sbItem.active{
-    box-shadow: inset 0 0 0 2px rgba(34,197,94,.22), 0 0 0 3px rgba(34,197,94,.10);
-  }
-  body[data-theme="reaparr"].sbCollapsed .sbItem.active{
-    box-shadow: inset 0 0 0 2px rgba(38,224,138,.22), 0 0 0 3px rgba(38,224,138,.10);
-  }
-
-  /* Auto shrink on smaller screens */
   @media (max-width: 900px){
     :root{ --sidebar-w: 220px; }
     .mainArea{ padding: 12px; }
@@ -831,12 +706,10 @@ BASE_HEAD = """
   }
   @media (max-width: 620px){
     body:not(.sbPinnedOpen){ --sidebar-w: 72px; }
-    body:not(.sbPinnedOpen) .sidebar .sbHd div[style*="min-width:0"]{ display:none; }
     body:not(.sbPinnedOpen) .sbItem{ justify-content:center; }
     body:not(.sbPinnedOpen) .sbItem span.sbText{ display:none; }
   }
 
-  /* Main content grid/cards */
   .grid{ display:grid; grid-template-columns: repeat(12, 1fr); gap: 14px; }
   .card{
     grid-column: span 12;
@@ -857,7 +730,6 @@ BASE_HEAD = """
   .card .hd h2{ margin:0; font-size: 14px; letter-spacing:.2px; }
   .card .bd{ padding: 14px 16px; background: var(--panel); overflow: auto; }
 
-  /* Subtle Reaparr surfaces */
   body[data-theme="reaparr"] .card,
   body[data-theme="reaparr"] .jobCard,
   body[data-theme="reaparr"] .modal{
@@ -872,23 +744,19 @@ BASE_HEAD = """
   }
 
   .muted{ color: var(--muted); }
-
   .btnrow{ display:flex; gap:10px; flex-wrap: wrap; align-items:center; }
 
   .btn{
     border: 1px solid var(--line2);
     background: var(--panel2);
     color: var(--text);
-
     padding: var(--btn-py) var(--btn-px);
     font-weight: 600;
     font-size: var(--btn-fs);
     gap: var(--btn-gap);
-
     cursor:pointer;
     display: inline-flex;
     align-items: center;
-
     transition: box-shadow .18s ease, border-color .18s ease, transform .18s ease, filter .18s ease;
   }
   a.btn:hover{ text-decoration: none; }
@@ -907,15 +775,13 @@ BASE_HEAD = """
     transform: translateY(0);
     box-shadow: 0 0 0 2px rgba(34,197,94,.08), 0 6px 14px rgba(0,0,0,.18);
   }
-  body[data-theme="reaparr"] .btn:active{
-    box-shadow: 0 0 0 2px rgba(38,224,138,.08), 0 6px 14px rgba(0,0,0,.40);
-  }
 
   .btn:disabled{
     opacity: .45;
     cursor: not-allowed;
     filter: grayscale(0.35);
   }
+
   .btn.primary{
     border-color: rgba(34,197,94,.45);
     background: linear-gradient(135deg, rgba(34,197,94,.26), rgba(34,197,94,.10));
@@ -942,7 +808,6 @@ BASE_HEAD = """
     background: linear-gradient(135deg, rgba(255,92,108,.20), rgba(255,92,108,.08));
   }
 
-  /* Forms */
   .form{ display:grid; grid-template-columns: minmax(0, 1fr); gap: 12px; }
   @media(min-width: 900px){ .form{ grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); } }
 
@@ -976,9 +841,7 @@ BASE_HEAD = """
   body[data-theme="reaparr"] .field input[type=password],
   body[data-theme="reaparr"] .field input[type=number],
   body[data-theme="reaparr"] .field select,
-  body[data-theme="reaparr"] .field textarea{
-    background: rgba(0,0,0,.22);
-  }
+  body[data-theme="reaparr"] .field textarea{ background: rgba(0,0,0,.22); }
 
   [data-theme="light"] .field input,
   [data-theme="light"] .field select,
@@ -1037,7 +900,6 @@ BASE_HEAD = """
   }
   [data-theme="light"] .toggleRow{ background: #ffffff; }
 
-  /* Switch */
   .switch{ position: relative; width: var(--switch-w); height: var(--switch-h); display: inline-block; flex: 0 0 auto; }
   .switch input{ opacity: 0; width: 0; height: 0; }
   .slider{
@@ -1075,7 +937,6 @@ BASE_HEAD = """
 
   .disabledSection{ opacity: .55; filter: grayscale(.12); pointer-events: none; }
 
-  /* Jobs */
   .jobsGrid{
     display:grid;
     gap: 12px;
@@ -1094,14 +955,6 @@ BASE_HEAD = """
   @media (min-width: 1800px){ .jobsGrid{ grid-template-columns: repeat(4, minmax(300px, 1fr)); gap: 20px; } }
 
   [data-theme="light"] .jobCard{ background: #ffffff; }
-
-  body[data-theme="reaparr"] .jobCard:hover,
-  body[data-theme="reaparr"] .card:hover{
-    border-color: rgba(38,224,138,.25);
-    box-shadow: 0 0 0 3px rgba(38,224,138,.10), var(--shadow);
-    transform: translateY(-1px);
-    transition: .18s ease;
-  }
 
   .jobHeader{
     padding: 12px 12px;
@@ -1157,7 +1010,6 @@ BASE_HEAD = """
   .metaLabel{ width: 100px; color: var(--muted); flex: 0 0 auto; }
   .metaVal{ color: var(--text); flex: 1 1 auto; min-width: 0; word-break: break-word; }
 
-  /* Modal */
   .modalBack{
     position: fixed; inset: 0;
     background: rgba(0,0,0,.68);
@@ -1218,14 +1070,12 @@ BASE_HEAD = """
   }
   [data-theme="light"] .modal .mf{ background: #f3f4f6; }
 
-  /* Tables */
   table{ width:100%; border-collapse: collapse; overflow:hidden; border: 1px solid var(--line); }
   th, td{ padding: 10px 10px; border-bottom: 1px solid var(--line); font-size: var(--fs-1); vertical-align: top; }
   th{ text-align:left; color:#cbd5e1; background: rgba(255,255,255,.04); position: sticky; top: 0; }
   [data-theme="light"] th{ color:#111827; background: rgba(0,0,0,.03); }
   .tablewrap{ max-height: 420px; overflow:auto; border: 1px solid var(--line); }
 
-  /* Toasts */
   .toastHost{
     position: fixed;
     right: 16px;
@@ -1257,7 +1107,6 @@ BASE_HEAD = """
   @keyframes toastIn { to { opacity: 1; transform: translateY(0); } }
   @keyframes toastOut { to { opacity: 0; transform: translateY(10px); } }
 
-  /* ---- Flat cards only ---- */
   .card, .jobCard{ border-radius: 0 !important; }
   .card .hd, .card .bd{ border-radius: 0 !important; }
 </style>
@@ -1278,9 +1127,6 @@ BASE_HEAD = """
       .replaceAll("'","&#39;");
   }
 
-  // -------------------
-  // Sidebar collapse
-  // -------------------
   function setSidebarCollapsed(collapsed){
     if (collapsed) document.body.classList.add("sbCollapsed");
     else document.body.classList.remove("sbCollapsed");
@@ -1292,9 +1138,6 @@ BASE_HEAD = """
     setSidebarCollapsed(!collapsed);
   }
 
-  // -------------------
-  // Job modal dirty tracking
-  // -------------------
   window.__JOB_MODAL_INITIAL = "";
   window.__JOB_MODAL_DIRTY = false;
 
@@ -1591,7 +1434,6 @@ BASE_HEAD = """
   });
 
   document.addEventListener("DOMContentLoaded", () => {
-    // restore sidebar collapsed preference
     try {
       const v = localStorage.getItem("sbCollapsed");
       if (v === "1") document.body.classList.add("sbCollapsed");
@@ -1652,7 +1494,6 @@ BASE_HEAD = """
       updateSonarrModeVisibility(appKey);
     }
 
-    // UI scale live preview
     const uiScale = $("uiScale");
     const uiScaleVal = $("uiScaleVal");
     function applyUiScale(v){
@@ -1680,7 +1521,6 @@ def shell(page_title: str, active: str, body: str):
         cls = "sbItem active" if active == key else "sbItem"
         return f'<a class="{cls}" href="{href}"><span class="sbText">{safe_html(name)}</span></a>'
 
-    # Cycle themes: dark -> light -> reaparr -> dark
     next_theme = {"dark": "light", "light": "reaparr", "reaparr": "dark"}.get(theme, "dark")
     next_label = {"dark": "Dark", "light": "Light", "reaparr": "Reaparr"}.get(next_theme, "Dark")
 
@@ -1689,20 +1529,6 @@ def shell(page_title: str, active: str, body: str):
         <button class="sbItem" type="submit"><span class="sbText">Theme: {safe_html(next_label)}</span></button>
       </form>
     """
-
-    has_logo = find_logo_path() is not None
-    logo_html = (
-        '<div class="logoWrap"><img class="logoImg" src="/logo" alt="logo" style="width:38px;height:38px;object-fit:contain;display:block;background:var(--panel2);"></div>'
-        if has_logo
-        else '<div style="width:38px;height:38px;border:1px solid var(--line2);background:linear-gradient(135deg, rgba(34,197,94,.92), rgba(22,163,74,.65));"></div>'
-    )
-
-    page_name = {
-        "dash": "Dashboard",
-        "jobs": "Jobs",
-        "settings": "Settings",
-        "status": "Status",
-    }.get(active, "mediareaparr")
 
     sidebar = f"""
       <div class="sidebar">
@@ -1717,16 +1543,13 @@ def shell(page_title: str, active: str, body: str):
       </div>
     """
 
-    toasts = render_toasts()
-
-    # Top bar: full width + sidebar toggle button
-    topbar = f"""
+    topbar = """
       <div class="pageTop">
         <div class="ptIn">
           <div class="pageTopLogo">
-            <img src="/logo/logo-full.png" alt="MediaReaparr">
+            <img src="/Logo/logo-full.png" alt="MediaReaparr">
           </div>
-          
+
           <div class="ptSpacer"></div>
 
           <div class="ptRightActions">
@@ -1753,33 +1576,27 @@ def shell(page_title: str, active: str, body: str):
       </div>
     </div>
   </div>
-  {toasts}
+  {render_toasts()}
 </body>
 </html>
 """
 
 
-# --------------------------
-# Routes
-# --------------------------
 @app.get("/")
 def home():
     return redirect("/dashboard")
 
-APP_LOGO_DIR = Path(__file__).resolve().parent / "logo"
+
+@app.get("/Logo/<path:filename>")
+def serve_logo_assets(filename):
+    if not LOGO_DIR.exists():
+        return ("", 404)
+    return send_from_directory(str(LOGO_DIR), filename)
+
 
 @app.get("/logo/<path:filename>")
-def serve_logo_assets(filename):
-    if not APP_LOGO_DIR.exists():
-        return ("", 404)
-    return send_from_directory(str(APP_LOGO_DIR), filename)
-
-@app.get("/logo")
-def logo():
-    p = find_logo_path()
-    if not p:
-        return ("", 404)
-    return send_file(p, mimetype=logo_mime(p), conditional=True)
+def serve_logo_assets_alias(filename):
+    return serve_logo_assets(filename)
 
 
 @app.post("/toggle-theme")
@@ -2130,10 +1947,7 @@ def save_settings():
         cfg["UI_SCALE"] = float(request.form.get("UI_SCALE") or cfg.get("UI_SCALE", 1.0))
     except Exception:
         cfg["UI_SCALE"] = float(cfg.get("UI_SCALE", 1.0))
-    if cfg["UI_SCALE"] < 0.75:
-        cfg["UI_SCALE"] = 0.75
-    if cfg["UI_SCALE"] > 1.5:
-        cfg["UI_SCALE"] = 1.5
+    cfg["UI_SCALE"] = max(0.75, min(1.5, cfg["UI_SCALE"]))
 
     if cfg["UI_THEME"] not in ("dark", "light", "reaparr"):
         cfg["UI_THEME"] = "dark"
@@ -2212,7 +2026,6 @@ def jobs_page():
         default_app = "sonarr"
 
     app_disabled_attr = "disabled" if len(available_apps) == 1 else ""
-
     hour_opts = "".join([f'<option value="{h}">{h:02d}:00</option>' for h in range(0, 24)])
 
     tags_js = f"""
@@ -2657,9 +2470,6 @@ def apply_cron():
     return redirect(request.referrer or "/jobs")
 
 
-# --------------------------
-# Preview
-# --------------------------
 @app.get("/preview")
 def preview():
     cfg = load_config()
@@ -2670,10 +2480,7 @@ def preview():
         job = normalize_job((cfg.get("JOBS") or [job_defaults()])[0])
 
     try:
-        if job.get("APP") == "sonarr":
-            result = preview_candidates_sonarr(cfg, job)
-        else:
-            result = preview_candidates_radarr(cfg, job)
+        result = preview_candidates_sonarr(cfg, job) if job.get("APP") == "sonarr" else preview_candidates_radarr(cfg, job)
 
         error = result.get("error")
         candidates = result.get("candidates", [])
