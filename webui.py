@@ -18,7 +18,7 @@ CONFIG_PATH = CONFIG_DIR / "config.json"
 STATE_PATH = CONFIG_DIR / "state.json"
 
 APP_DIR = Path(__file__).resolve().parent
-LOGO_DIR = APP_DIR / "Logo"   # expects /app/Logo/logo-full.png in container (COPY . /app)
+APP_LOGO_DIR = APP_DIR / "logo"
 
 app = Flask(__name__)
 app.secret_key = os.environ.get("FLASK_SECRET_KEY", "mediareaparr-secret")
@@ -1547,7 +1547,7 @@ def shell(page_title: str, active: str, body: str):
       <div class="pageTop">
         <div class="ptIn">
           <div class="pageTopLogo">
-            <img src="/Logo/logo-full.png" alt="MediaReaparr">
+            <img src="/logo/logo-full.png" alt="MediaReaparr">
           </div>
 
           <div class="ptSpacer"></div>
@@ -1581,23 +1581,17 @@ def shell(page_title: str, active: str, body: str):
 </html>
 """
 
-
 @app.get("/")
 def home():
     return redirect("/dashboard")
 
-
-@app.get("/Logo/<path:filename>")
-def serve_logo_assets(filename):
-    if not LOGO_DIR.exists():
-        return ("", 404)
-    return send_from_directory(str(LOGO_DIR), filename)
-
-
 @app.get("/logo/<path:filename>")
-def serve_logo_assets_alias(filename):
-    return serve_logo_assets(filename)
-
+def serve_logo_assets(filename):
+    if filename != "logo-full.png":
+        return ("", 404)
+    if not APP_LOGO_DIR.exists():
+        return ("", 404)
+    return send_from_directory(str(APP_LOGO_DIR), "logo-full.png")
 
 @app.post("/toggle-theme")
 def toggle_theme():
@@ -1608,7 +1602,6 @@ def toggle_theme():
     save_config(cfg)
     flash(f"Theme set to {cfg['UI_THEME']} ✔", "success")
     return redirect(request.referrer or "/dashboard")
-
 
 @app.post("/reset-radarr")
 def reset_radarr():
