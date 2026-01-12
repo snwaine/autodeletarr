@@ -10,7 +10,7 @@ from typing import Optional, Dict, Any, List
 import requests
 from flask import (
     Flask, request, redirect, render_template_string,
-    flash, get_flashed_messages, send_file
+    flash, get_flashed_messages, send_file, send_from_directory
 )
 
 # --------------------------
@@ -1766,6 +1766,13 @@ def shell(page_title: str, active: str, body: str):
 def home():
     return redirect("/dashboard")
 
+APP_LOGO_DIR = Path(__file__).resolve().parent / "logo"
+
+@app.get("/logo/<path:filename>")
+def serve_logo_assets(filename):
+    if not APP_LOGO_DIR.exists():
+        return ("", 404)
+    return send_from_directory(str(APP_LOGO_DIR), filename)
 
 @app.get("/logo")
 def logo():
