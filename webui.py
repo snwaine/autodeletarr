@@ -681,13 +681,13 @@ BASE_HEAD = """
   }
 
   .pageTop .ptIn{
-    padding: 14px 16px;
+    height: var(--top-h);
+    display: grid;
+    grid-template-columns: var(--sidebar-w) 1fr auto;
+    align-items: center;
+    padding: 0 16px;
     background: var(--panel2);
     border-bottom: 1px solid var(--line);
-    display:flex;
-    align-items:center;
-    justify-content: flex-end;
-    gap: 12px;
   }
 
   .pageTop .ptIn h2{
@@ -695,7 +695,7 @@ BASE_HEAD = """
     font-size: var(--fs-3);
     letter-spacing:.2px;
   }
-  
+
   .pageTop .ptBd{
     padding: 8px 16px;
     color: var(--muted);
@@ -709,18 +709,17 @@ BASE_HEAD = """
   .ptRightActions{
     display: flex;
     align-items: center;
-    justify-content: flex-end;
     gap: 14px;
-    width: 100%;
+    justify-self: end;
   }
 
   .pageTopLogo{
-    width: 210px;
+    width: var(--sidebar-w);
     height: 40px;
     display: flex;
     align-items: center;
-    justify-content: flex-end;
-    pointer-events: none; /* logo is decorative */
+    justify-content: flex-start;
+    pointer-events: none;
   }
 
   .pageTopLogo img{
@@ -1724,11 +1723,14 @@ def shell(page_title: str, active: str, body: str):
     topbar = f"""
       <div class="pageTop">
         <div class="ptIn">
+          <div class="pageTopLogo">
+            <img src="/logo/logo-full.png" alt="MediaReaparr">
+          </div>
+          
+          <div class="ptSpacer"></div>
+
           <div class="ptRightActions">
             <button class="btn" type="button" onclick="toggleSidebar()" title="Toggle sidebar">☰</button>
-              <div class="pageTopLogo">
-              <img src="/Logo/logo-full.png" alt="MediaReaparr">
-            </div>
           </div>
         </div>
       </div>
