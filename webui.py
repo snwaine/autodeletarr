@@ -59,7 +59,6 @@ def now_iso() -> str:
 
 
 def safe_html(s: Any) -> str:
-    # Safe for both text and attributes (escapes quotes)
     return html_escape(str(s or ""), quote=True)
 
 
@@ -162,8 +161,6 @@ def normalize_job(j: Dict[str, Any]) -> Dict[str, Any]:
 
     d["id"] = str(d.get("id") or make_job_id())
     d["name"] = str(d.get("name") or "Job").strip()[:60] or "Job"
-
-    # IMPORTANT: normalize enabled + booleans strictly (avoid "0" truthiness bugs)
     d["enabled"] = bool(d.get("enabled", True))
 
     d["APP"] = str(d.get("APP") or "radarr").lower()
@@ -310,7 +307,10 @@ def load_config() -> Dict[str, Any]:
         cfg["UI_SCALE"] = float(cfg.get("UI_SCALE", 1.0))
     except Exception:
         cfg["UI_SCALE"] = 1.0
-    cfg["UI_SCALE"] = max(0.75, min(1.5, cfg["UI_SCALE"]))
+    if cfg["UI_SCALE"] < 0.75:
+        cfg["UI_SCALE"] = 0.75
+    if cfg["UI_SCALE"] > 1.5:
+        cfg["UI_SCALE"] = 1.5
 
     jobs = cfg.get("JOBS") or []
     if not isinstance(jobs, list):
@@ -534,12 +534,12 @@ BASE_HEAD = """
     --bad:#ef4444;
     --shadow: 0 12px 28px rgba(0,0,0,.28);
 
-    /* Layout sizing */
-    --top-h: 74px;
-    --sidebar-w: 260px;
-
     /* UI Scale */
     --ui: 1;
+
+    /* Fixed header + sidebar sizing */
+    --top-h: 88px;
+    --sidebar-w: 260px;
 
     --fs-0: calc(12px * var(--ui));
     --fs-1: calc(13px * var(--ui));
@@ -595,6 +595,11 @@ BASE_HEAD = """
     --shadow: 0 12px 28px rgba(0,0,0,.55);
   }
 
+  /* Collapsed sidebar width */
+  body.sbCollapsed{
+    --sidebar-w: 72px;
+  }
+
   *, *::before, *::after { box-sizing: border-box; }
 
   html, body{ height: 100%; }
@@ -613,8 +618,7 @@ BASE_HEAD = """
       var(--bg);
     background-attachment: fixed;
 
-    /* IMPORTANT: prevent body scroll — mainArea will scroll */
-    overflow: hidden;
+    overflow: hidden; /* IMPORTANT: only main content scrolls */
   }
 
   body[data-theme="reaparr"]{
@@ -650,76 +654,72 @@ BASE_HEAD = """
   a{ color: var(--text); text-decoration: none; }
   a:hover{ text-decoration: underline; }
 
-  /* ---- Full-width fixed top bar ---- */
+  /* Wrap fills screen */
+  .wrap{
+    width: 100vw;
+    height: 100vh;
+    overflow: hidden;
+    position: relative;
+  }
+
+  /* Layout container */
+  .layoutRadarr{
+    position: relative;
+    width: 100vw;
+    height: 100vh;
+  }
+
+  /* Fixed top header (full width, never scrolls) */
   .pageTop{
     position: fixed;
     top: 0; left: 0; right: 0;
     height: var(--top-h);
-    z-index: 8000;
     border-bottom: 1px solid var(--line);
     background: var(--panel);
     box-shadow: var(--shadow);
+    z-index: 8000;
+    overflow: hidden;
+  }
 
+  .pageTop .ptIn{
+    padding: 12px 16px;
+    background: var(--panel2);
+    border-bottom: 1px solid var(--line);
     display:flex;
     align-items:center;
     justify-content: space-between;
-    padding: 0 16px;
+    gap: 12px;
   }
-  .pageTop .ptLeft{
-    display:flex;
-    flex-direction: column;
-    gap: 2px;
-    min-width: 0;
-  }
-  .pageTop .ptTitle{
+  .pageTop .ptIn h2{
+    margin:0;
     font-size: var(--fs-3);
-    font-weight: 900;
-    letter-spacing: .2px;
-    line-height: 1.15;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
+    letter-spacing:.2px;
   }
-  .pageTop .ptSub{
-    font-size: var(--fs-0);
+  .pageTop .ptBd{
+    padding: 8px 16px;
     color: var(--muted);
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-  .pageTop .ptRight{
-    font-size: var(--fs-0);
-    color: var(--muted);
-    white-space: nowrap;
+    font-size: var(--fs-1);
+    display:flex;
+    align-items:center;
+    justify-content: space-between;
+    gap: 12px;
   }
 
-  /* ---- Wrap fills screen ---- */
-  .wrap{
-    width: 100vw;
-    height: 100vh;
-    padding-top: var(--top-h);
-  }
-
-  /* ---- Fixed sidebar + scrollable main ---- */
-  .layoutRadarr{
-    height: calc(100vh - var(--top-h));
-  }
-
+  /* Fixed sidebar (never scrolls) aligned under pageTop */
   .sidebar{
     position: fixed;
     top: var(--top-h);
     left: 0;
     width: var(--sidebar-w);
     height: calc(100vh - var(--top-h));
-
     border-right: 1px solid var(--line);
     background: var(--panel);
     box-shadow: var(--shadow);
     overflow: hidden;
+    z-index: 7000;
 
     display:flex;
     flex-direction: column;
-    z-index: 7000;
   }
 
   .sidebar .sbHd{
@@ -738,7 +738,7 @@ BASE_HEAD = """
     flex-direction: column;
     gap: 8px;
     flex: 1 1 auto;
-    overflow: auto; /* internal scroll ok if nav grows */
+    overflow: hidden; /* no sidebar scroll */
     min-height: 0;
   }
 
@@ -753,8 +753,6 @@ BASE_HEAD = """
     background: var(--panel2);
     font-size: var(--fs-1);
     cursor:pointer;
-
-    border-radius: 12px;
   }
   .sbItem:hover{
     border-color: rgba(34,197,94,.45);
@@ -781,18 +779,45 @@ BASE_HEAD = """
     color: var(--text);
   }
 
+  /* Main content: ONLY this scrolls */
   .mainArea{
-    margin-left: var(--sidebar-w);
-    height: calc(100vh - var(--top-h));
-    overflow: auto;            /* ONLY scroll area */
+    position: fixed;
+    top: var(--top-h);
+    left: var(--sidebar-w);
+    right: 0;
+    bottom: 0;
+
+    overflow: auto;
     min-width: 0;
     padding: 14px 16px;
-    position: relative;
-    z-index: 2; /* above body:after */
+    z-index: 2; /* above body gradient layer */
   }
 
+  /* Collapsed: hide sidebar text and center items */
+  body.sbCollapsed .sidebar .sbHd div[style*="min-width:0"]{ display:none; }
+  body.sbCollapsed .sbItem{ justify-content: center; }
+  body.sbCollapsed .sbItem span.sbText{ display:none; }
+
+  body.sbCollapsed .sbItem.active{
+    box-shadow: inset 0 0 0 2px rgba(34,197,94,.22), 0 0 0 3px rgba(34,197,94,.10);
+  }
+  body[data-theme="reaparr"].sbCollapsed .sbItem.active{
+    box-shadow: inset 0 0 0 2px rgba(38,224,138,.22), 0 0 0 3px rgba(38,224,138,.10);
+  }
+
+  /* Auto shrink on smaller screens */
   @media (max-width: 900px){
     :root{ --sidebar-w: 220px; }
+    .mainArea{ padding: 12px; }
+  }
+  @media (max-width: 740px){
+    :root{ --sidebar-w: 200px; }
+  }
+  @media (max-width: 620px){
+    body:not(.sbPinnedOpen){ --sidebar-w: 72px; }
+    body:not(.sbPinnedOpen) .sidebar .sbHd div[style*="min-width:0"]{ display:none; }
+    body:not(.sbPinnedOpen) .sbItem{ justify-content:center; }
+    body:not(.sbPinnedOpen) .sbItem span.sbText{ display:none; }
   }
 
   /* Main content grid/cards */
@@ -825,7 +850,8 @@ BASE_HEAD = """
   body[data-theme="reaparr"] .card .hd,
   body[data-theme="reaparr"] .jobHeader,
   body[data-theme="reaparr"] .modal .mh,
-  body[data-theme="reaparr"] .modal .mf{
+  body[data-theme="reaparr"] .modal .mf,
+  body[data-theme="reaparr"] .pageTop .ptIn{
     background: linear-gradient(180deg, rgba(255,255,255,.03), transparent), var(--panel2);
   }
 
@@ -847,7 +873,6 @@ BASE_HEAD = """
     display: inline-flex;
     align-items: center;
 
-    border-radius: 999px; /* round buttons */
     transition: box-shadow .18s ease, border-color .18s ease, transform .18s ease, filter .18s ease;
   }
   a.btn:hover{ text-decoration: none; }
@@ -901,17 +926,9 @@ BASE_HEAD = """
     background: linear-gradient(135deg, rgba(255,92,108,.20), rgba(255,92,108,.08));
   }
 
-  /* Forms (deduped) */
-  .form{
-    display:grid;
-    grid-template-columns: minmax(0, 1fr);
-    gap: 12px;
-  }
-  @media (min-width: 900px){
-    .form{
-      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-    }
-  }
+  /* Forms */
+  .form{ display:grid; grid-template-columns: minmax(0, 1fr); gap: 12px; }
+  @media(min-width: 900px){ .form{ grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); } }
 
   .field{
     border: 1px solid var(--line);
@@ -919,7 +936,6 @@ BASE_HEAD = """
     background: var(--panel2);
     position: relative;
     min-width: 0;
-    border-radius: 14px;
   }
   [data-theme="light"] .field{ background: var(--panel); }
 
@@ -938,7 +954,6 @@ BASE_HEAD = """
     color: var(--text);
     padding: 10px 10px;
     outline: none;
-    border-radius: 12px;
   }
 
   body[data-theme="reaparr"] .field input[type=text],
@@ -990,7 +1005,6 @@ BASE_HEAD = """
     border: 1px solid var(--line);
     padding: 10px 12px;
     background: var(--panel2);
-    border-radius: 14px;
   }
   [data-theme="light"] .check{ background: #ffffff; }
   .check input{ transform: scale(calc(1.2 * var(--ui))); }
@@ -1004,7 +1018,6 @@ BASE_HEAD = """
     padding: 10px 12px;
     background: var(--panel2);
     margin-bottom: 12px;
-    border-radius: 14px;
   }
   [data-theme="light"] .toggleRow{ background: #ffffff; }
 
@@ -1018,7 +1031,6 @@ BASE_HEAD = """
     background: rgba(255,255,255,.10);
     border: 1px solid var(--line2);
     transition: .18s ease;
-    border-radius: 999px;
   }
   .slider:before{
     position: absolute;
@@ -1031,7 +1043,6 @@ BASE_HEAD = """
     background: rgba(255,255,255,.85);
     transition: .18s ease;
     box-shadow: 0 4px 10px rgba(0,0,0,.25);
-    border-radius: 999px;
   }
   .switch input:checked + .slider{
     background: linear-gradient(135deg, rgba(34,197,94,.60), rgba(22,163,74,.35));
@@ -1151,7 +1162,6 @@ BASE_HEAD = """
     display:flex;
     flex-direction: column;
     min-height: 0;
-    border-radius: 18px;
   }
   .modal .mh{
     padding: 14px 16px;
@@ -1223,7 +1233,6 @@ BASE_HEAD = """
     transform: translateY(10px);
     animation: toastIn .18s ease-out forwards, toastOut .25s ease-in forwards;
     animation-delay: 0s, 5s;
-    border-radius: 14px;
   }
   .toast.ok{ border-color: rgba(34,197,94,.45); }
   .toast.err{ border-color: rgba(239,68,68,.55); }
@@ -1251,6 +1260,20 @@ BASE_HEAD = """
       .replaceAll(">","&gt;")
       .replaceAll('"',"&quot;")
       .replaceAll("'","&#39;");
+  }
+
+  // -------------------
+  // Sidebar collapse
+  // -------------------
+  function setSidebarCollapsed(collapsed){
+    if (collapsed) document.body.classList.add("sbCollapsed");
+    else document.body.classList.remove("sbCollapsed");
+    try { localStorage.setItem("sbCollapsed", collapsed ? "1" : "0"); } catch(e){}
+  }
+
+  function toggleSidebar(){
+    const collapsed = document.body.classList.contains("sbCollapsed");
+    setSidebarCollapsed(!collapsed);
   }
 
   // -------------------
@@ -1552,6 +1575,12 @@ BASE_HEAD = """
   });
 
   document.addEventListener("DOMContentLoaded", () => {
+    // restore sidebar collapsed preference
+    try {
+      const v = localStorage.getItem("sbCollapsed");
+      if (v === "1") document.body.classList.add("sbCollapsed");
+    } catch(e){}
+
     const radSec = $("radarrSection");
     const sonSec = $("sonarrSection");
     const radEnabled = $("radarr_enabled")?.checked ?? true;
@@ -1633,7 +1662,7 @@ def shell(page_title: str, active: str, body: str):
 
     def sb_item(name, href, key):
         cls = "sbItem active" if active == key else "sbItem"
-        return f'<a class="{cls}" href="{href}">{safe_html(name)}</a>'
+        return f'<a class="{cls}" href="{href}"><span class="sbText">{safe_html(name)}</span></a>'
 
     # Cycle themes: dark -> light -> reaparr -> dark
     next_theme = {"dark": "light", "light": "reaparr", "reaparr": "dark"}.get(theme, "dark")
@@ -1641,7 +1670,7 @@ def shell(page_title: str, active: str, body: str):
 
     theme_btn_sidebar = f"""
       <form method="post" action="/toggle-theme">
-        <button class="sbItem" type="submit">Theme: {safe_html(next_label)}</button>
+        <button class="sbItem" type="submit"><span class="sbText">Theme: {safe_html(next_label)}</span></button>
       </form>
     """
 
@@ -1649,7 +1678,7 @@ def shell(page_title: str, active: str, body: str):
     logo_html = (
         '<div class="logoWrap"><img class="logoImg" src="/logo" alt="logo" style="width:38px;height:38px;object-fit:contain;display:block;background:var(--panel2);"></div>'
         if has_logo
-        else '<div style="width:38px;height:38px;border:1px solid var(--line2);background:linear-gradient(135deg, rgba(34,197,94,.92), rgba(22,163,74,.65)); border-radius:12px;"></div>'
+        else '<div style="width:38px;height:38px;border:1px solid var(--line2);background:linear-gradient(135deg, rgba(34,197,94,.92), rgba(22,163,74,.65));"></div>'
     )
 
     page_name = {
@@ -1683,6 +1712,23 @@ def shell(page_title: str, active: str, body: str):
 
     toasts = render_toasts()
 
+    # Top bar: full width + sidebar toggle button
+    topbar = f"""
+      <div class="pageTop">
+        <div class="ptIn">
+          <h2>{safe_html(page_name)}</h2>
+          <div style="display:flex; align-items:center; gap:10px;">
+            <button class="btn" type="button" onclick="toggleSidebar()" title="Toggle sidebar">☰</button>
+            <div class="muted" style="font-size:var(--fs-0);">Theme: <b>{safe_html(theme)}</b></div>
+          </div>
+        </div>
+        <div class="ptBd">
+          <div>MediaReaparr colour scheme • sidebar navigation</div>
+          <div class="muted" style="font-size:var(--fs-0);">UI Scale: <b>{safe_html(str(cfg.get("UI_SCALE", 1.0)))}</b></div>
+        </div>
+      </div>
+    """
+
     return f"""
 <!doctype html>
 <html>
@@ -1691,23 +1737,15 @@ def shell(page_title: str, active: str, body: str):
   {BASE_HEAD}
 </head>
 <body data-theme="{safe_html(theme)}" style="--ui:{cfg.get('UI_SCALE',1.0)};">
-  <div class="pageTop">
-    <div class="ptLeft">
-      <div class="ptTitle">{safe_html(page_name)}</div>
-      <div class="ptSub">MediaReaparr colour scheme • sidebar navigation</div>
-    </div>
-    <div class="ptRight">Theme: <b>{safe_html(theme)}</b></div>
-  </div>
-
   <div class="wrap">
     <div class="layoutRadarr">
+      {topbar}
       {sidebar}
       <div class="mainArea">
         {body}
       </div>
     </div>
   </div>
-
   {toasts}
 </body>
 </html>
@@ -2078,7 +2116,10 @@ def save_settings():
         cfg["UI_SCALE"] = float(request.form.get("UI_SCALE") or cfg.get("UI_SCALE", 1.0))
     except Exception:
         cfg["UI_SCALE"] = float(cfg.get("UI_SCALE", 1.0))
-    cfg["UI_SCALE"] = max(0.75, min(1.5, cfg["UI_SCALE"]))
+    if cfg["UI_SCALE"] < 0.75:
+        cfg["UI_SCALE"] = 0.75
+    if cfg["UI_SCALE"] > 1.5:
+        cfg["UI_SCALE"] = 1.5
 
     if cfg["UI_THEME"] not in ("dark", "light", "reaparr"):
         cfg["UI_THEME"] = "dark"
@@ -2576,7 +2617,7 @@ def jobs_run_now():
 def apply_cron():
     cfg = load_config()
     jobs = cfg.get("JOBS") or []
-    enabled_jobs = [j for j in jobs if normalize_job(j).get("enabled")]
+    enabled_jobs = [j for j in jobs if j.get("enabled")]
 
     if not enabled_jobs:
         flash("No enabled jobs to schedule.", "error")
@@ -2584,8 +2625,7 @@ def apply_cron():
 
     log_path = "/var/log/mediareaparr.log"
     lines = []
-    for j0 in enabled_jobs:
-        j = normalize_job(j0)
+    for j in enabled_jobs:
         cron = cron_from_day_hour(j.get("SCHED_DAY", "daily"), int(j.get("SCHED_HOUR", 3)))
         jid = str(j.get("id"))
         lines.append(f"{cron} python /app/app.py --job-id {jid} >> {log_path} 2>&1")

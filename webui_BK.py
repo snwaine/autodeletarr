@@ -162,6 +162,8 @@ def normalize_job(j: Dict[str, Any]) -> Dict[str, Any]:
 
     d["id"] = str(d.get("id") or make_job_id())
     d["name"] = str(d.get("name") or "Job").strip()[:60] or "Job"
+
+    # IMPORTANT: normalize enabled + booleans strictly (avoid "0" truthiness bugs)
     d["enabled"] = bool(d.get("enabled", True))
 
     d["APP"] = str(d.get("APP") or "radarr").lower()
@@ -281,9 +283,6 @@ def load_config() -> Dict[str, Any]:
         "UI_THEME": env_default("UI_THEME", "dark"),
         "UI_SCALE": float(env_default("UI_SCALE", "1.0")),
 
-        # ✅ NEW: layout switch (classic topbar vs radarr sidebar)
-        "UI_LAYOUT": env_default("UI_LAYOUT", "classic"),  # classic | radarr
-
         "RADARR_OK": False,
         "SONARR_OK": False,
         "JOBS": [],
@@ -299,25 +298,19 @@ def load_config() -> Dict[str, Any]:
             pass
 
     t = (cfg.get("UI_THEME") or "dark").lower()
-    # ✅ third theme option added: "reaparr"
     cfg["UI_THEME"] = t if t in ("dark", "light", "reaparr") else "dark"
-
-    lay = (cfg.get("UI_LAYOUT") or "classic").lower()
-    cfg["UI_LAYOUT"] = lay if lay in ("classic", "radarr") else "classic"
 
     cfg["RADARR_OK"] = bool(cfg.get("RADARR_OK", False))
     cfg["SONARR_OK"] = bool(cfg.get("SONARR_OK", False))
     cfg["RADARR_ENABLED"] = bool(cfg.get("RADARR_ENABLED", True))
     cfg["SONARR_ENABLED"] = bool(cfg.get("SONARR_ENABLED", False))
     cfg["HTTP_TIMEOUT_SECONDS"] = clamp_int(cfg.get("HTTP_TIMEOUT_SECONDS", 30), 5, 300, 30)
+
     try:
         cfg["UI_SCALE"] = float(cfg.get("UI_SCALE", 1.0))
     except Exception:
         cfg["UI_SCALE"] = 1.0
-    if cfg["UI_SCALE"] < 0.75:
-        cfg["UI_SCALE"] = 0.75
-    if cfg["UI_SCALE"] > 1.5:
-        cfg["UI_SCALE"] = 1.5
+    cfg["UI_SCALE"] = max(0.75, min(1.5, cfg["UI_SCALE"]))
 
     jobs = cfg.get("JOBS") or []
     if not isinstance(jobs, list):
@@ -541,7 +534,11 @@ BASE_HEAD = """
     --bad:#ef4444;
     --shadow: 0 12px 28px rgba(0,0,0,.28);
 
-        /* UI Scale */
+    /* Layout sizing */
+    --top-h: 74px;
+    --sidebar-w: 260px;
+
+    /* UI Scale */
     --ui: 1;
 
     --fs-0: calc(12px * var(--ui));
@@ -549,14 +546,9 @@ BASE_HEAD = """
     --fs-2: calc(14px * var(--ui));
     --fs-3: calc(16px * var(--ui));
 
-    --pill-fs: var(--fs-1);
-    --pill-py: calc(8px * var(--ui));
-    --pill-px: calc(11px * var(--ui));
-
     --btn-fs: calc(10px * var(--ui));
     --btn-py: calc(7px * var(--ui));
     --btn-px: calc(9px * var(--ui));
-    --btn-radius: calc(9px * var(--ui));
     --btn-gap: calc(6px * var(--ui));
 
     --switch-w: calc(42px * var(--ui));
@@ -564,23 +556,6 @@ BASE_HEAD = """
     --switch-thumb: calc(14px * var(--ui));
     --switch-pad: calc(3px * var(--ui));
     --switch-travel: calc(var(--switch-w) - var(--switch-thumb) - (var(--switch-pad) * 2));
-
-    *, *::before, *::after { box-sizing: border-box; }
-    
-    /* Allow grid children to shrink inside columns */
-    .form { grid-template-columns: minmax(0, 1fr); }
-    @media (min-width: 900px){ .form { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }}
-    /* Inputs/selects should never overflow their field */
-    .field input[type=text],
-    .field input[type=password],
-    .field input[type=number],
-    .field select,
-    .field textarea{
-    width: 100%;
-    max-width: 100%;
-    min-width: 0;
-    }
-
   }
 
   [data-theme="light"]{
@@ -600,7 +575,7 @@ BASE_HEAD = """
     --shadow: 0 12px 30px rgba(0,0,0,.08);
   }
 
-  /* ✅ Third theme: Reaparr (Radarr-style dark + MediaReaparr green) */
+  /* Reaparr (Radarr-style dark + MediaReaparr green) */
   [data-theme="reaparr"]{
     --bg:#070a0d;
     --panel:#0f1620;
@@ -620,14 +595,16 @@ BASE_HEAD = """
     --shadow: 0 12px 28px rgba(0,0,0,.55);
   }
 
-  html, body{
-    height: 100%;
-  }
+  *, *::before, *::after { box-sizing: border-box; }
+
+  html, body{ height: 100%; }
 
   body{
-    min-height: 100vh;
     margin:0;
+    min-height: 100vh;
     font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial, "Apple Color Emoji","Segoe UI Emoji";
+    color: var(--text);
+
     background:
       radial-gradient(900px 520px at 18% 8%, rgba(34,197,94,.22), transparent 62%),
       radial-gradient(880px 520px at 92% 10%, rgba(22,163,74,.16), transparent 60%),
@@ -635,14 +612,11 @@ BASE_HEAD = """
       linear-gradient(135deg, rgba(34,197,94,.10), rgba(22,163,74,.06)),
       var(--bg);
     background-attachment: fixed;
-    color: var(--text);
 
-    /* full-height layout */
-    display:flex;
-    flex-direction: column;
+    /* IMPORTANT: prevent body scroll — mainArea will scroll */
+    overflow: hidden;
   }
 
-  /* ✅ Reaparr theme background override (Radarr-ish bloom) */
   body[data-theme="reaparr"]{
     background:
       radial-gradient(900px 450px at 20% -10%, rgba(38,224,138,.14), transparent 60%),
@@ -652,6 +626,10 @@ BASE_HEAD = """
     background-attachment: fixed;
   }
 
+  body[data-theme="dark"] { color-scheme: dark; }
+  body[data-theme="light"] { color-scheme: light; }
+  body[data-theme="reaparr"] { color-scheme: dark; }
+
   /* Soft bottom “landing” gradient */
   body:after{
     content:"";
@@ -660,90 +638,95 @@ BASE_HEAD = """
     height: 140px;
     pointer-events: none;
     background: linear-gradient(to bottom, rgba(0,0,0,0), rgba(0,0,0,.35));
+    z-index: 1;
   }
   body[data-theme="light"]:after{
     background: linear-gradient(to bottom, rgba(255,255,255,0), rgba(0,0,0,.08));
   }
-  /* ✅ Reaparr landing fade matches deep bg */
   body[data-theme="reaparr"]:after{
     background: linear-gradient(to bottom, rgba(7,10,13,0), rgba(7,10,13,.92));
   }
 
-  .pageBody{
-    flex: 1 1 auto;
-    min-height: 0;
-    display: flex;
-    flex-direction: column;
-  }
-  
-  .pageBody > .grid{
-    flex: 1 1 auto;
-    min-height: 0;
-    height: 100%;
-    align-content: stretch;
-    align-items: stretch;
-  }
-
-  .pageBody > .grid > .card{
-    align-self: stretch;
-    height: auto;
-    display: flex;
-    flex-direction: column;
-    flex: 1 1 auto;
-    overflow: hidden;
-    min-height: 0;
-    border-bottom-left-radius: 0;
-    border-bottom-right-radius: 0;
-    box-shadow: 0 12px 28px rgba(0,0,0,.28), inset 0 -1px 0 rgba(255,255,255,.04);
-  }
-
-  body[data-theme="dark"] { color-scheme: dark; }
-  body[data-theme="light"] { color-scheme: light; }
-  body[data-theme="reaparr"] { color-scheme: dark; }
-
   a{ color: var(--text); text-decoration: none; }
   a:hover{ text-decoration: underline; }
 
-  .wrap{
-    max-width: min(1900px, 98vw);
-    margin: 0 auto;
-    padding: 22px 18px 0px;
-    width: 100%;
-    box-sizing: border-box;
-    display: flex;
+  /* ---- Full-width fixed top bar ---- */
+  .pageTop{
+    position: fixed;
+    top: 0; left: 0; right: 0;
+    height: var(--top-h);
+    z-index: 8000;
+    border-bottom: 1px solid var(--line);
+    background: var(--panel);
+    box-shadow: var(--shadow);
+
+    display:flex;
+    align-items:center;
+    justify-content: space-between;
+    padding: 0 16px;
+  }
+  .pageTop .ptLeft{
+    display:flex;
     flex-direction: column;
-    min-height: 100vh;
+    gap: 2px;
+    min-width: 0;
+  }
+  .pageTop .ptTitle{
+    font-size: var(--fs-3);
+    font-weight: 900;
+    letter-spacing: .2px;
+    line-height: 1.15;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .pageTop .ptSub{
+    font-size: var(--fs-0);
+    color: var(--muted);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .pageTop .ptRight{
+    font-size: var(--fs-0);
+    color: var(--muted);
+    white-space: nowrap;
   }
 
-  /* ---------------------------
-     ✅ NEW: Radarr-like layout
-  --------------------------- */
+  /* ---- Wrap fills screen ---- */
+  .wrap{
+    width: 100vw;
+    height: 100vh;
+    padding-top: var(--top-h);
+  }
+
+  /* ---- Fixed sidebar + scrollable main ---- */
   .layoutRadarr{
-    display:grid;
-    grid-template-columns: 260px minmax(0, 1fr);
-    gap: 14px;
-    align-items: start;
-    min-height: calc(100vh - 22px);
+    height: calc(100vh - var(--top-h));
   }
 
   .sidebar{
-    position: sticky;
-    top: 14px;
-    align-self: start;
-    height: calc(100vh - 28px);
-    border: 1px solid var(--line);
-    border-radius: 16px;
+    position: fixed;
+    top: var(--top-h);
+    left: 0;
+    width: var(--sidebar-w);
+    height: calc(100vh - var(--top-h));
+
+    border-right: 1px solid var(--line);
     background: var(--panel);
     box-shadow: var(--shadow);
-    overflow:hidden;
+    overflow: hidden;
+
     display:flex;
     flex-direction: column;
+    z-index: 7000;
   }
 
   .sidebar .sbHd{
     padding: 14px 14px;
     border-bottom: 1px solid var(--line);
     background: var(--panel2);
+
     display:flex;
     gap: 12px;
     align-items:center;
@@ -754,6 +737,9 @@ BASE_HEAD = """
     display:flex;
     flex-direction: column;
     gap: 8px;
+    flex: 1 1 auto;
+    overflow: auto; /* internal scroll ok if nav grows */
+    min-height: 0;
   }
 
   .sbItem{
@@ -761,12 +747,14 @@ BASE_HEAD = """
     align-items:center;
     justify-content: space-between;
     gap: 10px;
+
     padding: 10px 12px;
     border: 1px solid var(--line);
-    border-radius: 14px;
     background: var(--panel2);
     font-size: var(--fs-1);
     cursor:pointer;
+
+    border-radius: 12px;
   }
   .sbItem:hover{
     border-color: rgba(34,197,94,.45);
@@ -794,121 +782,27 @@ BASE_HEAD = """
   }
 
   .mainArea{
+    margin-left: var(--sidebar-w);
+    height: calc(100vh - var(--top-h));
+    overflow: auto;            /* ONLY scroll area */
     min-width: 0;
-    display:flex;
-    flex-direction: column;
-    gap: 14px;
-  }
-
-  .pageTop{
-    border: 1px solid var(--line);
-    border-radius: 16px;
-    background: var(--panel);
-    box-shadow: var(--shadow);
-    overflow:hidden;
-  }
-  .pageTop .ptIn{
     padding: 14px 16px;
-    background: var(--panel2);
-    border-bottom: 1px solid var(--line);
-    display:flex;
-    align-items:center;
-    justify-content: space-between;
-    gap: 12px;
-  }
-  .pageTop .ptIn h2{
-    margin:0;
-    font-size: var(--fs-3);
-    letter-spacing:.2px;
-  }
-  .pageTop .ptBd{
-    padding: 10px 16px;
-    color: var(--muted);
-    font-size: var(--fs-1);
+    position: relative;
+    z-index: 2; /* above body:after */
   }
 
   @media (max-width: 900px){
-    .layoutRadarr{ grid-template-columns: 1fr; }
-    .sidebar{ position: relative; height: auto; }
+    :root{ --sidebar-w: 220px; }
   }
 
-  /* ---------------------------
-     Existing classic topbar
-  --------------------------- */
-  .topbar{
-    display:flex; align-items:center; justify-content: space-between;
-    gap:12px;
-    padding: 14px 16px;
-    border: 1px solid var(--line);
-    border-radius: 14px;
-    background: linear-gradient(180deg, rgba(255,255,255,.05), rgba(255,255,255,.025));
-    box-shadow: var(--shadow);
-    position: sticky;
-    top: 14px;
-    z-index: 20;
-    backdrop-filter: blur(10px);
-  }
-
-  .brand{ display:flex; align-items:center; gap:12px; }
-  .logoWrap{
-    width: 38px; height: 38px; border-radius: 12px;
-    border: 1px solid var(--line2);
-    background: var(--panel2);
-    overflow:hidden;
-    display:flex; align-items:center; justify-content:center;
-  }
-  .logoBadge{
-    width: 38px; height: 38px; border-radius: 12px;
-    background: linear-gradient(135deg, rgba(34,197,94,.92), rgba(22,163,74,.65));
-    box-shadow: 0 10px 24px rgba(34,197,94,.18);
-  }
-  /* ✅ Reaparr badge uses your green */
-  body[data-theme="reaparr"] .logoBadge{
-    background: linear-gradient(135deg, rgba(38,224,138,.92), rgba(22,184,110,.65));
-    box-shadow: 0 10px 24px rgba(38,224,138,.18);
-  }
-
-  .logoImg{
-    width: 100%;
-    height: 100%;
-    object-fit: contain;
-    display:block;
-    background: var(--panel2);
-  }
-
-  .title h1{ margin:0; font-size: var(--fs-3); letter-spacing:.2px; }
-  .title .sub{ color: var(--muted); font-size: var(--fs-0); margin-top: 2px; }
-
-  .nav{ display:flex; align-items:center; gap:8px; flex-wrap: wrap; justify-content: flex-end; }
-  .pill{
-    border: 1px solid var(--line2);
-    background: var(--panel2);
-    padding: var(--pill-py) var(--pill-px);
-    border-radius: 999px;
-    font-size: var(--pill-fs);
-    cursor: pointer;
-    color: var(--text);
-  }
-  .pill.active{
-    border-color: rgba(34,197,94,.55);
-    box-shadow: 0 0 0 3px rgba(34,197,94,.16);
-  }
-  /* ✅ Reaparr pill glow uses your green */
-  body[data-theme="reaparr"] .pill.active{
-    border-color: rgba(38,224,138,.55);
-    box-shadow: 0 0 0 3px rgba(38,224,138,.16);
-  }
-
-  .grid{ display:grid; grid-template-columns: repeat(12, 1fr); gap: 14px; margin-top: 16px; }
-
+  /* Main content grid/cards */
+  .grid{ display:grid; grid-template-columns: repeat(12, 1fr); gap: 14px; }
   .card{
     grid-column: span 12;
     border: 1px solid var(--line);
-    border-radius: 16px;
     background: var(--panel);
     box-shadow: var(--shadow);
     overflow:hidden;
-    flex: 0 0 auto;
   }
   .card .hd{
     padding: 14px 16px;
@@ -916,15 +810,13 @@ BASE_HEAD = """
     display:flex; align-items:center; justify-content: space-between;
     gap:12px;
     background: var(--panel2);
-    flex: 0 0 auto;
-    min-height: 0;
     overflow: hidden;
   }
   [data-theme="light"] .card .hd{ background: #f3f4f6; }
   .card .hd h2{ margin:0; font-size: 14px; letter-spacing:.2px; }
-  .card .bd{ padding: 14px 16px; background: var(--panel); flex: 1 1 auto; min-height: 0; overflow: auto; }
+  .card .bd{ padding: 14px 16px; background: var(--panel); overflow: auto; }
 
-  /* ✅ Reaparr subtle highlight layers (Radarr-ish surface) */
+  /* Subtle Reaparr surfaces */
   body[data-theme="reaparr"] .card,
   body[data-theme="reaparr"] .jobCard,
   body[data-theme="reaparr"] .modal{
@@ -933,22 +825,20 @@ BASE_HEAD = """
   body[data-theme="reaparr"] .card .hd,
   body[data-theme="reaparr"] .jobHeader,
   body[data-theme="reaparr"] .modal .mh,
-  body[data-theme="reaparr"] .modal .mf,
-  body[data-theme="reaparr"] .topbar{
+  body[data-theme="reaparr"] .modal .mf{
     background: linear-gradient(180deg, rgba(255,255,255,.03), transparent), var(--panel2);
   }
 
   .muted{ color: var(--muted); }
 
   .btnrow{ display:flex; gap:10px; flex-wrap: wrap; align-items:center; }
-  
+
   .btn{
     border: 1px solid var(--line2);
     background: var(--panel2);
     color: var(--text);
 
     padding: var(--btn-py) var(--btn-px);
-    border-radius: var(--btn-radius);
     font-weight: 600;
     font-size: var(--btn-fs);
     gap: var(--btn-gap);
@@ -956,19 +846,17 @@ BASE_HEAD = """
     cursor:pointer;
     display: inline-flex;
     align-items: center;
-  }
 
-  a.btn:hover{ text-decoration: none; }
-
-  .btn{
+    border-radius: 999px; /* round buttons */
     transition: box-shadow .18s ease, border-color .18s ease, transform .18s ease, filter .18s ease;
   }
+  a.btn:hover{ text-decoration: none; }
+
   .btn:hover{
     border-color: rgba(34,197,94,.55);
     box-shadow: 0 0 0 3px rgba(34,197,94,.10), 0 10px 22px rgba(0,0,0,.22);
     transform: translateY(-1px);
   }
-  /* ✅ Reaparr hover glow uses your green */
   body[data-theme="reaparr"] .btn:hover{
     border-color: rgba(38,224,138,.55);
     box-shadow: 0 0 0 3px rgba(38,224,138,.10), 0 10px 22px rgba(0,0,0,.45);
@@ -1003,8 +891,6 @@ BASE_HEAD = """
     border-color: rgba(239,68,68,.55);
     background: linear-gradient(135deg, rgba(239,68,68,.20), rgba(239,68,68,.08));
   }
-
-  /* ✅ Reaparr gradients for button variants */
   body[data-theme="reaparr"] .btn.primary,
   body[data-theme="reaparr"] .btn.good{
     border-color: rgba(38,224,138,.45);
@@ -1015,38 +901,57 @@ BASE_HEAD = """
     background: linear-gradient(135deg, rgba(255,92,108,.20), rgba(255,92,108,.08));
   }
 
-  .form{ display:grid; grid-template-columns: 1fr; gap: 12px; }
-  @media(min-width: 900px){ .form{ grid-template-columns: 1fr 1fr; } }
+  /* Forms (deduped) */
+  .form{
+    display:grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 12px;
+  }
+  @media (min-width: 900px){
+    .form{
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    }
+  }
 
   .field{
     border: 1px solid var(--line);
-    border-radius: 14px;
     padding: 10px 12px;
     background: var(--panel2);
     position: relative;
+    min-width: 0;
+    border-radius: 14px;
   }
   [data-theme="light"] .field{ background: var(--panel); }
 
   .field label{ display:block; font-size: 12px; color: var(--muted); margin-bottom: 8px; }
 
-  .field input[type=text], .field input[type=password], .field input[type=number], .field select{
+  .field input[type=text],
+  .field input[type=password],
+  .field input[type=number],
+  .field select,
+  .field textarea{
     width: 100%;
+    max-width: 100%;
+    min-width: 0;
     border: 1px solid var(--line2);
     background: var(--panel);
     color: var(--text);
     padding: 10px 10px;
-    border-radius: 12px;
     outline: none;
+    border-radius: 12px;
   }
-  /* ✅ Reaparr inputs are deeper (less grey box) */
+
   body[data-theme="reaparr"] .field input[type=text],
   body[data-theme="reaparr"] .field input[type=password],
   body[data-theme="reaparr"] .field input[type=number],
-  body[data-theme="reaparr"] .field select{
+  body[data-theme="reaparr"] .field select,
+  body[data-theme="reaparr"] .field textarea{
     background: rgba(0,0,0,.22);
   }
 
-  [data-theme="light"] .field input, [data-theme="light"] .field select{ background: #ffffff; }
+  [data-theme="light"] .field input,
+  [data-theme="light"] .field select,
+  [data-theme="light"] .field textarea{ background: #ffffff; }
 
   .field select{
     appearance: none;
@@ -1068,12 +973,13 @@ BASE_HEAD = """
   body[data-theme="light"] .field select option{ background-color: #ffffff; color: #0b1220; }
   body[data-theme="reaparr"] .field select option{ background-color: #0f1620; color: rgba(255,255,255,.92); }
 
-  .field input:focus, .field select:focus{
+  .field input:focus, .field select:focus, .field textarea:focus{
     border-color: rgba(34,197,94,.55);
     box-shadow: 0 0 0 3px rgba(34,197,94,.14);
   }
   body[data-theme="reaparr"] .field input:focus,
-  body[data-theme="reaparr"] .field select:focus{
+  body[data-theme="reaparr"] .field select:focus,
+  body[data-theme="reaparr"] .field textarea:focus{
     border-color: rgba(38,224,138,.55);
     box-shadow: 0 0 0 3px rgba(38,224,138,.14);
   }
@@ -1082,9 +988,9 @@ BASE_HEAD = """
   .check{
     display:flex; align-items:center; gap:10px;
     border: 1px solid var(--line);
-    border-radius: 14px;
     padding: 10px 12px;
     background: var(--panel2);
+    border-radius: 14px;
   }
   [data-theme="light"] .check{ background: #ffffff; }
   .check input{ transform: scale(calc(1.2 * var(--ui))); }
@@ -1095,15 +1001,15 @@ BASE_HEAD = """
     justify-content: space-between;
     gap: 12px;
     border: 1px solid var(--line);
-    border-radius: 14px;
     padding: 10px 12px;
     background: var(--panel2);
     margin-bottom: 12px;
+    border-radius: 14px;
   }
   [data-theme="light"] .toggleRow{ background: #ffffff; }
 
+  /* Switch */
   .switch{ position: relative; width: var(--switch-w); height: var(--switch-h); display: inline-block; flex: 0 0 auto; }
-
   .switch input{ opacity: 0; width: 0; height: 0; }
   .slider{
     position: absolute;
@@ -1123,60 +1029,45 @@ BASE_HEAD = """
     top: 50%;
     transform: translateY(-50%);
     background: rgba(255,255,255,.85);
-    border-radius: 999px;
     transition: .18s ease;
     box-shadow: 0 4px 10px rgba(0,0,0,.25);
+    border-radius: 999px;
   }
   .switch input:checked + .slider{
-    background: linear-gradient(
-      135deg,
-      rgba(34,197,94,.60),
-      rgba(22,163,74,.35)
-    );
+    background: linear-gradient(135deg, rgba(34,197,94,.60), rgba(22,163,74,.35));
     border-color: rgba(34,197,94,.55);
   }
-  /* ✅ Reaparr checked switch uses your green */
   body[data-theme="reaparr"] .switch input:checked + .slider{
-    background: linear-gradient(
-      135deg,
-      rgba(38,224,138,.60),
-      rgba(22,184,110,.35)
-    );
+    background: linear-gradient(135deg, rgba(38,224,138,.60), rgba(22,184,110,.35));
     border-color: rgba(38,224,138,.55);
   }
-
-  .switch input:checked + .slider:before{ transform: translate(var(--switch-travel), -50%); background: rgba(255,255,255,.92); }
+  .switch input:checked + .slider:before{
+    transform: translate(var(--switch-travel), -50%);
+    background: rgba(255,255,255,.92);
+  }
 
   .disabledSection{ opacity: .55; filter: grayscale(.12); pointer-events: none; }
 
+  /* Jobs */
   .jobsGrid{
-    display:grid; 
+    display:grid;
     gap: 12px;
     grid-template-columns: 1fr;
     justify-content: center;
   }
-  
   .jobCard{
     border: 1px solid var(--line);
-    border-radius: 16px;
     background: var(--panel2);
     overflow:hidden;
     max-width: none;
     width: 100%;
   }
-  
-  /* Tablet / small desktop: 2 per row */
-  @media (min-width: 700px){ .jobsGrid{ grid-template-columns: repeat(2, minmax(300px, 1fr));}}
-
-  /* Large desktop: 3 per row */
-   @media (min-width: 1200px){ .jobsGrid{ grid-template-columns: repeat(3, minmax(300px, 1fr)); gap: 16px;}}
-  
-  /* Ultrawide: 4 per row */
-  @media (min-width: 1800px){ .jobsGrid{ grid-template-columns: repeat(4, minmax(300px, 1fr)); gap: 20px;}}
+  @media (min-width: 700px){ .jobsGrid{ grid-template-columns: repeat(2, minmax(300px, 1fr)); } }
+  @media (min-width: 1200px){ .jobsGrid{ grid-template-columns: repeat(3, minmax(300px, 1fr)); gap: 16px; } }
+  @media (min-width: 1800px){ .jobsGrid{ grid-template-columns: repeat(4, minmax(300px, 1fr)); gap: 20px; } }
 
   [data-theme="light"] .jobCard{ background: #ffffff; }
 
-  /* ✅ Reaparr card lift + glow (Radarr-ish) */
   body[data-theme="reaparr"] .jobCard:hover,
   body[data-theme="reaparr"] .card:hover{
     border-color: rgba(38,224,138,.25);
@@ -1235,11 +1126,11 @@ BASE_HEAD = """
   }
 
   .metaStack{ display:flex; flex-direction: column; gap: 6px; font-size: calc(11px * var(--ui)); }
-
   .metaRow{ display:flex; align-items: baseline; gap: 8px; line-height: 1.35; }
   .metaLabel{ width: 100px; color: var(--muted); flex: 0 0 auto; }
   .metaVal{ color: var(--text); flex: 1 1 auto; min-width: 0; word-break: break-word; }
 
+  /* Modal */
   .modalBack{
     position: fixed; inset: 0;
     background: rgba(0,0,0,.68);
@@ -1253,7 +1144,6 @@ BASE_HEAD = """
   .modal{
     width: min(720px, 100%);
     border: 1px solid var(--line);
-    border-radius: 16px;
     background: var(--panel);
     box-shadow: var(--shadow);
     overflow:hidden;
@@ -1261,6 +1151,7 @@ BASE_HEAD = """
     display:flex;
     flex-direction: column;
     min-height: 0;
+    border-radius: 18px;
   }
   .modal .mh{
     padding: 14px 16px;
@@ -1301,12 +1192,14 @@ BASE_HEAD = """
   }
   [data-theme="light"] .modal .mf{ background: #f3f4f6; }
 
-  table{ width:100%; border-collapse: collapse; overflow:hidden; border-radius: 14px; border: 1px solid var(--line); }
+  /* Tables */
+  table{ width:100%; border-collapse: collapse; overflow:hidden; border: 1px solid var(--line); }
   th, td{ padding: 10px 10px; border-bottom: 1px solid var(--line); font-size: var(--fs-1); vertical-align: top; }
   th{ text-align:left; color:#cbd5e1; background: rgba(255,255,255,.04); position: sticky; top: 0; }
   [data-theme="light"] th{ color:#111827; background: rgba(0,0,0,.03); }
-  .tablewrap{ max-height: 420px; overflow:auto; border-radius: 14px; border: 1px solid var(--line); }
+  .tablewrap{ max-height: 420px; overflow:auto; border: 1px solid var(--line); }
 
+  /* Toasts */
   .toastHost{
     position: fixed;
     right: 16px;
@@ -1323,7 +1216,6 @@ BASE_HEAD = """
     border: 1px solid var(--line2);
     background: var(--panel);
     box-shadow: var(--shadow);
-    border-radius: 14px;
     padding: 12px 12px;
     font-size: var(--fs-1);
     color: var(--text);
@@ -1331,6 +1223,7 @@ BASE_HEAD = """
     transform: translateY(10px);
     animation: toastIn .18s ease-out forwards, toastOut .25s ease-in forwards;
     animation-delay: 0s, 5s;
+    border-radius: 14px;
   }
   .toast.ok{ border-color: rgba(34,197,94,.45); }
   .toast.err{ border-color: rgba(239,68,68,.55); }
@@ -1338,6 +1231,10 @@ BASE_HEAD = """
   body[data-theme="reaparr"] .toast.err{ border-color: rgba(255,92,108,.55); }
   @keyframes toastIn { to { opacity: 1; transform: translateY(0); } }
   @keyframes toastOut { to { opacity: 0; transform: translateY(10px); } }
+
+  /* ---- Flat cards only ---- */
+  .card, .jobCard{ border-radius: 0 !important; }
+  .card .hd, .card .bd{ border-radius: 0 !important; }
 </style>
 
 <script>
@@ -1723,7 +1620,6 @@ BASE_HEAD = """
       uiScale.addEventListener("input", (e) => applyUiScale(e.target.value));
       uiScale.addEventListener("change", (e) => applyUiScale(e.target.value));
     }
-
   });
 </script>
 """
@@ -1735,27 +1631,13 @@ def shell(page_title: str, active: str, body: str):
     if theme not in ("dark", "light", "reaparr"):
         theme = "dark"
 
-    layout = (cfg.get("UI_LAYOUT") or "classic").lower()
-    if layout not in ("classic", "radarr"):
-        layout = "classic"
-
-    def pill(name, href, key):
-        cls = "pill active" if active == key else "pill"
-        return f'<a class="{cls}" href="{href}">{safe_html(name)}</a>'
-
     def sb_item(name, href, key):
         cls = "sbItem active" if active == key else "sbItem"
         return f'<a class="{cls}" href="{href}">{safe_html(name)}</a>'
 
-    # ✅ Cycle themes: dark -> light -> reaparr -> dark
+    # Cycle themes: dark -> light -> reaparr -> dark
     next_theme = {"dark": "light", "light": "reaparr", "reaparr": "dark"}.get(theme, "dark")
     next_label = {"dark": "Dark", "light": "Light", "reaparr": "Reaparr"}.get(next_theme, "Dark")
-
-    theme_btn_pill = f"""
-      <form method="post" action="/toggle-theme" style="margin:0;">
-        <button class="pill" type="submit">Theme: {safe_html(next_label)}</button>
-      </form>
-    """
 
     theme_btn_sidebar = f"""
       <form method="post" action="/toggle-theme">
@@ -1765,12 +1647,11 @@ def shell(page_title: str, active: str, body: str):
 
     has_logo = find_logo_path() is not None
     logo_html = (
-        '<div class="logoWrap"><img class="logoImg" src="/logo" alt="logo"></div>'
+        '<div class="logoWrap"><img class="logoImg" src="/logo" alt="logo" style="width:38px;height:38px;object-fit:contain;display:block;background:var(--panel2);"></div>'
         if has_logo
-        else '<div class="logoBadge"></div>'
+        else '<div style="width:38px;height:38px;border:1px solid var(--line2);background:linear-gradient(135deg, rgba(34,197,94,.92), rgba(22,163,74,.65)); border-radius:12px;"></div>'
     )
 
-    # Small page title for Radarr layout
     page_name = {
         "dash": "Dashboard",
         "jobs": "Jobs",
@@ -1778,67 +1659,29 @@ def shell(page_title: str, active: str, body: str):
         "status": "Status",
     }.get(active, "mediareaparr")
 
-    toasts = render_toasts()
-
-    if layout == "radarr":
-        sidebar = f"""
-          <div class="sidebar">
-            <div class="sbHd">
-              {logo_html}
-              <div style="min-width:0;">
-                <div style="font-weight:900; letter-spacing:.2px;">mediareaparr</div>
-                <div class="muted" style="font-size:var(--fs-0); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">
-                  Radarr/Sonarr cleanup
-                </div>
-              </div>
-            </div>
-            <div class="sbNav">
-              {sb_item("Dashboard", "/dashboard", "dash")}
-              {sb_item("Jobs", "/jobs", "jobs")}
-              {sb_item("Settings", "/settings", "settings")}
-              {sb_item("Status", "/status", "status")}
-              <div style="height:6px;"></div>
-              {theme_btn_sidebar}
+    sidebar = f"""
+      <div class="sidebar">
+        <div class="sbHd">
+          {logo_html}
+          <div style="min-width:0;">
+            <div style="font-weight:900; letter-spacing:.2px;">mediareaparr</div>
+            <div class="muted" style="font-size:var(--fs-0); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">
+              Radarr/Sonarr cleanup
             </div>
           </div>
-        """
-
-        return f"""
-<!doctype html>
-<html>
-<head>
-  <title>{safe_html(page_title)}</title>
-  {BASE_HEAD}
-</head>
-<body data-theme="{safe_html(theme)}" style="--ui:{cfg.get('UI_SCALE',1.0)};">
-  <div class="wrap">
-    <div class="layoutRadarr">
-      {sidebar}
-      <div class="mainArea">
-        <div class="pageTop">
-          <div class="ptIn">
-            <h2>{safe_html(page_name)}</h2>
-            <div class="muted" style="font-size:var(--fs-0);">Layout: <b>Radarr</b></div>
-          </div>
-          <div class="ptBd">Same MediaReaparr colour scheme • sidebar navigation</div>
         </div>
-        {body}
+        <div class="sbNav">
+          {sb_item("Dashboard", "/dashboard", "dash")}
+          {sb_item("Jobs", "/jobs", "jobs")}
+          {sb_item("Settings", "/settings", "settings")}
+          {sb_item("Status", "/status", "status")}
+          <div style="height:6px;"></div>
+          {theme_btn_sidebar}
+        </div>
       </div>
-    </div>
-  </div>
-  {toasts}
-</body>
-</html>
-"""
+    """
 
-    # Classic topbar layout
-    nav = (
-        pill("Dashboard", "/dashboard", "dash")
-        + pill("Jobs", "/jobs", "jobs")
-        + pill("Settings", "/settings", "settings")
-        + pill("Status", "/status", "status")
-        + theme_btn_pill
-    )
+    toasts = render_toasts()
 
     return f"""
 <!doctype html>
@@ -1848,20 +1691,20 @@ def shell(page_title: str, active: str, body: str):
   {BASE_HEAD}
 </head>
 <body data-theme="{safe_html(theme)}" style="--ui:{cfg.get('UI_SCALE',1.0)};">
-  <div class="wrap">
-    <div class="topbar">
-      <div class="brand">
-        {logo_html}
-        <div class="title">
-          <h1>mediareaparr</h1>
-          <div class="sub">Radarr/Sonarr tag + age cleanup • multi-job scheduler • WebUI</div>
-        </div>
-      </div>
-      <div class="nav">{nav}</div>
+  <div class="pageTop">
+    <div class="ptLeft">
+      <div class="ptTitle">{safe_html(page_name)}</div>
+      <div class="ptSub">MediaReaparr colour scheme • sidebar navigation</div>
     </div>
+    <div class="ptRight">Theme: <b>{safe_html(theme)}</b></div>
+  </div>
 
-    <div class="pageBody">
-      {body}
+  <div class="wrap">
+    <div class="layoutRadarr">
+      {sidebar}
+      <div class="mainArea">
+        {body}
+      </div>
     </div>
   </div>
 
@@ -2025,8 +1868,6 @@ def settings():
     radarr_enabled = bool(cfg.get("RADARR_ENABLED", True))
     sonarr_enabled = bool(cfg.get("SONARR_ENABLED", False))
 
-    layout_is_radarr = (cfg.get("UI_LAYOUT") == "radarr")
-
     test_label = "Connected" if radarr_ok else "Test Connection"
     test_disabled_attr = "disabled" if radarr_ok else ""
     test_title = "Radarr connection is OK" if radarr_ok else "Test Radarr connection"
@@ -2175,23 +2016,6 @@ def settings():
                   <div class="muted">Global settings</div>
                 </div>
                 <div class="bd">
-
-                  <!-- ✅ NEW: Layout switch -->
-                  <div class="toggleRow">
-                    <div>
-                      <div style="font-weight:800;">Radarr layout</div>
-                      <div class="muted">Sidebar navigation + Radarr-like structure.</div>
-                    </div>
-                    <label class="switch" title="Toggle Radarr layout">
-                      <input id="ui_layout_radarr"
-                             name="UI_LAYOUT_RADARR"
-                             type="checkbox"
-                             {"checked" if layout_is_radarr else ""}
-                             data-initial="{ '1' if layout_is_radarr else '0' }">
-                      <span class="slider"></span>
-                    </label>
-                  </div>
-
                   <div class="form">
                     <div class="field">
                       <label>HTTP Timeout Seconds</label>
@@ -2250,23 +2074,14 @@ def save_settings():
     cfg["HTTP_TIMEOUT_SECONDS"] = clamp_int(request.form.get("HTTP_TIMEOUT_SECONDS") or 30, 5, 300, 30)
     cfg["UI_THEME"] = (request.form.get("UI_THEME") or cfg.get("UI_THEME", "dark")).lower()
 
-    # ✅ NEW: save layout toggle
-    cfg["UI_LAYOUT"] = "radarr" if checkbox("UI_LAYOUT_RADARR") else "classic"
-
     try:
         cfg["UI_SCALE"] = float(request.form.get("UI_SCALE") or cfg.get("UI_SCALE", 1.0))
     except Exception:
         cfg["UI_SCALE"] = float(cfg.get("UI_SCALE", 1.0))
-    if cfg["UI_SCALE"] < 0.75:
-        cfg["UI_SCALE"] = 0.75
-    if cfg["UI_SCALE"] > 1.5:
-        cfg["UI_SCALE"] = 1.5
+    cfg["UI_SCALE"] = max(0.75, min(1.5, cfg["UI_SCALE"]))
 
     if cfg["UI_THEME"] not in ("dark", "light", "reaparr"):
         cfg["UI_THEME"] = "dark"
-
-    if cfg["UI_LAYOUT"] not in ("classic", "radarr"):
-        cfg["UI_LAYOUT"] = "classic"
 
     if old.get("RADARR_URL") != cfg["RADARR_URL"] or old.get("RADARR_API_KEY") != cfg["RADARR_API_KEY"]:
         cfg["RADARR_OK"] = False
@@ -2321,7 +2136,6 @@ def jobs_toggle_enabled():
 def jobs_page():
     cfg = load_config()
 
-    # Availability is readiness-based (not “has tags”)
     radarr_ready = is_app_ready(cfg, "radarr")
     sonarr_ready = is_app_ready(cfg, "sonarr")
 
@@ -2762,7 +2576,7 @@ def jobs_run_now():
 def apply_cron():
     cfg = load_config()
     jobs = cfg.get("JOBS") or []
-    enabled_jobs = [j for j in jobs if j.get("enabled")]
+    enabled_jobs = [j for j in jobs if normalize_job(j).get("enabled")]
 
     if not enabled_jobs:
         flash("No enabled jobs to schedule.", "error")
@@ -2770,7 +2584,8 @@ def apply_cron():
 
     log_path = "/var/log/mediareaparr.log"
     lines = []
-    for j in enabled_jobs:
+    for j0 in enabled_jobs:
+        j = normalize_job(j0)
         cron = cron_from_day_hour(j.get("SCHED_DAY", "daily"), int(j.get("SCHED_HOUR", 3)))
         jid = str(j.get("id"))
         lines.append(f"{cron} python /app/app.py --job-id {jid} >> {log_path} 2>&1")
