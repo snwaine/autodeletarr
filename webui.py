@@ -689,11 +689,13 @@ BASE_HEAD = """
     justify-content: flex-end;
     gap: 12px;
   }
+
   .pageTop .ptIn h2{
     margin:0;
     font-size: var(--fs-3);
     letter-spacing:.2px;
   }
+  
   .pageTop .ptBd{
     padding: 8px 16px;
     color: var(--muted);
@@ -704,6 +706,32 @@ BASE_HEAD = """
     gap: 12px;
   }
 
+  .ptRightActions{
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 14px;
+    width: 100%;
+  }
+
+  .pageTopLogo{
+    width: 210px;
+    height: 40px;
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    pointer-events: none; /* logo is decorative */
+  }
+
+  .pageTopLogo img{
+    max-width: 210px;
+    max-height: 40px;
+    width: auto;
+    height: auto;
+    object-fit: contain;
+    display: block;
+  }
+  
   /* Fixed sidebar (never scrolls) aligned under pageTop */
   .sidebar{
     position: fixed;
