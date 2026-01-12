@@ -675,10 +675,9 @@ BASE_HEAD = """
     top: 0; left: 0; right: 0;
     height: var(--top-h);
     border-bottom: 1px solid var(--line);
-    background: var(--panel);
-    box-shadow: var(--shadow);
     z-index: 8000;
     overflow: hidden;
+    margin: 0 !important;
   }
 
   .pageTop .ptIn{
@@ -1697,7 +1696,6 @@ def shell(page_title: str, active: str, body: str):
     topbar = f"""
       <div class="pageTop">
         <div class="ptIn">
-          <h2>{safe_html(page_name)}</h2>
           <div style="display:flex; align-items:center; gap:10px;">
             <button class="btn" type="button" onclick="toggleSidebar()" title="Toggle sidebar">☰</button>
             <div class="muted" style="font-size:var(--fs-0);">Theme: <b>{safe_html(theme)}</b></div>
