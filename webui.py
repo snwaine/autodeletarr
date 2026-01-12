@@ -681,12 +681,12 @@ BASE_HEAD = """
   }
 
   .pageTop .ptIn{
-    padding: 12px 16px;
+    padding: 14px 16px;
     background: var(--panel2);
     border-bottom: 1px solid var(--line);
     display:flex;
     align-items:center;
-    justify-content: space-between;
+    justify-content: flex-end;
     gap: 12px;
   }
   .pageTop .ptIn h2{
@@ -1696,9 +1696,11 @@ def shell(page_title: str, active: str, body: str):
     topbar = f"""
       <div class="pageTop">
         <div class="ptIn">
-          <div style="display:flex; align-items:center; gap:10px;">
+          <div class="ptRightActions">
             <button class="btn" type="button" onclick="toggleSidebar()" title="Toggle sidebar">☰</button>
-            <div class="muted" style="font-size:var(--fs-0);">Theme: <b>{safe_html(theme)}</b></div>
+              <div class="pageTopLogo">
+              <img src="/Logo/logo-full.png" alt="MediaReaparr">
+            </div>
           </div>
         </div>
       </div>
