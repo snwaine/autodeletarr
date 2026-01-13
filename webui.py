@@ -745,7 +745,7 @@ BASE_HEAD = """
     flex: 1 1 auto;
     min-height: 0;
     overflow: auto;
-    padding: 14px;
+    padding: 0px;
     gap: 14px;
     repeat(12, 1fr);
   }
