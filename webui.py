@@ -1159,6 +1159,25 @@ BASE_HEAD = """
 
   .card, .jobCard{ border-radius: 0 !important; }
   .card .hd, .card .bd{ border-radius: 0 !important; }
+
+  .settingsCard{
+    box-shadow: none !important;
+    border: 1px solid var(--line);
+    background: var(--panel);
+    margin-bottom: 14px;
+  }
+
+  .settingsCard:last-child{ margin-bottom: 0; }
+  
+  .settingsCard .hd{
+    background: var(--panel2);
+    border-bottom: 1px solid var(--line);
+  }
+
+  [data-theme="light"] .settingsCard .hd{ background: #f3f4f6; }
+  body[data-theme="reaparr"] .settingsCard{
+    background: var(--panel);
+  }
 </style>
 
 <script>
@@ -1825,7 +1844,7 @@ def settings():
                   data-sonarr-ok="{ '1' if sonarr_ok else '0' }"
                   style="margin:0;">
 
-              <div class="card" style="box-shadow:none; margin-bottom:14px;">
+              <div class="card settingsCard">
                 <div class="hd"><h2>Radarr setup</h2></div>
                 <div class="bd">
 
@@ -1879,7 +1898,7 @@ def settings():
                 </div>
               </div>
 
-              <div class="card" style="box-shadow:none; margin-bottom:14px;">
+              <div class="card settingsCard">
                 <div class="hd">
                   <h2>Sonarr setup</h2>
                   <div class="muted">Optional</div>
@@ -1938,7 +1957,7 @@ def settings():
                 </div>
               </div>
 
-              <div class="card" style="box-shadow:none;">
+              <div class="card settingsCard">
                 <div class="hd">
                   <h2>WebUI</h2>
                   <div class="muted">Global settings</div>
