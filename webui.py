@@ -693,6 +693,12 @@ BASE_HEAD = """
     text-decoration: none;
     cursor:pointer;
   }
+
+  /* Prevent browser default active link color */
+  .sbItem:active, .sbItem:active span, .sbItem:focus, .sbItem:focus span{
+    color: inherit;
+  }
+
   .sbItem:hover{
     color: #97c13d;
   }
@@ -702,8 +708,7 @@ BASE_HEAD = """
   }
 
   body[data-theme="reaparr"] .sbItem:hover{
-    border-color: rgba(38,224,138,.45);
-    box-shadow: 0 0 0 3px rgba(38,224,138,.10);
+    color: var(--reaparr_accent);
   }
 
   body[data-theme="reaparr"] .sbItem.active{
