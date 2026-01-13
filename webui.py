@@ -584,7 +584,6 @@ BASE_HEAD = """
     position: fixed;
     top: 0; left: 0; right: 0;
     height: var(--top-h);
-    border-bottom: 1px solid var(--line);
     z-index: 8000;
     overflow: hidden;
     margin: 0 !important;
@@ -631,7 +630,7 @@ BASE_HEAD = """
     left: 0;
     width: var(--sidebar-w);
     height: calc(100vh - var(--top-h));
-    border-right: 1px solid var(--line);
+    border-right: 3px solid var(--line);
     background: var(--panel);
     box-shadow: none;
     overflow: hidden;
@@ -655,24 +654,22 @@ BASE_HEAD = """
     align-items:center;
     justify-content: space-between;
     gap: 10px;
-    padding: 10px 12px;
-    border: 1px solid var(--line);
-    background: var(--panel2);
+    padding: 12px 14px;
+    border: none;
+    background: none;
     font-size: var(--fs-1);
     cursor:pointer;
   }
   .sbItem:hover{
-    border-color: rgba(34,197,94,.45);
-    box-shadow: 0 0 0 3px rgba(34,197,94,.10);
-    text-decoration: none;
+    background: rgba(34,197,94,.10);
+    box-shadow: none;
   }
   body[data-theme="reaparr"] .sbItem:hover{
     border-color: rgba(38,224,138,.45);
     box-shadow: 0 0 0 3px rgba(38,224,138,.10);
   }
   .sbItem.active{
-    border-color: rgba(34,197,94,.55);
-    box-shadow: 0 0 0 3px rgba(34,197,94,.16);
+    background: rgba(34,197,94,.16);
   }
   body[data-theme="reaparr"] .sbItem.active{
     border-color: rgba(38,224,138,.55);
@@ -713,7 +710,8 @@ BASE_HEAD = """
   .grid{ display:grid; grid-template-columns: repeat(12, 1fr); gap: 14px; }
   .card{
     grid-column: span 12;
-    border: 1px solid var(--line);
+    border: none;
+    border-top: 1px solid var(--line);
     background: var(--panel);
     box-shadow: var(--shadow);
     overflow:hidden;
