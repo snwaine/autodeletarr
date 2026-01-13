@@ -595,7 +595,7 @@ BASE_HEAD = """
     display: grid;
     grid-template-columns: var(--sidebar-w) 1fr auto;
     align-items: center;
-    padding: 0 16px;
+    padding: 0;
     background: var(--panel2);
     border-bottom: 1px solid var(--line);
   }
@@ -605,6 +605,7 @@ BASE_HEAD = """
     align-items: center;
     gap: 14px;
     justify-self: end;
+    padding-right: 16px;
   }
 
   .pageTopLogo{
@@ -613,7 +614,7 @@ BASE_HEAD = """
     display: flex;
     align-items: center;
     justify-content: flex-start;
-    pointer-events: none;
+    padding-left: 10px;
   }
 
   .pageTopLogo img{
