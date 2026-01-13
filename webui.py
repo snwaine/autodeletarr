@@ -580,6 +580,29 @@ BASE_HEAD = """
   .wrap{ width: 100vw; height: 100vh; overflow: hidden; position: relative; }
   .layoutRadarr{ position: relative; width: 100vw; height: 100vh; }
 
+  .pageContent{
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow: auto;
+    padding: 0px;
+  }
+
+  .pageContent .grid{
+    min-height: 100%;
+  }
+
+  .pageContent .grid > .card:only-child{
+    min-height: 100%;
+    display: flex;
+    flex-direction: column;
+  }
+  
+  .pageContent .grid > .card:only-child > .bd{
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow: auto;
+  }
+
   .pageTop{
     position: fixed;
     top: 0; left: 0; right: 0;
@@ -697,7 +720,7 @@ BASE_HEAD = """
     bottom: 0;
     display: flex;
     flex-direction: column;
-    overflow: auto;
+    overflow: hidden;
     min-width: 0;
     padding: 0;
     z-index: 2;
@@ -1603,7 +1626,9 @@ def shell(page_title: str, active: str, body: str):
       {topbar}
       {sidebar}
       <div class="mainArea">
-        {body}
+        <div class="pageContent">
+          {body}
+        </div>
       </div>
     </div>
   </div>
