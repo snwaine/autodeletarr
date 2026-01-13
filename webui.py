@@ -631,7 +631,7 @@ BASE_HEAD = """
     width: var(--sidebar-w);
     height: calc(100vh - var(--top-h));
     border-right: 3px solid var(--line);
-    background: var(--pane2);
+    background: var(--panel2);
     box-shadow: none;
     overflow: hidden;
     z-index: 7000;
