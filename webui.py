@@ -682,7 +682,7 @@ BASE_HEAD = """
     align-items:center;
     justify-content: space-between;
     gap: 10px;
-    padding: 12px 14px;
+    padding: 16px 30px;
     border: none;
     background: none;
     font-size: 14px;
@@ -694,8 +694,7 @@ BASE_HEAD = """
   }
 
   .sbItem.active{
-    color: #97c13d;
-+   box-shadow: none !important;
+    box-shadow: none !important;
   }
 
   body[data-theme="reaparr"] .sbItem:hover{
@@ -704,11 +703,20 @@ BASE_HEAD = """
   }
 
   body[data-theme="reaparr"] .sbItem.active{
-+   color: #97c13d;
-+   border-color: transparent;
-+   box-shadow: none !important;
-+ }
+   background: #26e08a;
+   color: #070a0d;
+  }
 
+  body[data-theme="light"] .sbItem.active{
+    background: #e5e7eb;
+    color: #0b1220;
+  }
+  
+  body[data-theme="dark"] .sbItem.active{
+    background: #97c13d;
+    color: #0b1220;
+  }
+  
   .sbNav form{ margin: 0; }
   button.sbItem{ width: 100%; text-align: left; color: var(--text); }
 
