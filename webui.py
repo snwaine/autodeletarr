@@ -521,6 +521,10 @@ BASE_HEAD = """
 
     --accent:#26e08a;
     --accent2:#16b86e;
+    
+    --reaparr_accent:#a7d541;
+    --light_accent:#a7d541;
+    --dark_accent:#a7d541;
 
     --warn:#ffb020;
     --bad:#ff5c6c;
@@ -703,18 +707,21 @@ BASE_HEAD = """
   }
 
   body[data-theme="reaparr"] .sbItem.active{
-   background: #26e08a;
-   color: #070a0d;
+    background: #15212f;
+    color: var(--reaparr_accent);
+    border-left: 1px solid var(--reaparr_accent);
   }
 
   body[data-theme="light"] .sbItem.active{
     background: #e5e7eb;
-    color: #0b1220;
+    color: var(--light_accent);
+    border-left: 1px solid var(--light_accent);
   }
   
   body[data-theme="dark"] .sbItem.active{
     background: #97c13d;
-    color: #0b1220;
+    color: var(--dark_accent);
+    border-left: 1px solid var(--dark_accent);
   }
   
   .sbNav form{ margin: 0; }
