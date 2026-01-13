@@ -631,7 +631,7 @@ BASE_HEAD = """
     width: var(--sidebar-w);
     height: calc(100vh - var(--top-h));
     border-right: 3px solid var(--line);
-    background: var(--panel);
+    background: var(--pane2);
     box-shadow: none;
     overflow: hidden;
     z-index: 7000;
@@ -649,6 +649,10 @@ BASE_HEAD = """
     min-height: 0;
   }
 
+  .sbItem,.sbItem:hover,.sbItem:focus,.sbItem:active{
+    text-decoration: none;
+  }
+
   .sbItem{
     display:flex;
     align-items:center;
@@ -657,7 +661,8 @@ BASE_HEAD = """
     padding: 12px 14px;
     border: none;
     background: none;
-    font-size: var(--fs-1);
+    font-size: 14;
+    text-decoration: none;
     cursor:pointer;
   }
   .sbItem:hover{
@@ -690,6 +695,8 @@ BASE_HEAD = """
     left: var(--sidebar-w);
     right: 0;
     bottom: 0;
+    display: flex;
+    flex-direction: column;
     overflow: auto;
     min-width: 0;
     padding: 0;
@@ -709,7 +716,17 @@ BASE_HEAD = """
     body:not(.sbPinnedOpen) .sbItem span.sbText{ display:none; }
   }
 
-  .grid{ display:grid; grid-template-columns: repeat(12, 1fr); gap: 14px; }
+  .grid{ 
+    display:grid;
+    grid-template-columns:
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow: auto;
+    padding: 14px;
+    gap: 14px;
+    repeat(12, 1fr);
+  }
+
   .card{
     grid-column: span 12;
     border: none;
@@ -717,6 +734,9 @@ BASE_HEAD = """
     background: var(--panel);
     box-shadow: var(--shadow);
     overflow:hidden;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
   }
   .card .hd{
     padding: 14px 16px;
@@ -726,8 +746,20 @@ BASE_HEAD = """
     overflow: hidden;
   }
   [data-theme="light"] .card .hd{ background: #f3f4f6; }
-  .card .hd h2{ margin:0; font-size: 14px; letter-spacing:.2px; }
-  .card .bd{ padding: 14px 16px; background: var(--panel); overflow: auto; }
+  
+  .card .hd h2{
+    margin:0;
+    font-size: 14px;
+    letter-spacing:.2px;
+  }
+  
+  .card .bd{
+    padding: 14px 16px;
+    background: var(--panel);
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow: auto;
+  }
 
   body[data-theme="reaparr"] .card,
   body[data-theme="reaparr"] .jobCard,
