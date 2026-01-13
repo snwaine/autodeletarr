@@ -579,7 +579,7 @@ BASE_HEAD = """
   a:hover{ text-decoration: underline; }
 
   .wrap{ width: 100vw; height: 100vh; overflow: hidden; position: relative; }
-  .layoutRadarr{ position: relative; width: 100vw; height: 100vh; }
+  .layoutReaparr{ position: relative; width: 100vw; height: 100vh; }
 
   .pageContent{
     flex: 1 1 auto;
@@ -752,7 +752,6 @@ BASE_HEAD = """
   .card{
     grid-column: span 12;
     border: none;
-    border-top: 1px solid var(--line);
     background: var(--panel);
     box-shadow: var(--shadow);
     overflow:hidden;
@@ -783,10 +782,8 @@ BASE_HEAD = """
     overflow: auto;
   }
 
-  body[data-theme="reaparr"] .card,
-  body[data-theme="reaparr"] .jobCard,
-  body[data-theme="reaparr"] .modal{
-    background: linear-gradient(180deg, rgba(255,255,255,.02), transparent 45%), var(--panel);
+  body[data-theme="reaparr"] .card{
+    background: var(--panel);
   }
   body[data-theme="reaparr"] .card .hd,
   body[data-theme="reaparr"] .jobHeader,
@@ -1631,7 +1628,7 @@ def shell(page_title: str, active: str, body: str):
 </head>
 <body data-theme="{safe_html(theme)}" style="--ui:{cfg.get('UI_SCALE',1.0)};">
   <div class="wrap">
-    <div class="layoutRadarr">
+    <div class="layoutReaparr">
       {topbar}
       {sidebar}
       <div class="mainArea">
