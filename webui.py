@@ -1,4 +1,3 @@
-```python
 import os
 import json
 import signal
@@ -14,10 +13,6 @@ from flask import (
     flash, get_flashed_messages, send_from_directory
 )
 
-# ============================================================
-# Paths / App
-# ============================================================
-
 CONFIG_DIR = Path(os.environ.get("CONFIG_DIR", "/config"))
 CONFIG_PATH = CONFIG_DIR / "config.json"
 STATE_PATH = CONFIG_DIR / "state.json"
@@ -28,25 +23,21 @@ APP_LOGO_DIR = APP_DIR / "logo"
 app = Flask(__name__)
 app.secret_key = os.environ.get("FLASK_SECRET_KEY", "mediareaparr-secret")
 
-# ============================================================
-# Small helpers
-# ============================================================
-
 
 def env_default(name: str, default: str = "") -> str:
     return os.environ.get(name, default)
 
 
-def clamp_int(v: Any, lo: int, hi: int, default: int) -> int:
+def clamp_int(v, lo: int, hi: int, default: int) -> int:
     try:
-        n = int(v)
+        v = int(v)
     except Exception:
         return default
-    if n < lo:
+    if v < lo:
         return lo
-    if n > hi:
+    if v > hi:
         return hi
-    return n
+    return v
 
 
 def now_iso() -> str:
@@ -65,7 +56,40 @@ def checkbox(name: str) -> bool:
     return request.form.get(name) == "on"
 
 
-def parse_iso_date(s: str) -> Optional[datetime]:
+def cron_from_day_hour(day_key: str, hour: int) -> str:
+    hour = clamp_int(hour, 0, 23, 3)
+    dow_map = {
+        "daily": "*",
+        "sun": "0",
+        "mon": "1",
+        "tue": "2",
+        "wed": "3",
+        "thu": "4",
+        "fri": "5",
+        "sat": "6",
+    }
+    dow = dow_map.get((day_key or "daily").lower(), "*")
+    return f"15 {hour} * * {dow}"
+
+
+def schedule_label(day_key: str, hour: int) -> str:
+    day_key = (day_key or "daily").lower()
+    names = {
+        "daily": "Daily",
+        "mon": "Monday",
+        "tue": "Tuesday",
+        "wed": "Wednesday",
+        "thu": "Thursday",
+        "fri": "Friday",
+        "sat": "Saturday",
+        "sun": "Sunday",
+    }
+    day_txt = names.get(day_key, "Daily")
+    h = clamp_int(hour, 0, 23, 3)
+    return f"{day_txt} • {h:02d}:00"
+
+
+def parse_iso_date(s: str):
     if not s:
         return None
     try:
@@ -78,50 +102,6 @@ def parse_iso_date(s: str) -> Optional[datetime]:
     except Exception:
         return None
 
-
-# ============================================================
-# Scheduling helpers
-# ============================================================
-
-_DOW_MAP = {
-    "daily": "*",
-    "sun": "0",
-    "mon": "1",
-    "tue": "2",
-    "wed": "3",
-    "thu": "4",
-    "fri": "5",
-    "sat": "6",
-}
-
-_DOW_NAMES = {
-    "daily": "Daily",
-    "mon": "Monday",
-    "tue": "Tuesday",
-    "wed": "Wednesday",
-    "thu": "Thursday",
-    "fri": "Friday",
-    "sat": "Saturday",
-    "sun": "Sunday",
-}
-
-
-def cron_from_day_hour(day_key: str, hour: int) -> str:
-    hour = clamp_int(hour, 0, 23, 3)
-    dow = _DOW_MAP.get((day_key or "daily").lower(), "*")
-    return f"15 {hour} * * {dow}"
-
-
-def schedule_label(day_key: str, hour: int) -> str:
-    dk = (day_key or "daily").lower()
-    day_txt = _DOW_NAMES.get(dk, "Daily")
-    h = clamp_int(hour, 0, 23, 3)
-    return f"{day_txt} • {h:02d}:00"
-
-
-# ============================================================
-# Sonarr delete modes
-# ============================================================
 
 SONARR_DELETE_MODES = [
     "episodes_only",
@@ -139,14 +119,6 @@ SONARR_DELETE_MODE_LABELS = {
 def sonarr_delete_mode_label(mode: str) -> str:
     mode = (mode or "").strip()
     return SONARR_DELETE_MODE_LABELS.get(mode, SONARR_DELETE_MODE_LABELS["episodes_only"])
-
-
-# ============================================================
-# Jobs config normalization
-# ============================================================
-
-_ALLOWED_APPS = ("radarr", "sonarr")
-_ALLOWED_DAYS = ("daily", "mon", "tue", "wed", "thu", "fri", "sat", "sun")
 
 
 def job_defaults() -> Dict[str, Any]:
@@ -175,14 +147,14 @@ def normalize_job(j: Dict[str, Any]) -> Dict[str, Any]:
     d["enabled"] = bool(d.get("enabled", True))
 
     d["APP"] = str(d.get("APP") or "radarr").lower()
-    if d["APP"] not in _ALLOWED_APPS:
+    if d["APP"] not in ("radarr", "sonarr"):
         d["APP"] = "radarr"
 
     d["TAG_LABEL"] = str(d.get("TAG_LABEL") or "").strip()
     d["DAYS_OLD"] = clamp_int(d.get("DAYS_OLD", 30), 1, 36500, 30)
 
     d["SCHED_DAY"] = str(d.get("SCHED_DAY") or "daily").lower()
-    if d["SCHED_DAY"] not in _ALLOWED_DAYS:
+    if d["SCHED_DAY"] not in ("daily", "mon", "tue", "wed", "thu", "fri", "sat", "sun"):
         d["SCHED_DAY"] = "daily"
     d["SCHED_HOUR"] = clamp_int(d.get("SCHED_HOUR", 3), 0, 23, 3)
 
@@ -208,12 +180,74 @@ def find_job(cfg: Dict[str, Any], job_id: str) -> Optional[Dict[str, Any]]:
     return None
 
 
-# ============================================================
-# Config / State I/O
-# ============================================================
+def run_now_modal_html() -> str:
+    return """
+    <div class="modalBack" id="runNowBack">
+      <div class="modal" role="dialog" aria-modal="true" aria-labelledby="runNowTitle">
+        <div class="mh">
+          <h3 id="runNowTitle">Run Now confirmation</h3>
+        </div>
+        <div class="mb">
+          <div style="margin-bottom:10px;">
+            <div class="muted">App: <b><span id="rn_app">Radarr</span></b></div>
+            <div class="muted">Dry Run: <b><span id="rn_dry">OFF</span></b> • Delete Files: <b><span id="rn_del">ON</span></b> • Job: <b><span id="rn_enabled">Enabled</span></b></div>
+          </div>
+
+          <p><b id="rn_msg">Dry Run is OFF — this will perform real actions.</b></p>
+
+          <p id="rn_hint_delete" class="muted">
+            With <b>Delete Files</b> enabled, it may delete files from disk via the app.
+          </p>
+
+          <p id="rn_hint_no_delete" class="muted" style="display:none;">
+            With <b>Delete Files</b> disabled, it should avoid deleting from disk.
+          </p>
+
+          <p class="muted">If you’re not sure, edit the job and enable <b>Dry Run</b>, then use Preview.</p>
+        </div>
+        <div class="mf">
+          <button class="btn" type="button" onclick="hideModal('runNowBack')">Cancel</button>
+          <form id="runNowFormConfirm" method="post" action="/jobs/run-now" style="margin:0;">
+            <input type="hidden" id="runNowJobId" name="job_id" value="">
+            <button class="btn bad" type="button" onclick="runNowSubmitConfirm()">Yes, run now</button>
+          </form>
+        </div>
+      </div>
+    </div>
+    """
+
+
+def run_now_button_html(job: Dict[str, Any]) -> str:
+    job = normalize_job(job)
+    if not job["enabled"]:
+        return '<button class="btn" type="button" disabled title="Enable this job to run now">Run Now</button>'
+
+    jid = safe_html(job["id"])
+    app_key = safe_html(job.get("APP", "radarr"))
+    delete_files = str(bool(job.get("DELETE_FILES", True))).lower()
+    enabled = str(bool(job.get("enabled", True))).lower()
+
+    if job.get("DRY_RUN", True):
+        return f"""
+          <form method="post" action="/jobs/run-now" style="margin:0;">
+            <input type="hidden" name="job_id" value="{jid}">
+            <button class="btn good" type="submit">Run Now</button>
+          </form>
+        """
+
+    return f"""
+      <button class="btn bad" type="button"
+        onclick="openRunNowConfirm('{jid}', {{
+          app: '{app_key}',
+          dryRun: false,
+          deleteFiles: {delete_files},
+          enabled: {enabled}
+        }})">Run Now</button>
+    """
+
 
 def load_config() -> Dict[str, Any]:
-    cfg: Dict[str, Any] = {
+    cfg = {
         "RADARR_URL": env_default("RADARR_URL", "http://radarr:7878").rstrip("/"),
         "RADARR_API_KEY": env_default("RADARR_API_KEY", ""),
         "RADARR_ENABLED": True,
@@ -234,17 +268,15 @@ def load_config() -> Dict[str, Any]:
     if CONFIG_PATH.exists():
         try:
             data = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
-            for k in list(cfg.keys()):
+            for k in cfg.keys():
                 if k in data:
                     cfg[k] = data[k]
         except Exception:
             pass
 
-    # Theme
     t = (cfg.get("UI_THEME") or "dark").lower()
     cfg["UI_THEME"] = t if t in ("dark", "light", "reaparr") else "dark"
 
-    # Booleans / clamps
     cfg["RADARR_OK"] = bool(cfg.get("RADARR_OK", False))
     cfg["SONARR_OK"] = bool(cfg.get("SONARR_OK", False))
     cfg["RADARR_ENABLED"] = bool(cfg.get("RADARR_ENABLED", True))
@@ -257,7 +289,6 @@ def load_config() -> Dict[str, Any]:
         cfg["UI_SCALE"] = 1.0
     cfg["UI_SCALE"] = max(0.75, min(1.5, cfg["UI_SCALE"]))
 
-    # Jobs
     jobs = cfg.get("JOBS") or []
     if not isinstance(jobs, list):
         jobs = []
@@ -268,12 +299,10 @@ def load_config() -> Dict[str, Any]:
         jobs = [normalize_job(j)]
     cfg["JOBS"] = jobs
 
-    # Normalize strings
     cfg["RADARR_URL"] = (cfg.get("RADARR_URL") or "").rstrip("/")
     cfg["RADARR_API_KEY"] = cfg.get("RADARR_API_KEY") or ""
     cfg["SONARR_URL"] = (cfg.get("SONARR_URL") or "").rstrip("/")
     cfg["SONARR_API_KEY"] = cfg.get("SONARR_API_KEY") or ""
-
     return cfg
 
 
@@ -291,22 +320,12 @@ def load_state() -> Dict[str, Any]:
     return {}
 
 
-# ============================================================
-# API helpers
-# ============================================================
-
 def is_app_ready(cfg: Dict[str, Any], app_key: str) -> bool:
-    k = (app_key or "").lower()
-    if k == "radarr":
-        return bool(cfg.get("RADARR_ENABLED", True)
-                    and cfg.get("RADARR_URL")
-                    and cfg.get("RADARR_API_KEY")
-                    and cfg.get("RADARR_OK"))
-    if k == "sonarr":
-        return bool(cfg.get("SONARR_ENABLED", False)
-                    and cfg.get("SONARR_URL")
-                    and cfg.get("SONARR_API_KEY")
-                    and cfg.get("SONARR_OK"))
+    app_key = (app_key or "").lower()
+    if app_key == "radarr":
+        return bool(cfg.get("RADARR_ENABLED", True) and cfg.get("RADARR_URL") and cfg.get("RADARR_API_KEY") and cfg.get("RADARR_OK"))
+    if app_key == "sonarr":
+        return bool(cfg.get("SONARR_ENABLED", False) and cfg.get("SONARR_URL") and cfg.get("SONARR_API_KEY") and cfg.get("SONARR_OK"))
     return False
 
 
@@ -326,16 +345,12 @@ def sonarr_get(cfg: Dict[str, Any], path: str):
 
 
 def get_tag_labels(cfg: Dict[str, Any], app_key: str) -> List[str]:
-    k = (app_key or "").lower()
-    if not is_app_ready(cfg, k):
+    app_key = (app_key or "").lower()
+    if not is_app_ready(cfg, app_key):
         return []
-    tags = radarr_get(cfg, "/api/v3/tag") if k == "radarr" else sonarr_get(cfg, "/api/v3/tag")
+    tags = radarr_get(cfg, "/api/v3/tag") if app_key == "radarr" else sonarr_get(cfg, "/api/v3/tag")
     return sorted({t.get("label") for t in (tags or []) if t.get("label")}, key=lambda x: str(x).lower())
 
-
-# ============================================================
-# Preview logic
-# ============================================================
 
 def preview_candidates_radarr(cfg: Dict[str, Any], job: Dict[str, Any]):
     if not cfg.get("RADARR_ENABLED", True):
@@ -425,10 +440,6 @@ def preview_candidates_sonarr(cfg: Dict[str, Any], job: Dict[str, Any]):
     return {"error": None, "candidates": candidates, "tag_id": tag_id, "cutoff": cutoff.isoformat()}
 
 
-# ============================================================
-# Toasts + Modals helpers
-# ============================================================
-
 def render_toasts() -> str:
     msgs = get_flashed_messages(with_categories=True)
     if not msgs:
@@ -439,76 +450,6 @@ def render_toasts() -> str:
         items.append(f'<div class="toast {t}">{safe_html(msg)}</div>')
     return f'<div id="toastHost" class="toastHost">{"".join(items)}</div>'
 
-
-def run_now_modal_html() -> str:
-    return """
-    <div class="modalBack" id="runNowBack">
-      <div class="modal" role="dialog" aria-modal="true" aria-labelledby="runNowTitle">
-        <div class="mh">
-          <h3 id="runNowTitle">Run Now confirmation</h3>
-        </div>
-        <div class="mb">
-          <div style="margin-bottom:10px;">
-            <div class="muted">App: <b><span id="rn_app">Radarr</span></b></div>
-            <div class="muted">Dry Run: <b><span id="rn_dry">OFF</span></b> • Delete Files: <b><span id="rn_del">ON</span></b> • Job: <b><span id="rn_enabled">Enabled</span></b></div>
-          </div>
-
-          <p><b id="rn_msg">Dry Run is OFF — this will perform real actions.</b></p>
-
-          <p id="rn_hint_delete" class="muted">
-            With <b>Delete Files</b> enabled, it may delete files from disk via the app.
-          </p>
-
-          <p id="rn_hint_no_delete" class="muted" style="display:none;">
-            With <b>Delete Files</b> disabled, it should avoid deleting from disk.
-          </p>
-
-          <p class="muted">If you’re not sure, edit the job and enable <b>Dry Run</b>, then use Preview.</p>
-        </div>
-        <div class="mf">
-          <button class="btn" type="button" onclick="hideModal('runNowBack')">Cancel</button>
-          <form id="runNowFormConfirm" method="post" action="/jobs/run-now" style="margin:0;">
-            <input type="hidden" id="runNowJobId" name="job_id" value="">
-            <button class="btn bad" type="button" onclick="runNowSubmitConfirm()">Yes, run now</button>
-          </form>
-        </div>
-      </div>
-    </div>
-    """
-
-
-def run_now_button_html(job: Dict[str, Any]) -> str:
-    job = normalize_job(job)
-    if not job["enabled"]:
-        return '<button class="btn" type="button" disabled title="Enable this job to run now">Run Now</button>'
-
-    jid = safe_html(job["id"])
-    app_key = safe_html(job.get("APP", "radarr"))
-    delete_files = str(bool(job.get("DELETE_FILES", True))).lower()
-    enabled = str(bool(job.get("enabled", True))).lower()
-
-    if job.get("DRY_RUN", True):
-        return f"""
-          <form method="post" action="/jobs/run-now" style="margin:0;">
-            <input type="hidden" name="job_id" value="{jid}">
-            <button class="btn good" type="submit">Run Now</button>
-          </form>
-        """
-
-    return f"""
-      <button class="btn bad" type="button"
-        onclick="openRunNowConfirm('{jid}', {{
-          app: '{app_key}',
-          dryRun: false,
-          deleteFiles: {delete_files},
-          enabled: {enabled}
-        }})">Run Now</button>
-    """
-
-
-# ============================================================
-# HTML head (CSS/JS)
-# ============================================================
 
 BASE_HEAD = """
 <meta charset="utf-8">
@@ -525,10 +466,6 @@ BASE_HEAD = """
 
     --accent:#22c55e;
     --accent2:#16a34a;
-
-    /* Sidebar active accents (so var() always resolves) */
-    --dark_accent:#0b1220;   /* readable on #97c13d */
-    --light_accent:#6d28d9;  /* matches light theme accent */
 
     --warn:#f59e0b;
     --bad:#ef4444;
@@ -814,6 +751,7 @@ BASE_HEAD = """
 
   @media (max-width: 900px){
     :root{ --sidebar-w: 220px; }
+    /* keep edge-to-edge (no mainArea padding) */
   }
   @media (max-width: 740px){
     :root{ --sidebar-w: 200px; }
@@ -1672,17 +1610,13 @@ BASE_HEAD = """
 """
 
 
-# ============================================================
-# Page shell
-# ============================================================
-
-def shell(page_title: str, active: str, body: str) -> str:
+def shell(page_title: str, active: str, body: str):
     cfg = load_config()
     theme = (cfg.get("UI_THEME") or "dark").lower()
     if theme not in ("dark", "light", "reaparr"):
         theme = "dark"
 
-    def sb_item(name: str, href: str, key: str) -> str:
+    def sb_item(name, href, key):
         cls = "sbItem active" if active == key else "sbItem"
         return f'<a class="{cls}" href="{href}"><span class="sbText">{safe_html(name)}</span></a>'
 
@@ -1749,10 +1683,6 @@ def shell(page_title: str, active: str, body: str) -> str:
 """
 
 
-# ============================================================
-# Routes: basics / assets / theme
-# ============================================================
-
 @app.get("/")
 def home():
     return redirect("/dashboard")
@@ -1777,10 +1707,6 @@ def toggle_theme():
     flash(f"Theme set to {cfg['UI_THEME']} ✔", "success")
     return redirect(request.referrer or "/dashboard")
 
-
-# ============================================================
-# Routes: settings + connection tests
-# ============================================================
 
 @app.post("/reset-radarr")
 def reset_radarr():
@@ -2151,10 +2077,6 @@ def save_settings():
     return redirect("/settings")
 
 
-# ============================================================
-# Routes: jobs
-# ============================================================
-
 @app.post("/jobs/toggle-enabled")
 def jobs_toggle_enabled():
     cfg = load_config()
@@ -2187,23 +2109,23 @@ def jobs_page():
     radarr_labels = get_tag_labels(cfg, "radarr") if radarr_ready else []
     sonarr_labels = get_tag_labels(cfg, "sonarr") if sonarr_ready else []
 
-    available_apps: List[str] = []
+    available_apps = []
     if radarr_ready:
         available_apps.append("radarr")
     if sonarr_ready:
         available_apps.append("sonarr")
 
+    default_app = "radarr"
     if len(available_apps) == 1:
         default_app = available_apps[0]
     elif "radarr" in available_apps:
         default_app = "radarr"
     elif "sonarr" in available_apps:
         default_app = "sonarr"
-    else:
-        default_app = "radarr"
 
     app_disabled_attr = "disabled" if len(available_apps) == 1 else ""
 
+    # Render only the apps that are actually available/ready
     app_options_html = ""
     if "radarr" in available_apps:
         app_options_html += '<option value="radarr">Radarr</option>'
@@ -2336,7 +2258,7 @@ def jobs_page():
     </div>
     """
 
-    job_cards: List[str] = []
+    job_cards = []
     for j0 in cfg["JOBS"]:
         j = normalize_job(j0)
         app_key = (j.get("APP") or "radarr").lower()
@@ -2514,7 +2436,7 @@ def jobs_save():
         name = (request.form.get("name") or "Job").strip()
         enabled = (request.form.get("enabled") or "1").strip() == "1"
 
-        allowed_apps: List[str] = []
+        allowed_apps = []
         if is_app_ready(cfg, "radarr"):
             allowed_apps.append("radarr")
         if is_app_ready(cfg, "sonarr"):
@@ -2628,10 +2550,6 @@ def jobs_run_now():
     return redirect("/dashboard")
 
 
-# ============================================================
-# Cron
-# ============================================================
-
 @app.post("/apply-cron")
 def apply_cron():
     cfg = load_config()
@@ -2661,10 +2579,6 @@ def apply_cron():
 
     return redirect(request.referrer or "/jobs")
 
-
-# ============================================================
-# Preview
-# ============================================================
 
 @app.get("/preview")
 def preview():
@@ -2755,10 +2669,6 @@ def preview():
         flash(f"Preview failed: {e}", "error")
         return redirect("/dashboard")
 
-
-# ============================================================
-# Dashboard / Status
-# ============================================================
 
 @app.get("/dashboard")
 def dashboard():
@@ -2863,10 +2773,6 @@ def status():
     return render_template_string(shell("mediareaparr • Status", "status", body))
 
 
-# ============================================================
-# Entrypoint
-# ============================================================
-
 if __name__ == "__main__":
     import argparse
     p = argparse.ArgumentParser()
@@ -2874,4 +2780,3 @@ if __name__ == "__main__":
     p.add_argument("--port", type=int, default=int(os.environ.get("WEBUI_PORT", "7575")))
     args = p.parse_args()
     app.run(host=args.host, port=args.port)
-```
