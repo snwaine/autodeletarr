@@ -597,7 +597,6 @@ BASE_HEAD = """
     align-items: center;
     padding: 0;
     background: var(--panel2);
-    border-bottom: 1px solid var(--line);
   }
 
   .ptRightActions{
@@ -614,7 +613,7 @@ BASE_HEAD = """
     display: flex;
     align-items: center;
     justify-content: flex-start;
-    padding-left: 10px;
+    padding-left: 0px;
   }
 
   .pageTopLogo img{
@@ -634,7 +633,7 @@ BASE_HEAD = """
     height: calc(100vh - var(--top-h));
     border-right: 1px solid var(--line);
     background: var(--panel);
-    box-shadow: var(--shadow);
+    box-shadow: none;
     overflow: hidden;
     z-index: 7000;
     display:flex;
@@ -721,7 +720,6 @@ BASE_HEAD = """
   }
   .card .hd{
     padding: 14px 16px;
-    border-bottom: 1px solid var(--line);
     display:flex; align-items:center; justify-content: space-between;
     gap:12px;
     background: var(--panel2);
