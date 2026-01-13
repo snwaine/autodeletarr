@@ -779,13 +779,19 @@ BASE_HEAD = """
     flex-direction: column;
     min-height: 0;
   }
+
   .card .hd{
     padding: 14px 16px;
     display:flex; align-items:center; justify-content: space-between;
     gap:12px;
     background: var(--panel2);
     overflow: hidden;
+    position: sticky;
+    top: 0;
+    z-index: 2;
+    flex: 0 0 auto;
   }
+
   [data-theme="light"] .card .hd{ background: #f3f4f6; }
 
   .card .hd h2{
@@ -797,9 +803,9 @@ BASE_HEAD = """
   .card .bd{
     padding: 14px 16px;
     background: var(--panel);
-    flex: 1 1 auto;
     min-height: 0;
     overflow: auto;
+    flex: 1 1 auto;
   }
 
   body[data-theme="reaparr"] .card{
