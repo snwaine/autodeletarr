@@ -475,6 +475,7 @@ BASE_HEAD = """
 
     --top-h: 60px;
     --sidebar-w: 210px;
+    --pageHeaderBackgroundColor: #121b26;
 
     --fs-1: calc(13px * var(--ui));
     --fs-3: calc(16px * var(--ui));
@@ -603,7 +604,7 @@ BASE_HEAD = """
     overflow: auto;
   }
 
-  .pageTop{
+  .pageHeader{
     position: fixed;
     top: 0; left: 0; right: 0;
     height: var(--top-h);
@@ -612,13 +613,13 @@ BASE_HEAD = """
     margin: 0 !important;
   }
 
-  .pageTop .ptIn{
+  .pageHeader .ptIn{
     height: var(--top-h);
     display: grid;
     grid-template-columns: var(--sidebar-w) 1fr auto;
     align-items: center;
     padding: 0;
-    background: var(--panel2);
+    background: var(--pageHeaderBackgroundColor);
   }
 
   .ptRightActions{
@@ -694,6 +695,7 @@ BASE_HEAD = """
 
   .sbItem.active{
     color: #97c13d;
++   box-shadow: none !important;
   }
 
   body[data-theme="reaparr"] .sbItem:hover{
@@ -702,9 +704,10 @@ BASE_HEAD = """
   }
 
   body[data-theme="reaparr"] .sbItem.active{
-    border-color: rgba(38,224,138,.55);
-    box-shadow: 0 0 0 3px rgba(38,224,138,.16);
-  }
++   color: #97c13d;
++   border-color: transparent;
++   box-shadow: none !important;
++ }
 
   .sbNav form{ margin: 0; }
   button.sbItem{ width: 100%; text-align: left; color: var(--text); }
@@ -789,8 +792,8 @@ BASE_HEAD = """
   body[data-theme="reaparr"] .jobHeader,
   body[data-theme="reaparr"] .modal .mh,
   body[data-theme="reaparr"] .modal .mf,
-  body[data-theme="reaparr"] .pageTop .ptIn{
-    background: linear-gradient(180deg, rgba(255,255,255,.03), transparent), var(--panel2);
+  body[data-theme="reaparr"] .pageHeader .ptIn{
+    background: linear-gradient(180deg, rgba(255,255,255,.03), transparent), var(--pageHeaderBackgroundColor);
   }
 
   .muted{ color: var(--muted); }
@@ -1604,7 +1607,7 @@ def shell(page_title: str, active: str, body: str):
     """
 
     topbar = """
-      <div class="pageTop">
+      <div class="pageHeader">
         <div class="ptIn">
           <div class="pageTopLogo">
             <img src="/logo/logo-full.png" alt="MediaReaparr">

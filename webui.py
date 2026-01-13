@@ -475,7 +475,7 @@ BASE_HEAD = """
 
     --top-h: 60px;
     --sidebar-w: 210px;
-    --pageHeaderBackgroundColor: #121b26;
+    --pageHeaderBackgroundColor: #1b2431;
 
     --fs-1: calc(13px * var(--ui));
     --fs-3: calc(16px * var(--ui));
@@ -500,7 +500,7 @@ BASE_HEAD = """
     --text:#0b1220;
     --line:#e5e7eb;
     --line2:#d1d5db;
-
+    --pageHeaderBackgroundColor:#f3f4f6;
     --accent:#6d28d9;
     --accent2:#7c3aed;
 
@@ -513,7 +513,7 @@ BASE_HEAD = """
     --bg:#070a0d;
     --panel:#0f1620;
     --panel2:#121b26;
-
+    --pageHeaderBackgroundColor:#121b26;
     --muted:rgba(255,255,255,.64);
     --text:rgba(255,255,255,.92);
     --line:rgba(255,255,255,.10);
