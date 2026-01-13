@@ -684,10 +684,11 @@ BASE_HEAD = """
     padding: 12px 14px;
     border: none;
     background: none;
-    font-size: 14;
+    font-size: 14px;
     text-decoration: none;
     cursor:pointer;
   }
+
   .sbItem:hover{
     color: #97c13d;
   }
@@ -728,7 +729,6 @@ BASE_HEAD = """
 
   @media (max-width: 900px){
     :root{ --sidebar-w: 220px; }
-    .mainArea{ padding: 12px; }
   }
   @media (max-width: 740px){
     :root{ --sidebar-w: 200px; }
@@ -741,13 +741,9 @@ BASE_HEAD = """
 
   .grid{ 
     display:grid;
-    grid-template-columns:
-    flex: 1 1 auto;
+    grid-template-columns: repeat(12, 1fr);
     min-height: 0;
-    overflow: auto;
-    padding: 0px;
     gap: 14px;
-    repeat(12, 1fr);
   }
 
   .card{
@@ -1238,6 +1234,13 @@ BASE_HEAD = """
     if (e.key === "Escape") {
       hideModal("runNowBack");
       maybeCloseJobModal();
+    }
+  });
+
+  document.addEventListener("click", (e) => {
+    if (e.target && e.target.id === "jobBack") {
+      // ignore backdrop clicks
+      e.preventDefault();
     }
   });
 
