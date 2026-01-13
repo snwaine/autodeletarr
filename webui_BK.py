@@ -580,6 +580,29 @@ BASE_HEAD = """
   .wrap{ width: 100vw; height: 100vh; overflow: hidden; position: relative; }
   .layoutRadarr{ position: relative; width: 100vw; height: 100vh; }
 
+  .pageContent{
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow: auto;
+    padding: 0px;
+  }
+
+  .pageContent .grid{
+    min-height: 100%;
+  }
+
+  .pageContent .grid > .card:only-child{
+    min-height: 100%;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .pageContent .grid > .card:only-child > .bd{
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow: auto;
+  }
+
   .pageTop{
     position: fixed;
     top: 0; left: 0; right: 0;
@@ -631,7 +654,7 @@ BASE_HEAD = """
     width: var(--sidebar-w);
     height: calc(100vh - var(--top-h));
     border-right: 3px solid var(--line);
-    background: var(--panel);
+    background: var(--panel2);
     box-shadow: none;
     overflow: hidden;
     z-index: 7000;
@@ -640,13 +663,17 @@ BASE_HEAD = """
   }
 
   .sbNav{
-    padding: 10px;
+    padding: 0px;
     display:flex;
     flex-direction: column;
-    gap: 8px;
+    gap: 0px;
     flex: 1 1 auto;
     overflow: hidden;
     min-height: 0;
+  }
+
+  .sbItem,.sbItem:hover,.sbItem:focus,.sbItem:active{
+    text-decoration: none;
   }
 
   .sbItem{
@@ -657,20 +684,23 @@ BASE_HEAD = """
     padding: 12px 14px;
     border: none;
     background: none;
-    font-size: var(--fs-1);
+    font-size: 14px;
+    text-decoration: none;
     cursor:pointer;
   }
   .sbItem:hover{
-    background: rgba(34,197,94,.10);
-    box-shadow: none;
+    color: #97c13d;
   }
+
+  .sbItem.active{
+    color: #97c13d;
+  }
+
   body[data-theme="reaparr"] .sbItem:hover{
     border-color: rgba(38,224,138,.45);
     box-shadow: 0 0 0 3px rgba(38,224,138,.10);
   }
-  .sbItem.active{
-    background: rgba(34,197,94,.16);
-  }
+
   body[data-theme="reaparr"] .sbItem.active{
     border-color: rgba(38,224,138,.55);
     box-shadow: 0 0 0 3px rgba(38,224,138,.16);
@@ -688,7 +718,9 @@ BASE_HEAD = """
     left: var(--sidebar-w);
     right: 0;
     bottom: 0;
-    overflow: auto;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
     min-width: 0;
     padding: 0;
     z-index: 2;
@@ -696,7 +728,7 @@ BASE_HEAD = """
 
   @media (max-width: 900px){
     :root{ --sidebar-w: 220px; }
-    .mainArea{ padding: 12px; }
+    /* keep edge-to-edge (no mainArea padding) */
   }
   @media (max-width: 740px){
     :root{ --sidebar-w: 200px; }
@@ -707,7 +739,13 @@ BASE_HEAD = """
     body:not(.sbPinnedOpen) .sbItem span.sbText{ display:none; }
   }
 
-  .grid{ display:grid; grid-template-columns: repeat(12, 1fr); gap: 14px; }
+  .grid{
+    display: grid;
+    grid-template-columns: repeat(12, 1fr);
+    gap: 14px;
+    min-height: 0;
+  }
+
   .card{
     grid-column: span 12;
     border: none;
@@ -715,6 +753,9 @@ BASE_HEAD = """
     background: var(--panel);
     box-shadow: var(--shadow);
     overflow:hidden;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
   }
   .card .hd{
     padding: 14px 16px;
@@ -724,8 +765,20 @@ BASE_HEAD = """
     overflow: hidden;
   }
   [data-theme="light"] .card .hd{ background: #f3f4f6; }
-  .card .hd h2{ margin:0; font-size: 14px; letter-spacing:.2px; }
-  .card .bd{ padding: 14px 16px; background: var(--panel); overflow: auto; }
+
+  .card .hd h2{
+    margin:0;
+    font-size: 14px;
+    letter-spacing:.2px;
+  }
+
+  .card .bd{
+    padding: 14px 16px;
+    background: var(--panel);
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow: auto;
+  }
 
   body[data-theme="reaparr"] .card,
   body[data-theme="reaparr"] .jobCard,
@@ -1245,8 +1298,13 @@ BASE_HEAD = """
     const appSel = $("job_app");
     const defApp = appSel?.getAttribute("data-default-app") || "radarr";
     setVal("job_app", defApp);
-    rebuildTagOptions(defApp, "");
-    updateSonarrModeVisibility(defApp);
+
+    // If defApp isn't available (e.g. only Sonarr exists), pick the first option
+    if (appSel && appSel.selectedIndex < 0 && appSel.options.length > 0) appSel.selectedIndex = 0;
+    const actualApp = appSel ? (appSel.value || defApp) : defApp;
+
+    rebuildTagOptions(actualApp, "");
+    updateSonarrModeVisibility(actualApp);
 
     setVal("job_sonarr_mode", "episodes_only");
     setVal("job_days", "30");
@@ -1274,9 +1332,14 @@ BASE_HEAD = """
     const appKey = btn.getAttribute("data-app") || "radarr";
     setVal("job_app", appKey);
 
+    const appSel = $("job_app");
+    // If stored app isn't available in dropdown, fall back to first option
+    if (appSel && appSel.selectedIndex < 0 && appSel.options.length > 0) appSel.selectedIndex = 0;
+    const actualApp = appSel ? (appSel.value || appKey) : appKey;
+
     const tag = btn.getAttribute("data-tag") || "";
-    rebuildTagOptions(appKey, tag);
-    updateSonarrModeVisibility(appKey);
+    rebuildTagOptions(actualApp, tag);
+    updateSonarrModeVisibility(actualApp);
 
     const smode = btn.getAttribute("data-sonarr-mode") || "episodes_only";
     setVal("job_sonarr_mode", smode);
@@ -1569,7 +1632,9 @@ def shell(page_title: str, active: str, body: str):
       {topbar}
       {sidebar}
       <div class="mainArea">
-        {body}
+        <div class="pageContent">
+          {body}
+        </div>
       </div>
     </div>
   </div>
@@ -1578,9 +1643,11 @@ def shell(page_title: str, active: str, body: str):
 </html>
 """
 
+
 @app.get("/")
 def home():
     return redirect("/dashboard")
+
 
 @app.get("/logo/<path:filename>")
 def serve_logo_assets(filename):
@@ -1589,6 +1656,7 @@ def serve_logo_assets(filename):
     if not APP_LOGO_DIR.exists():
         return ("", 404)
     return send_from_directory(str(APP_LOGO_DIR), "logo-full.png")
+
 
 @app.post("/toggle-theme")
 def toggle_theme():
@@ -1599,6 +1667,7 @@ def toggle_theme():
     save_config(cfg)
     flash(f"Theme set to {cfg['UI_THEME']} ✔", "success")
     return redirect(request.referrer or "/dashboard")
+
 
 @app.post("/reset-radarr")
 def reset_radarr():
@@ -2016,6 +2085,14 @@ def jobs_page():
         default_app = "sonarr"
 
     app_disabled_attr = "disabled" if len(available_apps) == 1 else ""
+
+    # Render only the apps that are actually available/ready
+    app_options_html = ""
+    if "radarr" in available_apps:
+        app_options_html += '<option value="radarr">Radarr</option>'
+    if "sonarr" in available_apps:
+        app_options_html += '<option value="sonarr">Sonarr</option>'
+
     hour_opts = "".join([f'<option value="{h}">{h:02d}:00</option>' for h in range(0, 24)])
 
     tags_js = f"""
@@ -2052,9 +2129,8 @@ def jobs_page():
               <div class="field">
                 <label>App</label>
                 <select name="APP" id="job_app" onchange="onJobAppChanged()"
-                        data-default-app="{safe_html(default_app)}" {app_disabled_attr}>
-                  <option value="radarr">Radarr</option>
-                  <option value="sonarr">Sonarr</option>
+                        data-default-app="{safe_html(default_app)}" {app_disabled_attr} required>
+                  {app_options_html}
                 </select>
               </div>
 
@@ -2321,12 +2397,17 @@ def jobs_save():
         name = (request.form.get("name") or "Job").strip()
         enabled = (request.form.get("enabled") or "1").strip() == "1"
 
-        app_key = (request.form.get("APP") or "radarr").strip().lower()
-        if app_key not in ("radarr", "sonarr"):
-            raise ValueError("Invalid app selection.")
+        allowed_apps = []
+        if is_app_ready(cfg, "radarr"):
+            allowed_apps.append("radarr")
+        if is_app_ready(cfg, "sonarr"):
+            allowed_apps.append("sonarr")
+        if not allowed_apps:
+            raise ValueError("No apps connected. Go to Settings and Test Connection first.")
 
-        if not is_app_ready(cfg, app_key):
-            raise ValueError(f"{'Radarr' if app_key=='radarr' else 'Sonarr'} is not connected/enabled. Go to Settings and connect it (or pick the other app).")
+        app_key = (request.form.get("APP") or "").strip().lower()
+        if app_key not in allowed_apps:
+            raise ValueError(f"Selected app is not available. Available: {', '.join(allowed_apps)}.")
 
         tag_label = (request.form.get("TAG_LABEL") or "").strip()
         if not tag_label:
@@ -2467,7 +2548,14 @@ def preview():
 
     job = find_job(cfg, job_id)
     if not job:
-        job = normalize_job((cfg.get("JOBS") or [job_defaults()])[0])
+        jobs = [normalize_job(j) for j in (cfg.get("JOBS") or [])]
+        preferred = next((j for j in jobs if j.get("enabled") and is_app_ready(cfg, j.get("APP"))), None)
+        if preferred:
+            job = preferred
+        elif jobs:
+            job = jobs[0]
+        else:
+            job = normalize_job(job_defaults())
 
     try:
         result = preview_candidates_sonarr(cfg, job) if job.get("APP") == "sonarr" else preview_candidates_radarr(cfg, job)
