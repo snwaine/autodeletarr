@@ -467,6 +467,10 @@ BASE_HEAD = """
     --accent:#22c55e;
     --accent2:#16a34a;
 
+    --light_accent:#6d28d9;
+    --dark_accent:#0b1220;
+    --reaparr_accent:#a7d541;
+    
     --warn:#f59e0b;
     --bad:#ef4444;
     --shadow: 0 12px 28px rgba(0,0,0,.28);
@@ -504,6 +508,8 @@ BASE_HEAD = """
     --accent:#6d28d9;
     --accent2:#7c3aed;
 
+    --light_accent:#6d28d9;
+
     --warn:#d97706;
     --bad:#dc2626;
     --shadow: 0 12px 30px rgba(0,0,0,.08);
@@ -523,8 +529,6 @@ BASE_HEAD = """
     --accent2:#16b86e;
     
     --reaparr_accent:#a7d541;
-    --light_accent:#a7d541;
-    --dark_accent:#a7d541;
 
     --warn:#ffb020;
     --bad:#ff5c6c;
