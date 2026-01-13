@@ -640,10 +640,10 @@ BASE_HEAD = """
   }
 
   .sbNav{
-    padding: 10px;
+    padding: 0px;
     display:flex;
     flex-direction: column;
-    gap: 8px;
+    gap: 0px;
     flex: 1 1 auto;
     overflow: hidden;
     min-height: 0;
@@ -661,16 +661,18 @@ BASE_HEAD = """
     cursor:pointer;
   }
   .sbItem:hover{
-    background: rgba(34,197,94,.10);
-    box-shadow: none;
+    color: #97c13d;
   }
+  
+  .sbItem.active{
+    color: #97c13d;
+  }
+  
   body[data-theme="reaparr"] .sbItem:hover{
     border-color: rgba(38,224,138,.45);
     box-shadow: 0 0 0 3px rgba(38,224,138,.10);
   }
-  .sbItem.active{
-    background: rgba(34,197,94,.16);
-  }
+
   body[data-theme="reaparr"] .sbItem.active{
     border-color: rgba(38,224,138,.55);
     box-shadow: 0 0 0 3px rgba(38,224,138,.16);
