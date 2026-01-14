@@ -1,4 +1,3 @@
-```python
 import os
 import json
 import signal
@@ -10,7 +9,7 @@ from typing import Optional, Dict, Any, List
 
 import requests
 from flask import (
-    Flask, request, redirect,
+    Flask, request, redirect, render_template_string,
     flash, get_flashed_messages, send_from_directory
 )
 
@@ -522,7 +521,7 @@ BASE_HEAD = """
 
     --accent:#26e08a;
     --accent2:#16b86e;
-
+    
     --reaparr_accent:#a7d541;
     --light_accent:#a7d541;
     --dark_accent:#a7d541;
@@ -586,7 +585,6 @@ BASE_HEAD = """
   .wrap{ width: 100vw; height: 100vh; overflow: hidden; position: relative; }
   .layoutReaparr{ position: relative; width: 100vw; height: 100vh; }
 
-  /* IMPORTANT: stop page-level scrolling so card headers don't move */
   .pageContent{
     flex: 1 1 auto;
     min-height: 0;
@@ -594,10 +592,21 @@ BASE_HEAD = """
     padding: 0px;
   }
 
-  /* Grid fills available height so cards can scroll internally */
   .pageContent .grid{
+    min-height: 100%;
     height: 100%;
+  }
+
+  .pageContent .grid > .card:only-child{
+    min-height: 100%;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .pageContent .grid > .card:only-child > .bd{
+    flex: 1 1 auto;
     min-height: 0;
+    overflow: auto;
   }
 
   .pageHeader{
@@ -714,13 +723,13 @@ BASE_HEAD = """
     color: var(--light_accent);
     border-left: 1px solid var(--light_accent);
   }
-
+  
   body[data-theme="dark"] .sbItem.active{
     background: #97c13d;
     color: var(--dark_accent);
     border-left: 1px solid var(--dark_accent);
   }
-
+  
   .sbNav form{ margin: 0; }
   button.sbItem{ width: 100%; text-align: left; color: var(--text); }
 
@@ -743,6 +752,7 @@ BASE_HEAD = """
 
   @media (max-width: 900px){
     :root{ --sidebar-w: 220px; }
+    /* keep edge-to-edge (no mainArea padding) */
   }
   @media (max-width: 740px){
     :root{ --sidebar-w: 200px; }
@@ -772,19 +782,20 @@ BASE_HEAD = """
     height: 100%;
   }
 
-  /* IMPORTANT: header stays in place; body scrolls */
   .card .hd{
     padding: 14px 16px;
-    display:flex; align-items:center; justify-content: space-between;
+    display:flex; 
+    align-items:center;
+    justify-content: space-between;
     gap:12px;
     background: var(--panel2);
     overflow: hidden;
-
     position: sticky;
     top: 0;
-    z-index: 5;
+    z-index: 2;
     flex: 0 0 auto;
   }
+
   [data-theme="light"] .card .hd{ background: #f3f4f6; }
 
   .card .hd h2{
@@ -796,10 +807,9 @@ BASE_HEAD = """
   .card .bd{
     padding: 14px 16px;
     background: var(--panel);
-    flex: 1 1 auto;
     min-height: 0;
     overflow: auto;
-    -webkit-overflow-scrolling: touch;
+    flex: 1 1 auto;
   }
 
   body[data-theme="reaparr"] .card{
@@ -1188,7 +1198,7 @@ BASE_HEAD = """
   }
 
   .settingsCard:last-child{ margin-bottom: 0; }
-
+  
   .settingsCard .hd{
     background: var(--panel2);
     border-bottom: 1px solid var(--line);
@@ -1198,111 +1208,6 @@ BASE_HEAD = """
   body[data-theme="reaparr"] .settingsCard{
     background: var(--panel);
   }
-
-  /* --------------------------
-     Apps page (5 cards wide, 300x128)
-     -------------------------- */
-  .appsSectionTitle{
-    font-size: calc(18px * var(--ui));
-    font-weight: 700;
-    margin: 2px 0 10px 0;
-  }
-  .appsDivider{
-    height: 1px;
-    background: var(--line);
-    margin: 0 0 14px 0;
-  }
-
-  .appsGrid{
-    display: grid;
-    gap: 16px;
-    grid-template-columns: repeat(5, 300px);
-    justify-content: start;
-    align-items: start;
-  }
-  @media (max-width: 1700px){ .appsGrid{ grid-template-columns: repeat(4, 300px); } }
-  @media (max-width: 1380px){ .appsGrid{ grid-template-columns: repeat(3, 300px); } }
-  @media (max-width: 1060px){ .appsGrid{ grid-template-columns: repeat(2, 300px); } }
-  @media (max-width: 740px){  .appsGrid{ grid-template-columns: repeat(1, 300px); justify-content: center; } }
-
-  .appCard{
-    width: 300px;
-    height: 128px;
-    border: 1px solid var(--line);
-    background: var(--panel2);
-    overflow: hidden;
-    display: flex;
-    flex-direction: column;
-    padding: 14px 14px;
-    position: relative;
-    text-decoration: none !important;
-  }
-  [data-theme="light"] .appCard{ background: #ffffff; }
-
-  .appCardTop{
-    display:flex;
-    align-items:flex-start;
-    justify-content: space-between;
-    gap: 10px;
-    min-height: 0;
-  }
-  .appCardTitle{
-    font-size: calc(22px * var(--ui));
-    font-weight: 500;
-    line-height: 1.05;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-  .appCardIcon{
-    opacity: .75;
-    font-size: calc(18px * var(--ui));
-    line-height: 1;
-  }
-  .appCard:hover .appCardIcon{ opacity: 1; }
-
-  .pill{
-    display:inline-flex;
-    align-items:center;
-    height: calc(18px * var(--ui));
-    padding: 0 calc(6px * var(--ui));
-    border: 1px solid rgba(34,197,94,.55);
-    background: rgba(34,197,94,.18);
-    color: var(--text);
-    font-weight: 700;
-    font-size: calc(11px * var(--ui));
-    letter-spacing: .1px;
-    margin-top: auto;
-    width: fit-content;
-  }
-  body[data-theme="reaparr"] .pill{
-    border-color: rgba(167,213,65,.55);
-    background: rgba(167,213,65,.14);
-  }
-  [data-theme="light"] .pill{
-    border-color: rgba(34,197,94,.45);
-    background: rgba(34,197,94,.10);
-    color: #0b1220;
-  }
-
-  .appCard.add{
-    align-items: center;
-    justify-content: center;
-    padding: 0;
-    cursor: pointer;
-  }
-  .addBox{
-    width: 86px;
-    height: 54px;
-    border: 1px solid rgba(255,255,255,.45);
-    display:flex;
-    align-items:center;
-    justify-content:center;
-    font-size: 44px;
-    line-height: 1;
-    opacity: .75;
-  }
-  [data-theme="light"] .addBox{ border-color: rgba(0,0,0,.35); }
 </style>
 
 <script>
@@ -1443,6 +1348,7 @@ BASE_HEAD = """
     const defApp = appSel?.getAttribute("data-default-app") || "radarr";
     setVal("job_app", defApp);
 
+    // If defApp isn't available (e.g. only Sonarr exists), pick the first option
     if (appSel && appSel.selectedIndex < 0 && appSel.options.length > 0) appSel.selectedIndex = 0;
     const actualApp = appSel ? (appSel.value || defApp) : defApp;
 
@@ -1476,6 +1382,7 @@ BASE_HEAD = """
     setVal("job_app", appKey);
 
     const appSel = $("job_app");
+    // If stored app isn't available in dropdown, fall back to first option
     if (appSel && appSel.selectedIndex < 0 && appSel.options.length > 0) appSel.selectedIndex = 0;
     const actualApp = appSel ? (appSel.value || appKey) : appKey;
 
@@ -1812,75 +1719,6 @@ def toggle_theme():
     return redirect(request.referrer or "/dashboard")
 
 
-# --------------------------
-# Apps page (NEW)
-# --------------------------
-@app.get("/apps")
-def apps_page():
-    cfg = load_config()
-    rad_ready = is_app_ready(cfg, "radarr")
-    son_ready = is_app_ready(cfg, "sonarr")
-
-    def app_card(title: str, ready: bool, href: str):
-        pill = "Full Sync" if ready else "Not Connected"
-        return f"""
-          <a class="appCard" href="{safe_html(href)}">
-            <div class="appCardTop">
-              <div class="appCardTitle">{safe_html(title)}</div>
-              <div class="appCardIcon">↗</div>
-            </div>
-            <div class="pill">{safe_html(pill)}</div>
-          </a>
-        """
-
-    body = f"""
-      <div class="grid">
-        <div class="card">
-          <div class="hd">
-            <h2>Apps</h2>
-            <div class="btnrow">
-              <a class="btn" href="/settings">Settings</a>
-            </div>
-          </div>
-
-          <div class="bd">
-            <div class="appsSectionTitle">Applications</div>
-            <div class="appsDivider"></div>
-
-            <div class="appsGrid">
-              {app_card("Radarr", rad_ready, "/settings")}
-              {app_card("Sonarr", son_ready, "/settings")}
-              <div class="appCard add" title="Add (coming soon)">
-                <div class="addBox">+</div>
-              </div>
-            </div>
-
-            <div style="height:26px;"></div>
-
-            <div class="appsSectionTitle">Sync Profiles</div>
-            <div class="appsDivider"></div>
-
-            <div class="appsGrid">
-              <div class="appCard" title="Standard (placeholder)">
-                <div class="appCardTop">
-                  <div class="appCardTitle">Standard</div>
-                  <div class="appCardIcon">⧉</div>
-                </div>
-                <div class="pill">RSS</div>
-              </div>
-
-              <div class="appCard add" title="Add (coming soon)">
-                <div class="addBox">+</div>
-              </div>
-            </div>
-
-          </div>
-        </div>
-      </div>
-    """
-    return shell("mediareaparr • Apps", "apps", body)
-
-
 @app.post("/reset-radarr")
 def reset_radarr():
     cfg = load_config()
@@ -2023,7 +1861,6 @@ def settings():
             <h2>Settings</h2>
             <div class="btnrow">
               <a class="btn" href="/jobs">Manage Jobs</a>
-              <a class="btn" href="/apps">Apps</a>
               <form method="post" action="/apply-cron" style="margin:0;">
                 <button class="btn warn" type="submit">Apply Cron</button>
               </form>
@@ -2196,7 +2033,7 @@ def settings():
         </div>
       </div>
     """
-    return shell("mediareaparr • Settings", "settings", body)
+    return render_template_string(shell("mediareaparr • Settings", "settings", body))
 
 
 @app.post("/save-settings")
@@ -2299,6 +2136,7 @@ def jobs_page():
 
     app_disabled_attr = "disabled" if len(available_apps) == 1 else ""
 
+    # Render only the apps that are actually available/ready
     app_options_html = ""
     if "radarr" in available_apps:
         app_options_html += '<option value="radarr">Radarr</option>'
@@ -2580,7 +2418,6 @@ def jobs_page():
             <h2>Jobs</h2>
             <div class="btnrow">
               {add_job_button}
-              <a class="btn" href="/apps">Apps</a>
               <form method="post" action="/apply-cron" style="margin:0;">
                 <button class="btn warn" type="submit">Apply Cron</button>
               </form>
@@ -2599,7 +2436,8 @@ def jobs_page():
       {job_modal}
       {run_now_modal_html()}
     """
-    return shell("mediareaparr • Jobs", "jobs", body)
+    return render_template_string(shell("mediareaparr • Jobs", "jobs", body))
+
 
 @app.post("/jobs/save")
 def jobs_save():
@@ -2836,7 +2674,7 @@ def preview():
           </div>
           {run_now_modal_html()}
         """
-        return shell("mediareaparr • Preview", "jobs", body)
+        return render_template_string(shell("mediareaparr • Preview", "jobs", body))
 
     except Exception as e:
         flash(f"Preview failed: {e}", "error")
@@ -2856,7 +2694,6 @@ def dashboard():
                 <h2>Dashboard</h2>
                 <div class="btnrow">
                   <a class="btn" href="/jobs">Jobs</a>
-                  <a class="btn" href="/apps">Apps</a>
                   <a class="btn" href="/settings">Settings</a>
                 </div>
               </div>
@@ -2866,7 +2703,7 @@ def dashboard():
             </div>
           </div>
         """
-        return shell("mediareaparr • Dashboard", "dash", body)
+        return render_template_string(shell("mediareaparr • Dashboard", "dash", body))
 
     status_text = str(last_run.get("status") or "").upper()
     body = f"""
@@ -2876,7 +2713,6 @@ def dashboard():
             <h2>Dashboard</h2>
             <div class="btnrow">
               <a class="btn" href="/jobs">Jobs</a>
-              <a class="btn" href="/apps">Apps</a>
               <a class="btn" href="/settings">Settings</a>
             </div>
           </div>
@@ -2889,8 +2725,37 @@ def dashboard():
         </div>
       </div>
     """
-    return shell("mediareaparr • Dashboard", "dash", body)
+    return render_template_string(shell("mediareaparr • Dashboard", "dash", body))
 
+@app.get("/apps")
+def apps():
+    cfg = load_config()
+
+    body = f"""
+      <div class="grid">
+        <div class="card">
+          <div class="hd">
+            <h2>Apps</h2>
+          </div>
+          <div class="bd">
+            <div class="muted">
+              Manage application integrations here.
+            </div>
+
+            <div style="margin-top:14px;" class="muted">
+              This page will be used for:
+              <ul style="margin-top:6px;">
+                <li>Radarr configuration</li>
+                <li>Sonarr configuration</li>
+                <li>Future app integrations</li>
+              </ul>
+            </div>
+          </div>
+        </div>
+      </div>
+    """
+
+    return render_template_string(shell("mediareaparr • Apps", "apps", body))
 
 @app.get("/status")
 def status():
@@ -2945,7 +2810,7 @@ def status():
         </div>
       </div>
     """
-    return shell("mediareaparr • Status", "status", body)
+    return render_template_string(shell("mediareaparr • Status", "status", body))
 
 
 if __name__ == "__main__":
@@ -2955,4 +2820,3 @@ if __name__ == "__main__":
     p.add_argument("--port", type=int, default=int(os.environ.get("WEBUI_PORT", "7575")))
     args = p.parse_args()
     app.run(host=args.host, port=args.port)
-```
