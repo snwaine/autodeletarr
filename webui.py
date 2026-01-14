@@ -10,7 +10,7 @@ from typing import Optional, Dict, Any, List
 
 import requests
 from flask import (
-    Flask, request, redirect, render_template_string,
+    Flask, request, redirect,
     flash, get_flashed_messages, send_from_directory
 )
 
@@ -1878,7 +1878,7 @@ def apps_page():
         </div>
       </div>
     """
-    return render_template_string(shell("mediareaparr • Apps", "apps", body))
+    return shell("mediareaparr • Apps", "apps", body)
 
 
 @app.post("/reset-radarr")
@@ -2196,7 +2196,7 @@ def settings():
         </div>
       </div>
     """
-    return render_template_string(shell("mediareaparr • Settings", "settings", body))
+    return shell("mediareaparr • Settings", "settings", body)
 
 
 @app.post("/save-settings")
@@ -2599,8 +2599,7 @@ def jobs_page():
       {job_modal}
       {run_now_modal_html()}
     """
-    return render_template_string(shell("mediareaparr • Jobs", "jobs", body))
-
+    return shell("mediareaparr • Jobs", "jobs", body)
 
 @app.post("/jobs/save")
 def jobs_save():
@@ -2837,7 +2836,7 @@ def preview():
           </div>
           {run_now_modal_html()}
         """
-        return render_template_string(shell("mediareaparr • Preview", "jobs", body))
+        return shell("mediareaparr • Preview", "jobs", body)
 
     except Exception as e:
         flash(f"Preview failed: {e}", "error")
@@ -2867,7 +2866,7 @@ def dashboard():
             </div>
           </div>
         """
-        return render_template_string(shell("mediareaparr • Dashboard", "dash", body))
+        return shell("mediareaparr • Dashboard", "dash", body)
 
     status_text = str(last_run.get("status") or "").upper()
     body = f"""
@@ -2890,7 +2889,7 @@ def dashboard():
         </div>
       </div>
     """
-    return render_template_string(shell("mediareaparr • Dashboard", "dash", body))
+    return shell("mediareaparr • Dashboard", "dash", body)
 
 
 @app.get("/status")
@@ -2946,7 +2945,7 @@ def status():
         </div>
       </div>
     """
-    return render_template_string(shell("mediareaparr • Status", "status", body))
+    return shell("mediareaparr • Status", "status", body)
 
 
 if __name__ == "__main__":
