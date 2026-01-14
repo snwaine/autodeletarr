@@ -1195,7 +1195,65 @@ BASE_HEAD = """
   }
 
   .settingsCard:last-child{ margin-bottom: 0; }
-  
+
+  /* ============================
+     Apps page layout
+     ============================ */
+  .appsGrid{
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+    gap: 16px;
+  }
+
+  @media (min-width: 1600px){
+    .appsGrid{
+      grid-template-columns: repeat(5, 300px);
+      justify-content: start;
+    }
+  }
+
+  .appCard{
+    width: 300px;
+    height: 128px;
+    background: var(--panel2);
+    border: 1px solid var(--line);
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    padding: 14px;
+  }
+
+  [data-theme="light"] .appCard{ background:#ffffff; }
+
+  .appCardHeader{
+    display:flex;
+    align-items:center;
+    justify-content: space-between;
+    font-size: 18px;
+    font-weight: 700;
+  }
+
+  .appCardActions{
+    display:flex;
+    align-items:center;
+    gap: 8px;
+    color: var(--muted);
+  }
+
+  .appBadge{
+    align-self:flex-start;
+    font-size: 11px;
+    padding: 2px 8px;
+    background: var(--accent);
+    color: #052e16;
+    font-weight: 700;
+  }
+
+  body[data-theme="reaparr"] .appBadge{
+    background: var(--reaparr_accent);
+    color: #0b1220;
+  }
+
   .settingsCard .hd{
     background: var(--panel2);
     border-bottom: 1px solid var(--line);
