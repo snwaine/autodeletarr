@@ -588,12 +588,13 @@ BASE_HEAD = """
   .pageContent{
     flex: 1 1 auto;
     min-height: 0;
-    overflow: auto;
+    overflow: hidden;
     padding: 0px;
   }
 
   .pageContent .grid{
     min-height: 100%;
+    height: 100%;
   }
 
   .pageContent .grid > .card:only-child{
@@ -778,11 +779,14 @@ BASE_HEAD = """
     display: flex;
     flex-direction: column;
     min-height: 0;
+    height: 100%;
   }
 
   .card .hd{
     padding: 14px 16px;
-    display:flex; align-items:center; justify-content: space-between;
+    display:flex; 
+    align-items:center;
+    justify-content: space-between;
     gap:12px;
     background: var(--panel2);
     overflow: hidden;
