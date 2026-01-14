@@ -490,6 +490,11 @@ BASE_HEAD = """
     --switch-thumb: calc(14px * var(--ui));
     --switch-pad: calc(3px * var(--ui));
     --switch-travel: calc(var(--switch-w) - var(--switch-thumb) - (var(--switch-pad) * 2));
+
+    --sb-hover: #97c13d;
+    --sb-active-bg: #97c13d;
+    --sb-active-text: #0b1220;
+    --sb-active-border: #97c13d;
   }
 
   [data-theme="light"]{
@@ -507,6 +512,11 @@ BASE_HEAD = """
     --warn:#d97706;
     --bad:#dc2626;
     --shadow: 0 12px 30px rgba(0,0,0,.08);
+
+    --sb-hover: #6d28d9;
+    --sb-active-bg: #e5e7eb;
+    --sb-active-text: #6d28d9;
+    --sb-active-border: #6d28d9;
   }
 
   [data-theme="reaparr"]{
@@ -530,6 +540,11 @@ BASE_HEAD = """
     --bad:#ff5c6c;
 
     --shadow: 0 12px 28px rgba(0,0,0,.55);
+
+    --sb-hover: var(--reaparr_accent);
+    --sb-active-bg: #15212f;
+    --sb-active-text: var(--reaparr_accent);
+    --sb-active-border: var(--reaparr_accent);
   }
 
   body.sbCollapsed{ --sidebar-w: 0px; }
@@ -693,6 +708,7 @@ BASE_HEAD = """
     font-size: 14px;
     text-decoration: none;
     cursor:pointer;
+    color: var(--text);
   }
 
   /* Prevent browser default active link color */
@@ -701,33 +717,14 @@ BASE_HEAD = """
   }
 
   .sbItem:hover{
-    color: #97c13d;
+    color: var(--sb-hover);
   }
 
   .sbItem.active{
     box-shadow: none !important;
-  }
-
-  body[data-theme="reaparr"] .sbItem:hover{
-    color: var(--reaparr_accent);
-  }
-
-  body[data-theme="reaparr"] .sbItem.active{
-    background: #15212f;
-    color: var(--reaparr_accent);
-    border-left: 1px solid var(--reaparr_accent);
-  }
-
-  body[data-theme="light"] .sbItem.active{
-    background: #e5e7eb;
-    color: var(--light_accent);
-    border-left: 1px solid var(--light_accent);
-  }
-  
-  body[data-theme="dark"] .sbItem.active{
-    background: #97c13d;
-    color: var(--dark_accent);
-    border-left: 1px solid var(--dark_accent);
+    background: var(--sb-active-bg);
+    color: var(--sb-active-text);
+    border-left: 1px solid var(--sb-active-border);
   }
   
   .sbNav form{ margin: 0; }
