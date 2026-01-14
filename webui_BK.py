@@ -588,12 +588,13 @@ BASE_HEAD = """
   .pageContent{
     flex: 1 1 auto;
     min-height: 0;
-    overflow: auto;
+    overflow: hidden;
     padding: 0px;
   }
 
   .pageContent .grid{
     min-height: 100%;
+    height: 100%;
   }
 
   .pageContent .grid > .card:only-child{
@@ -778,14 +779,23 @@ BASE_HEAD = """
     display: flex;
     flex-direction: column;
     min-height: 0;
+    height: 100%;
   }
+
   .card .hd{
     padding: 14px 16px;
-    display:flex; align-items:center; justify-content: space-between;
+    display:flex; 
+    align-items:center;
+    justify-content: space-between;
     gap:12px;
     background: var(--panel2);
     overflow: hidden;
+    position: sticky;
+    top: 0;
+    z-index: 2;
+    flex: 0 0 auto;
   }
+
   [data-theme="light"] .card .hd{ background: #f3f4f6; }
 
   .card .hd h2{
@@ -797,9 +807,9 @@ BASE_HEAD = """
   .card .bd{
     padding: 14px 16px;
     background: var(--panel);
-    flex: 1 1 auto;
     min-height: 0;
     overflow: auto;
+    flex: 1 1 auto;
   }
 
   body[data-theme="reaparr"] .card{
@@ -1634,6 +1644,7 @@ def shell(page_title: str, active: str, body: str):
         <div class="sbNav">
           {sb_item("Dashboard", "/dashboard", "dash")}
           {sb_item("Jobs", "/jobs", "jobs")}
+          {sb_item("Apps", "/apps", "apps")}
           {sb_item("Settings", "/settings", "settings")}
           {sb_item("Status", "/status", "status")}
           <div style="height:6px;"></div>
@@ -2716,6 +2727,35 @@ def dashboard():
     """
     return render_template_string(shell("mediareaparr • Dashboard", "dash", body))
 
+@app.get("/apps")
+def apps():
+    cfg = load_config()
+
+    body = f"""
+      <div class="grid">
+        <div class="card">
+          <div class="hd">
+            <h2>Apps</h2>
+          </div>
+          <div class="bd">
+            <div class="muted">
+              Manage application integrations here.
+            </div>
+
+            <div style="margin-top:14px;" class="muted">
+              This page will be used for:
+              <ul style="margin-top:6px;">
+                <li>Radarr configuration</li>
+                <li>Sonarr configuration</li>
+                <li>Future app integrations</li>
+              </ul>
+            </div>
+          </div>
+        </div>
+      </div>
+    """
+
+    return render_template_string(shell("mediareaparr • Apps", "apps", body))
 
 @app.get("/status")
 def status():
