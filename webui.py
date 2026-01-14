@@ -1644,6 +1644,7 @@ def shell(page_title: str, active: str, body: str):
         <div class="sbNav">
           {sb_item("Dashboard", "/dashboard", "dash")}
           {sb_item("Jobs", "/jobs", "jobs")}
+          {sb_item("Apps", "/apps", "apps")}
           {sb_item("Settings", "/settings", "settings")}
           {sb_item("Status", "/status", "status")}
           <div style="height:6px;"></div>
@@ -2726,6 +2727,35 @@ def dashboard():
     """
     return render_template_string(shell("mediareaparr • Dashboard", "dash", body))
 
+@app.get("/apps")
+def apps():
+    cfg = load_config()
+
+    body = f"""
+      <div class="grid">
+        <div class="card">
+          <div class="hd">
+            <h2>Apps</h2>
+          </div>
+          <div class="bd">
+            <div class="muted">
+              Manage application integrations here.
+            </div>
+
+            <div style="margin-top:14px;" class="muted">
+              This page will be used for:
+              <ul style="margin-top:6px;">
+                <li>Radarr configuration</li>
+                <li>Sonarr configuration</li>
+                <li>Future app integrations</li>
+              </ul>
+            </div>
+          </div>
+        </div>
+      </div>
+    """
+
+    return render_template_string(shell("mediareaparr • Apps", "apps", body))
 
 @app.get("/status")
 def status():
