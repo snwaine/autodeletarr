@@ -2786,25 +2786,38 @@ def dashboard():
 def apps():
     cfg = load_config()
 
-    body = f"""
+    +    body = f"""
       <div class="grid">
         <div class="card">
           <div class="hd">
-            <h2>Apps</h2>
+            <h2>Applications</h2>
           </div>
           <div class="bd">
-            <div class="muted">
-              Manage application integrations here.
+
+            <div class="appsGrid">
+
+              <div class="appCard">
+                <div class="appCardHeader">
+                  <div>Radarr</div>
+                  <div class="appCardActions">↗</div>
+                </div>
+                <div class="appBadge">Full Sync</div>
+              </div>
+
+              <div class="appCard">
+                <div class="appCardHeader">
+                  <div>Sonarr</div>
+                  <div class="appCardActions">↗</div>
+                </div>
+                <div class="appBadge">Full Sync</div>
+              </div>
+
+              <div class="appCard" style="justify-content:center; align-items:center;">
+                <div style="font-size:42px; color:var(--muted);">+</div>
+              </div>
+
             </div>
 
-            <div style="margin-top:14px;" class="muted">
-              This page will be used for:
-              <ul style="margin-top:6px;">
-                <li>Radarr configuration</li>
-                <li>Sonarr configuration</li>
-                <li>Future app integrations</li>
-              </ul>
-            </div>
           </div>
         </div>
       </div>
