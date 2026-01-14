@@ -2786,7 +2786,7 @@ def dashboard():
 def apps():
     cfg = load_config()
 
-    +    body = f"""
+    body = f"""
       <div class="grid">
         <div class="card">
           <div class="hd">
