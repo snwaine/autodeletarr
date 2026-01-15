@@ -365,9 +365,9 @@ def load_config() -> Dict[str, Any]:
         "APPS": [],
 
         # Legacy (only for migration/backward compat)
-        "RADARR_URL": env_default("RADARR_URL", "http://radarr:7878").rstrip("/"),
+        "RADARR_URL": env_default("RADARR_URL", "").rstrip("/"),
         "RADARR_API_KEY": env_default("RADARR_API_KEY", ""),
-        "RADARR_ENABLED": True,
+        "RADARR_ENABLED": False,
         "RADARR_OK": False,
 
         "SONARR_URL": env_default("SONARR_URL", "").rstrip("/"),
