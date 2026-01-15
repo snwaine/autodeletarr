@@ -24,6 +24,9 @@ app = Flask(__name__)
 app.secret_key = os.environ.get("FLASK_SECRET_KEY", "mediareaparr-secret")
 
 
+# ----------------------------
+# Utils
+# ----------------------------
 def env_default(name: str, default: str = "") -> str:
     return os.environ.get(name, default)
 
@@ -49,6 +52,10 @@ def safe_html(s: Any) -> str:
 
 
 def make_job_id() -> str:
+    return uuid.uuid4().hex[:10]
+
+
+def make_app_id() -> str:
     return uuid.uuid4().hex[:10]
 
 
@@ -103,6 +110,9 @@ def parse_iso_date(s: str):
         return None
 
 
+# ----------------------------
+# Sonarr delete modes
+# ----------------------------
 SONARR_DELETE_MODES = [
     "episodes_only",
     "episodes_then_series_if_empty",
@@ -121,12 +131,111 @@ def sonarr_delete_mode_label(mode: str) -> str:
     return SONARR_DELETE_MODE_LABELS.get(mode, SONARR_DELETE_MODE_LABELS["episodes_only"])
 
 
+# ----------------------------
+# Apps (dynamic list)
+# ----------------------------
+def app_defaults() -> Dict[str, Any]:
+    return {
+        "id": make_app_id(),
+        "type": "radarr",        # radarr|sonarr
+        "name": "New App",
+        "enabled": True,
+        "url": "",
+        "api_key": "",
+        "ok": False,
+        "created_at": now_iso(),
+    }
+
+
+def normalize_app(a: Dict[str, Any]) -> Dict[str, Any]:
+    d = app_defaults()
+    d.update(a or {})
+    d["id"] = str(d.get("id") or make_app_id())
+
+    t = str(d.get("type") or "radarr").strip().lower()
+    if t not in ("radarr", "sonarr"):
+        t = "radarr"
+    d["type"] = t
+
+    default_name = "Radarr" if t == "radarr" else "Sonarr"
+    d["name"] = str(d.get("name") or default_name).strip()[:60] or default_name
+
+    d["enabled"] = bool(d.get("enabled", True))
+    d["url"] = str(d.get("url") or "").strip().rstrip("/")
+    d["api_key"] = str(d.get("api_key") or "").strip()
+    d["ok"] = bool(d.get("ok", False))
+    d["created_at"] = str(d.get("created_at") or now_iso())
+    return d
+
+
+def find_app(cfg: Dict[str, Any], app_id: str) -> Optional[Dict[str, Any]]:
+    app_id = str(app_id or "").strip()
+    if not app_id:
+        return None
+    for a in (cfg.get("APPS") or []):
+        if str(a.get("id")) == app_id:
+            return normalize_app(a)
+    return None
+
+
+def migrate_legacy_apps(cfg: Dict[str, Any]) -> None:
+    """
+    Backward compatibility: if old RADARR_* / SONARR_* exist and APPS is empty,
+    migrate them into APPS.
+    """
+    apps = cfg.get("APPS") or []
+    if isinstance(apps, list) and len(apps) > 0:
+        return
+
+    migrated: List[Dict[str, Any]] = []
+
+    r_url = str(cfg.get("RADARR_URL") or "").strip().rstrip("/")
+    r_key = str(cfg.get("RADARR_API_KEY") or "").strip()
+    r_enabled = bool(cfg.get("RADARR_ENABLED", True))
+    r_ok = bool(cfg.get("RADARR_OK", False))
+    if r_url or r_key:
+        migrated.append(normalize_app({
+            "type": "radarr",
+            "name": "Radarr",
+            "enabled": r_enabled,
+            "url": r_url,
+            "api_key": r_key,
+            "ok": r_ok,
+        }))
+
+    s_url = str(cfg.get("SONARR_URL") or "").strip().rstrip("/")
+    s_key = str(cfg.get("SONARR_API_KEY") or "").strip()
+    s_enabled = bool(cfg.get("SONARR_ENABLED", False))
+    s_ok = bool(cfg.get("SONARR_OK", False))
+    if s_url or s_key:
+        migrated.append(normalize_app({
+            "type": "sonarr",
+            "name": "Sonarr",
+            "enabled": s_enabled,
+            "url": s_url,
+            "api_key": s_key,
+            "ok": s_ok,
+        }))
+
+    cfg["APPS"] = migrated
+
+
+def is_app_ready(cfg: Dict[str, Any], app_id: str) -> bool:
+    a = find_app(cfg, app_id)
+    if not a:
+        return False
+    return bool(a.get("enabled") and a.get("url") and a.get("api_key") and a.get("ok"))
+
+
+# ----------------------------
+# Jobs
+# ----------------------------
 def job_defaults() -> Dict[str, Any]:
     return {
         "id": make_job_id(),
         "name": "New Job",
         "enabled": True,
-        "APP": "radarr",
+        "APP_ID": "",
         "TAG_LABEL": "",
         "DAYS_OLD": 30,
         "SCHED_DAY": "daily",
@@ -146,10 +255,7 @@ def normalize_job(j: Dict[str, Any]) -> Dict[str, Any]:
     d["name"] = str(d.get("name") or "Job").strip()[:60] or "Job"
     d["enabled"] = bool(d.get("enabled", True))
 
-    d["APP"] = str(d.get("APP") or "radarr").lower()
-    if d["APP"] not in ("radarr", "sonarr"):
-        d["APP"] = "radarr"
-
+    d["APP_ID"] = str(d.get("APP_ID") or "").strip()
     d["TAG_LABEL"] = str(d.get("TAG_LABEL") or "").strip()
     d["DAYS_OLD"] = clamp_int(d.get("DAYS_OLD", 30), 1, 36500, 30)
 
@@ -180,6 +286,9 @@ def find_job(cfg: Dict[str, Any], job_id: str) -> Optional[Dict[str, Any]]:
     return None
 
 
+# ----------------------------
+# Run now modal + button
+# ----------------------------
 def run_now_modal_html() -> str:
     return """
     <div class="modalBack" id="runNowBack">
@@ -189,7 +298,7 @@ def run_now_modal_html() -> str:
         </div>
         <div class="mb">
           <div style="margin-bottom:10px;">
-            <div class="muted">App: <b><span id="rn_app">Radarr</span></b></div>
+            <div class="muted">App: <b><span id="rn_app">App</span></b></div>
             <div class="muted">Dry Run: <b><span id="rn_dry">OFF</span></b> • Delete Files: <b><span id="rn_del">ON</span></b> • Job: <b><span id="rn_enabled">Enabled</span></b></div>
           </div>
 
@@ -217,15 +326,15 @@ def run_now_modal_html() -> str:
     """
 
 
-def run_now_button_html(job: Dict[str, Any]) -> str:
+def run_now_button_html(job: Dict[str, Any], app_label: str = "App") -> str:
     job = normalize_job(job)
     if not job["enabled"]:
         return '<button class="btn" type="button" disabled title="Enable this job to run now">Run Now</button>'
 
     jid = safe_html(job["id"])
-    app_key = safe_html(job.get("APP", "radarr"))
     delete_files = str(bool(job.get("DELETE_FILES", True))).lower()
     enabled = str(bool(job.get("enabled", True))).lower()
+    app_lbl = safe_html(app_label)
 
     if job.get("DRY_RUN", True):
         return f"""
@@ -238,7 +347,7 @@ def run_now_button_html(job: Dict[str, Any]) -> str:
     return f"""
       <button class="btn bad" type="button"
         onclick="openRunNowConfirm('{jid}', {{
-          app: '{app_key}',
+          appLabel: '{app_lbl}',
           dryRun: false,
           deleteFiles: {delete_files},
           enabled: {enabled}
@@ -246,49 +355,64 @@ def run_now_button_html(job: Dict[str, Any]) -> str:
     """
 
 
+# ----------------------------
+# Config/state
+# ----------------------------
 def load_config() -> Dict[str, Any]:
+    # Include legacy keys so migration can read them if present.
     cfg = {
+        # Dynamic apps list
+        "APPS": [],
+
+        # Legacy (only for migration/backward compat)
         "RADARR_URL": env_default("RADARR_URL", "http://radarr:7878").rstrip("/"),
         "RADARR_API_KEY": env_default("RADARR_API_KEY", ""),
         "RADARR_ENABLED": True,
+        "RADARR_OK": False,
 
         "SONARR_URL": env_default("SONARR_URL", "").rstrip("/"),
         "SONARR_API_KEY": env_default("SONARR_API_KEY", ""),
         "SONARR_ENABLED": False,
+        "SONARR_OK": False,
 
+        # WebUI/global
         "HTTP_TIMEOUT_SECONDS": int(env_default("HTTP_TIMEOUT_SECONDS", "30")),
         "UI_THEME": env_default("UI_THEME", "dark"),
         "UI_SCALE": float(env_default("UI_SCALE", "1.0")),
 
-        "RADARR_OK": False,
-        "SONARR_OK": False,
+        # Jobs
         "JOBS": [],
     }
 
     if CONFIG_PATH.exists():
         try:
             data = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
-            for k in cfg.keys():
+            # Update only known keys (but legacy keys are included above)
+            for k in list(cfg.keys()):
                 if k in data:
                     cfg[k] = data[k]
         except Exception:
             pass
 
+    # Normalize theme/scale/timeout
     t = (cfg.get("UI_THEME") or "dark").lower()
     cfg["UI_THEME"] = t if t in ("dark", "light", "reaparr") else "dark"
-
-    cfg["RADARR_OK"] = bool(cfg.get("RADARR_OK", False))
-    cfg["SONARR_OK"] = bool(cfg.get("SONARR_OK", False))
-    cfg["RADARR_ENABLED"] = bool(cfg.get("RADARR_ENABLED", True))
-    cfg["SONARR_ENABLED"] = bool(cfg.get("SONARR_ENABLED", False))
     cfg["HTTP_TIMEOUT_SECONDS"] = clamp_int(cfg.get("HTTP_TIMEOUT_SECONDS", 30), 5, 300, 30)
-
     try:
         cfg["UI_SCALE"] = float(cfg.get("UI_SCALE", 1.0))
     except Exception:
         cfg["UI_SCALE"] = 1.0
     cfg["UI_SCALE"] = max(0.75, min(1.5, cfg["UI_SCALE"]))
 
+    # Migrate legacy fixed config into APPS if needed
+    migrate_legacy_apps(cfg)
+
+    apps = cfg.get("APPS") or []
+    if not isinstance(apps, list):
+        apps = []
+    cfg["APPS"] = [normalize_app(a) for a in apps]
+
+    # Normalize jobs
     jobs = cfg.get("JOBS") or []
     if not isinstance(jobs, list):
         jobs = []
@@ -299,10 +423,6 @@ def load_config() -> Dict[str, Any]:
         jobs = [normalize_job(j)]
     cfg["JOBS"] = jobs
 
-    cfg["RADARR_URL"] = (cfg.get("RADARR_URL") or "").rstrip("/")
-    cfg["RADARR_API_KEY"] = cfg.get("RADARR_API_KEY") or ""
-    cfg["SONARR_URL"] = (cfg.get("SONARR_URL") or "").rstrip("/")
-    cfg["SONARR_API_KEY"] = cfg.get("SONARR_API_KEY") or ""
     return cfg
 
 
@@ -320,15 +440,9 @@ def load_state() -> Dict[str, Any]:
     return {}
 
 
-def is_app_ready(cfg: Dict[str, Any], app_key: str) -> bool:
-    app_key = (app_key or "").lower()
-    if app_key == "radarr":
-        return bool(cfg.get("RADARR_ENABLED", True) and cfg.get("RADARR_URL") and cfg.get("RADARR_API_KEY") and cfg.get("RADARR_OK"))
-    if app_key == "sonarr":
-        return bool(cfg.get("SONARR_ENABLED", False) and cfg.get("SONARR_URL") and cfg.get("SONARR_API_KEY") and cfg.get("SONARR_OK"))
-    return False
-
-
+# ----------------------------
+# API helpers
+# ----------------------------
 def api_get(base_url: str, api_key: str, timeout_s: int, path: str):
     url = (base_url or "").rstrip("/") + path
     r = requests.get(url, headers={"X-Api-Key": api_key or ""}, timeout=timeout_s)
@@ -336,25 +450,31 @@ def api_get(base_url: str, api_key: str, timeout_s: int, path: str):
     return r.json()
 
 
-def radarr_get(cfg: Dict[str, Any], path: str):
-    return api_get(cfg["RADARR_URL"], cfg["RADARR_API_KEY"], int(cfg.get("HTTP_TIMEOUT_SECONDS", 30)), path)
+def app_get(cfg: Dict[str, Any], app_obj: Dict[str, Any], path: str):
+    return api_get(
+        app_obj.get("url", ""),
+        app_obj.get("api_key", ""),
+        int(cfg.get("HTTP_TIMEOUT_SECONDS", 30)),
+        path
+    )
 
 
-def sonarr_get(cfg: Dict[str, Any], path: str):
-    return api_get(cfg["SONARR_URL"], cfg["SONARR_API_KEY"], int(cfg.get("HTTP_TIMEOUT_SECONDS", 30)), path)
-
-
-def get_tag_labels(cfg: Dict[str, Any], app_key: str) -> List[str]:
-    app_key = (app_key or "").lower()
-    if not is_app_ready(cfg, app_key):
+def get_tag_labels(cfg: Dict[str, Any], app_id: str) -> List[str]:
+    if not is_app_ready(cfg, app_id):
         return []
-    tags = radarr_get(cfg, "/api/v3/tag") if app_key == "radarr" else sonarr_get(cfg, "/api/v3/tag")
+    app_obj = find_app(cfg, app_id)
+    if not app_obj:
+        return []
+    tags = app_get(cfg, app_obj, "/api/v3/tag")
     return sorted({t.get("label") for t in (tags or []) if t.get("label")}, key=lambda x: str(x).lower())
 
 
-def preview_candidates_radarr(cfg: Dict[str, Any], job: Dict[str, Any]):
-    if not cfg.get("RADARR_ENABLED", True):
-        return {"error": "Radarr is disabled in Settings.", "candidates": [], "cutoff": ""}
+# ----------------------------
+# Preview candidates (uses selected app instance)
+# ----------------------------
+def preview_candidates_radarr(cfg: Dict[str, Any], app_obj: Dict[str, Any], job: Dict[str, Any]):
+    if not app_obj.get("enabled", True):
+        return {"error": "This Radarr app is disabled.", "candidates": [], "cutoff": ""}
 
     tag_label = (job.get("TAG_LABEL") or "").strip()
     if not tag_label:
@@ -364,13 +484,13 @@ def preview_candidates_radarr(cfg: Dict[str, Any], job: Dict[str, Any]):
     now = datetime.now(timezone.utc)
     cutoff = now - timedelta(days=days_old)
 
-    tags = radarr_get(cfg, "/api/v3/tag")
+    tags = app_get(cfg, app_obj, "/api/v3/tag")
     tag = next((t for t in tags if t.get("label") == tag_label), None)
     if not tag:
         return {"error": f"Tag '{tag_label}' not found in Radarr.", "candidates": [], "cutoff": cutoff.isoformat()}
 
     tag_id = tag["id"]
-    movies = radarr_get(cfg, "/api/v3/movie")
+    movies = app_get(cfg, app_obj, "/api/v3/movie")
 
     candidates = []
     for m in movies:
@@ -396,9 +516,9 @@ def preview_candidates_radarr(cfg: Dict[str, Any], job: Dict[str, Any]):
     return {"error": None, "candidates": candidates, "tag_id": tag_id, "cutoff": cutoff.isoformat()}
 
 
-def preview_candidates_sonarr(cfg: Dict[str, Any], job: Dict[str, Any]):
-    if not cfg.get("SONARR_ENABLED", False):
-        return {"error": "Sonarr is disabled in Settings.", "candidates": [], "cutoff": ""}
+def preview_candidates_sonarr(cfg: Dict[str, Any], app_obj: Dict[str, Any], job: Dict[str, Any]):
+    if not app_obj.get("enabled", True):
+        return {"error": "This Sonarr app is disabled.", "candidates": [], "cutoff": ""}
 
     tag_label = (job.get("TAG_LABEL") or "").strip()
     if not tag_label:
@@ -408,13 +528,13 @@ def preview_candidates_sonarr(cfg: Dict[str, Any], job: Dict[str, Any]):
     now = datetime.now(timezone.utc)
     cutoff = now - timedelta(days=days_old)
 
-    tags = sonarr_get(cfg, "/api/v3/tag")
+    tags = app_get(cfg, app_obj, "/api/v3/tag")
     tag = next((t for t in tags if t.get("label") == tag_label), None)
     if not tag:
         return {"error": f"Tag '{tag_label}' not found in Sonarr.", "candidates": [], "cutoff": cutoff.isoformat()}
 
     tag_id = tag["id"]
-    series_list = sonarr_get(cfg, "/api/v3/series")
+    series_list = app_get(cfg, app_obj, "/api/v3/series")
 
     candidates = []
     for s in series_list:
@@ -440,6 +560,9 @@ def preview_candidates_sonarr(cfg: Dict[str, Any], job: Dict[str, Any]):
     return {"error": None, "candidates": candidates, "tag_id": tag_id, "cutoff": cutoff.isoformat()}
 
 
+# ----------------------------
+# Toasts
+# ----------------------------
 def render_toasts() -> str:
     msgs = get_flashed_messages(with_categories=True)
     if not msgs:
@@ -451,6 +574,9 @@ def render_toasts() -> str:
     return f'<div id="toastHost" class="toastHost">{"".join(items)}</div>'
 
 
+# ----------------------------
+# UI shell
+# ----------------------------
 BASE_HEAD = """
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -968,18 +1094,6 @@ BASE_HEAD = """
   [data-theme="light"] .check{ background: #ffffff; }
   .check input{ transform: scale(calc(1.2 * var(--ui))); }
 
-  .toggleRow{
-    display:flex;
-    align-items:center;
-    justify-content: space-between;
-    gap: 12px;
-    border: 1px solid var(--line);
-    padding: 10px 12px;
-    background: var(--panel2);
-    margin-bottom: 12px;
-  }
-  [data-theme="light"] .toggleRow{ background: #ffffff; }
-
   .switch{ position: relative; width: var(--switch-w); height: var(--switch-h); display: inline-block; flex: 0 0 auto; }
   .switch input{ opacity: 0; width: 0; height: 0; }
   .slider{
@@ -1014,8 +1128,6 @@ BASE_HEAD = """
     transform: translate(var(--switch-travel), -50%);
     background: rgba(255,255,255,.92);
   }
-
-  .disabledSection{ opacity: .55; filter: grayscale(.12); pointer-events: none; }
 
   .jobsGrid{
     display:grid;
@@ -1087,7 +1199,7 @@ BASE_HEAD = """
 
   .metaStack{ display:flex; flex-direction: column; gap: 6px; font-size: calc(11px * var(--ui)); }
   .metaRow{ display:flex; align-items: baseline; gap: 8px; line-height: 1.35; }
-  .metaLabel{ width: 100px; color: var(--muted); flex: 0 0 auto; }
+  .metaLabel{ width: 110px; color: var(--muted); flex: 0 0 auto; }
   .metaVal{ color: var(--text); flex: 1 1 auto; min-width: 0; word-break: break-word; }
 
   /* Apps grid like your screenshot */
@@ -1126,9 +1238,17 @@ BASE_HEAD = """
     min-width: 0;
   }
   .appTitle{
-    font-size: 22px;
-    font-weight: 500;
-    line-height: 1.05;
+    font-size: 18px;
+    font-weight: 600;
+    line-height: 1.12;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .appSub{
+    font-size: 11px;
+    color: var(--muted);
+    margin-top: 6px;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -1162,6 +1282,7 @@ BASE_HEAD = """
     align-items: center;
     justify-content: center;
     padding: 0;
+    cursor: pointer;
   }
   .addAppCardInner{
     width: 86px;
@@ -1274,25 +1395,6 @@ BASE_HEAD = """
 
   .card, .jobCard{ border-radius: 0 !important; }
   .card .hd, .card .bd{ border-radius: 0 !important; }
-
-  .settingsCard{
-    box-shadow: none !important;
-    border: 1px solid var(--line);
-    background: var(--panel);
-    margin-bottom: 14px;
-  }
-
-  .settingsCard:last-child{ margin-bottom: 0; }
-
-  .settingsCard .hd{
-    background: var(--panel2);
-    border-bottom: 1px solid var(--line);
-  }
-
-  [data-theme="light"] .settingsCard .hd{ background: #f3f4f6; }
-  body[data-theme="reaparr"] .settingsCard{
-    background: var(--panel);
-  }
 </style>
 
 <script>
@@ -1323,46 +1425,72 @@ BASE_HEAD = """
   }
 
   // -----------------------
-  // Apps modal helpers
+  // Apps wizard
   // -----------------------
+  function openAddAppModal(){
+    setVal("appPick", "radarr");
+    showModal("appPickBack");
+  }
+
+  function confirmAddSelectedApp(){
+    const t = ($("appPick")?.value || "radarr").toLowerCase();
+
+    // New app
+    setVal("app_id", "");
+    setVal("app_type", t);
+    setVal("app_name", (t === "sonarr") ? "Sonarr" : "Radarr");
+    setChecked("app_enabled", true);
+    setVal("app_url", "");
+    setVal("app_key", "");
+
+    onAppTypeChanged();
+
+    hideModal("appPickBack");
+    showModal("appBack");
+  }
+
   function onAppTypeChanged(){
     const t = ($("app_type")?.value || "radarr").toLowerCase();
-    const url = $("app_url");
-    const key = $("app_key");
-    const enabled = $("app_enabled");
     const hint = $("appHint");
-
     if (hint){
       hint.textContent = (t === "sonarr")
         ? "Configure Sonarr. Save then Test Connection."
         : "Configure Radarr. Save then Test Connection.";
     }
-
-    // When switching type, prefill from window.__APP_CFG if present
-    const cfg = (window.__APP_CFG || {});
-    if (t === "radarr"){
-      if (url) url.value = cfg.RADARR_URL || "";
-      if (key) key.value = cfg.RADARR_API_KEY || "";
-      if (enabled) enabled.checked = !!cfg.RADARR_ENABLED;
-    } else {
-      if (url) url.value = cfg.SONARR_URL || "";
-      if (key) key.value = cfg.SONARR_API_KEY || "";
-      if (enabled) enabled.checked = !!cfg.SONARR_ENABLED;
+    const nm = $("app_name");
+    if (nm && !(nm.value || "").trim()){
+      nm.value = (t === "sonarr") ? "Sonarr" : "Radarr";
     }
   }
 
-  function openAddAppModal(){
-    // Default to Radarr, but user can switch
-    setVal("app_type", "radarr");
-    setChecked("app_enabled", true);
-    setVal("app_url", "");
-    setVal("app_key", "");
+  function openEditApp(appId){
+    const apps = (window.__APP_CFG && window.__APP_CFG.APPS) ? window.__APP_CFG.APPS : [];
+    const a = apps.find(x => (x.id || "") === (appId || ""));
+    if (!a) return;
+
+    setVal("app_id", a.id || "");
+    setVal("app_type", (a.type || "radarr"));
+    setVal("app_name", a.name || ((a.type === "sonarr") ? "Sonarr" : "Radarr"));
+    setChecked("app_enabled", !!a.enabled);
+    setVal("app_url", a.url || "");
+    setVal("app_key", a.api_key || "");
+
     onAppTypeChanged();
     showModal("appBack");
   }
 
+  function submitDeleteApp(){
+    const id = ($("app_id")?.value || "").trim();
+    if (!id) return;
+    if (!confirm("Delete this app? Jobs using it will need updating.")) return;
+    const f = $("appDeleteForm");
+    const hid = $("app_delete_id");
+    if (hid) hid.value = id;
+    if (f) f.submit();
+  }
+
   // -----------------------
-  // Job modal dirty tracking (your existing code)
+  // Job modal dirty tracking
   // -----------------------
   window.__JOB_MODAL_INITIAL = "";
   window.__JOB_MODAL_DIRTY = false;
@@ -1410,6 +1538,7 @@ BASE_HEAD = """
     if (e.key === "Escape") {
       hideModal("runNowBack");
       hideModal("appBack");
+      hideModal("appPickBack");
       maybeCloseJobModal();
     }
   });
@@ -1429,11 +1558,11 @@ BASE_HEAD = """
     sel.insertBefore(opt, sel.firstChild);
   }
 
-  function rebuildTagOptions(appKey, selectedValue){
+  function rebuildTagOptions(appId, selectedValue){
     const sel = $("job_tag");
     if (!sel) return;
 
-    const tags = (window.__TAGS && window.__TAGS[appKey]) ? window.__TAGS[appKey] : [];
+    const tags = (window.__TAGS && window.__TAGS[appId]) ? window.__TAGS[appId] : [];
     const out = ['<option value="" selected disabled>-- Select a tag --</option>'];
 
     for (const t of tags){
@@ -1448,19 +1577,20 @@ BASE_HEAD = """
     }
   }
 
-  function updateSonarrModeVisibility(appKey){
+  function updateSonarrModeVisibility(appId){
     const wrap = $("sonarrDeleteModeField");
     const sel = $("job_sonarr_mode");
-    const isSonarr = (appKey || "radarr") === "sonarr";
+    const t = (window.__APP_TYPES && window.__APP_TYPES[appId]) ? window.__APP_TYPES[appId] : "radarr";
+    const isSonarr = (t === "sonarr");
     if (wrap) wrap.style.display = isSonarr ? "" : "none";
     if (sel) sel.disabled = !isSonarr;
   }
 
   function onJobAppChanged(){
     const appSel = $("job_app");
-    const appKey = appSel ? (appSel.value || "radarr") : "radarr";
-    rebuildTagOptions(appKey, "");
-    updateSonarrModeVisibility(appKey);
+    const appId = appSel ? (appSel.value || "") : "";
+    rebuildTagOptions(appId, "");
+    updateSonarrModeVisibility(appId);
     setTimeout(jobModalUpdateDirty, 0);
   }
 
@@ -1473,8 +1603,8 @@ BASE_HEAD = """
     setVal("job_name", "New Job");
 
     const appSel = $("job_app");
-    const defApp = appSel?.getAttribute("data-default-app") || "radarr";
-    setVal("job_app", defApp);
+    const defApp = appSel?.getAttribute("data-default-app") || "";
+    if (defApp) setVal("job_app", defApp);
 
     if (appSel && appSel.selectedIndex < 0 && appSel.options.length > 0) appSel.selectedIndex = 0;
     const actualApp = appSel ? (appSel.value || defApp) : defApp;
@@ -1505,16 +1635,12 @@ BASE_HEAD = """
     setVal("job_id", btn.getAttribute("data-id") || "");
     setVal("job_name", btn.getAttribute("data-name") || "Job");
 
-    const appKey = btn.getAttribute("data-app") || "radarr";
-    setVal("job_app", appKey);
-
-    const appSel = $("job_app");
-    if (appSel && appSel.selectedIndex < 0 && appSel.options.length > 0) appSel.selectedIndex = 0;
-    const actualApp = appSel ? (appSel.value || appKey) : appKey;
+    const appId = btn.getAttribute("data-app-id") || "";
+    setVal("job_app", appId);
 
     const tag = btn.getAttribute("data-tag") || "";
-    rebuildTagOptions(actualApp, tag);
-    updateSonarrModeVisibility(actualApp);
+    rebuildTagOptions(appId, tag);
+    updateSonarrModeVisibility(appId);
 
     const smode = btn.getAttribute("data-sonarr-mode") || "episodes_only";
     setVal("job_sonarr_mode", smode);
@@ -1535,7 +1661,7 @@ BASE_HEAD = """
 
   function openRunNowConfirm(jobId, opts){
     opts = opts || {};
-    const app = (opts.app || "radarr").toLowerCase();
+    const appLabel = (opts.appLabel || "App");
     const dryRun = !!opts.dryRun;
     const deleteFiles = !!opts.deleteFiles;
     const enabled = (opts.enabled === undefined) ? true : !!opts.enabled;
@@ -1548,7 +1674,7 @@ BASE_HEAD = """
     const elDel = $("rn_del");
     const elEnabled = $("rn_enabled");
 
-    if (elApp) elApp.textContent = (app === "sonarr") ? "Sonarr" : "Radarr";
+    if (elApp) elApp.textContent = appLabel;
     if (elDry) elDry.textContent = dryRun ? "ON" : "OFF";
     if (elDel) elDel.textContent = deleteFiles ? "ON" : "OFF";
     if (elEnabled) elEnabled.textContent = enabled ? "Enabled" : "Disabled";
@@ -1574,85 +1700,7 @@ BASE_HEAD = """
     if (form) form.submit();
   }
 
-  function isDirty(settingsForm){
-    if (!settingsForm) return false;
-    const els = settingsForm.querySelectorAll("input, select, textarea");
-    for (const el of els){
-      const init = el.getAttribute("data-initial");
-      if (init === null) continue;
-
-      let cur;
-      if (el.type === "checkbox") cur = el.checked ? "1" : "0";
-      else cur = (el.value ?? "");
-
-      if (cur !== init) return true;
-    }
-    return false;
-  }
-
-  function updateSaveState(){
-    const settingsForm = $("settingsForm");
-    const saveBtn = $("saveSettingsBtn");
-    if (!settingsForm || !saveBtn) return;
-
-    const radarrOk = settingsForm.getAttribute("data-radarr-ok") === "1";
-    const sonarrOk = settingsForm.getAttribute("data-sonarr-ok") === "1";
-    const dirty = isDirty(settingsForm);
-
-    const radarrEnabled = $("radarr_enabled")?.checked ?? true;
-    const sonarrEnabled = $("sonarr_enabled")?.checked ?? false;
-
-    const sonarrUrl = (document.querySelector('input[name="SONARR_URL"]')?.value || "").trim();
-    const sonarrKey = (document.querySelector('input[name="SONARR_API_KEY"]')?.value || "").trim();
-    const sonarrConfigured = !!(sonarrUrl || sonarrKey);
-
-    const radarrReady = !radarrEnabled || radarrOk;
-    const sonarrReady = !sonarrEnabled || (!sonarrConfigured) || sonarrOk;
-
-    saveBtn.disabled = !(radarrReady && sonarrReady && dirty);
-
-    if (!radarrReady) saveBtn.title = "Radarr enabled: test connection first (or disable Radarr)";
-    else if (!sonarrReady) saveBtn.title = "Sonarr enabled: test connection first (or disable Sonarr / clear fields)";
-    else saveBtn.title = dirty ? "Save settings" : "No changes to save";
-  }
-
-  function onSettingsEdited(e){
-    const settingsForm = $("settingsForm");
-    if (!settingsForm) return;
-
-    if (e.target && (e.target.name === "RADARR_URL" || e.target.name === "RADARR_API_KEY")) {
-      settingsForm.setAttribute("data-radarr-ok", "0");
-      const testBtn = $("testRadarrBtn");
-      if (testBtn) {
-        testBtn.disabled = false;
-        testBtn.title = "Test Radarr connection";
-        testBtn.textContent = "Test Connection";
-      }
-    }
-
-    if (e.target && (e.target.name === "SONARR_URL" || e.target.name === "SONARR_API_KEY")) {
-      settingsForm.setAttribute("data-sonarr-ok", "0");
-      const testBtn = $("testSonarrBtn");
-      if (testBtn) {
-        testBtn.disabled = false;
-        testBtn.title = "Test Sonarr connection";
-        testBtn.textContent = "Test Connection";
-      }
-    }
-
-    const radSec = $("radarrSection");
-    const sonSec = $("sonarrSection");
-    const radEnabled = $("radarr_enabled")?.checked ?? true;
-    const sonEnabled = $("sonarr_enabled")?.checked ?? false;
-
-    if (radSec) radSec.classList.toggle("disabledSection", !radEnabled);
-    if (sonSec) sonSec.classList.toggle("disabledSection", !sonEnabled);
-
-    updateSaveState();
-  }
-
   document.addEventListener("input", (e) => {
-    onSettingsEdited(e);
     const back = $("jobBack");
     if (back && back.style.display === "flex") {
       const form = $("jobForm");
@@ -1660,7 +1708,6 @@ BASE_HEAD = """
     }
   });
   document.addEventListener("change", (e) => {
-    onSettingsEdited(e);
     const back = $("jobBack");
     if (back && back.style.display === "flex") {
       const form = $("jobForm");
@@ -1675,7 +1722,7 @@ BASE_HEAD = """
       if (v === "1") document.body.classList.add("sbCollapsed");
     } catch(e){}
 
-    // Bind addAppCard click/keyboard if it exists on this page
+    // Bind addAppCard
     const addCard = $("addAppCard");
     if (addCard){
       addCard.style.cursor = "pointer";
@@ -1691,59 +1738,13 @@ BASE_HEAD = """
       });
     }
 
-    const radSec = $("radarrSection");
-    const sonSec = $("sonarrSection");
-    const radEnabled = $("radarr_enabled")?.checked ?? true;
-    const sonEnabled = $("sonarr_enabled")?.checked ?? false;
-    if (radSec) radSec.classList.toggle("disabledSection", !radEnabled);
-    if (sonSec) sonSec.classList.toggle("disabledSection", !sonEnabled);
-
-    updateSaveState();
-
     const host = $("toastHost");
     if (host) setTimeout(() => { try { host.remove(); } catch(e){} }, 6000);
 
-    const params = new URLSearchParams(window.location.search);
-    if (params.get("modal") === "job") {
-      const jid = params.get("job_id") || "";
-      const name = params.get("name") || "New Job";
-      const enabled = params.get("enabled") || "1";
-      const appKey = (params.get("APP") || "radarr");
-      const tag = params.get("TAG_LABEL") || "";
-      const smode = params.get("SONARR_DELETE_MODE") || "episodes_only";
-      const days = params.get("DAYS_OLD") || "30";
-      const day = params.get("SCHED_DAY") || "daily";
-      const hour = params.get("SCHED_HOUR") || "3";
-      const dry = (params.get("DRY_RUN") || "1") === "1";
-      const del = (params.get("DELETE_FILES") || "1") === "1";
-      const excl = (params.get("ADD_IMPORT_EXCLUSION") || "0") === "1";
-
-      const title = $("jobTitle");
-      if (title) title.textContent = jid ? "Edit Job" : "Add Job";
-
-      setVal("job_id", jid);
-      setVal("job_name", decodeURIComponent(name));
-      setVal("job_app", appKey);
-
-      const tagDecoded = decodeURIComponent(tag || "");
-      rebuildTagOptions(appKey, tagDecoded);
-      updateSonarrModeVisibility(appKey);
-      setVal("job_sonarr_mode", decodeURIComponent(smode || "episodes_only"));
-
-      setVal("job_days", days);
-      setVal("job_day", day);
-      setVal("job_hour", hour);
-      setChecked("job_dry", dry);
-      setChecked("job_delete", del);
-      setChecked("job_excl", excl);
-      setVal("job_enabled", enabled);
-
-      showModal("jobBack");
-      setTimeout(jobModalMarkClean, 0);
-    } else {
-      const appSel = $("job_app");
-      const appKey = appSel ? (appSel.value || "radarr") : "radarr";
-      updateSonarrModeVisibility(appKey);
+    // Ensure sonarr mode visibility based on selected app (jobs modal if present)
+    const appSel = $("job_app");
+    if (appSel){
+      updateSonarrModeVisibility(appSel.value || "");
     }
 
     // UI scale live apply
@@ -1838,6 +1839,9 @@ def shell(page_title: str, active: str, body: str):
 """
 
 
+# ----------------------------
+# Routes
+# ----------------------------
 @app.get("/")
 def home():
     return redirect("/dashboard")
@@ -1863,28 +1867,31 @@ def toggle_theme():
     return redirect(request.referrer or "/dashboard")
 
 
+# ----------------------------
+# Legacy settings endpoints (kept for old bookmarks)
+# ----------------------------
 @app.post("/reset-radarr")
-def reset_radarr():
-    cfg = load_config()
-    cfg["RADARR_URL"] = ""
-    cfg["RADARR_API_KEY"] = ""
-    cfg["RADARR_OK"] = False
-    cfg["RADARR_ENABLED"] = False
-    save_config(cfg)
-    flash("Radarr settings cleared ✔", "success")
-    return redirect("/settings")
+def reset_radarr_legacy():
+    flash("Radarr settings are now managed under Apps.", "error")
+    return redirect("/apps")
 
 
 @app.post("/reset-sonarr")
-def reset_sonarr():
-    cfg = load_config()
-    cfg["SONARR_URL"] = ""
-    cfg["SONARR_API_KEY"] = ""
-    cfg["SONARR_OK"] = False
-    cfg["SONARR_ENABLED"] = False
-    save_config(cfg)
-    flash("Sonarr settings cleared ✔", "success")
-    return redirect("/settings")
+def reset_sonarr_legacy():
+    flash("Sonarr settings are now managed under Apps.", "error")
+    return redirect("/apps")
+
+
+@app.post("/test-radarr")
+def test_radarr_legacy():
+    flash("Radarr test is now managed under Apps.", "error")
+    return redirect("/apps")
+
+
+@app.post("/test-sonarr")
+def test_sonarr_legacy():
+    flash("Sonarr test is now managed under Apps.", "error")
+    return redirect("/apps")
 
 
 def _test_connection(kind: str, url: str, api_key: str, timeout_s: int):
@@ -1899,104 +1906,12 @@ def _test_connection(kind: str, url: str, api_key: str, timeout_s: int):
     return True
 
 
-@app.post("/test-radarr")
-def test_radarr():
-    cfg = load_config()
-
-    url = (request.form.get("RADARR_URL") or cfg.get("RADARR_URL") or "").rstrip("/")
-    api_key = request.form.get("RADARR_API_KEY") or cfg.get("RADARR_API_KEY") or ""
-
-    cfg["RADARR_OK"] = False
-    save_config(cfg)
-
-    if not url:
-        flash("Radarr URL is empty.", "error")
-        return redirect("/settings")
-    if not api_key:
-        flash("Radarr API Key is empty.", "error")
-        return redirect("/settings")
-
-    try:
-        _test_connection("Radarr", url, api_key, int(cfg.get("HTTP_TIMEOUT_SECONDS", 30)))
-
-        cfg["RADARR_URL"] = url
-        cfg["RADARR_API_KEY"] = api_key
-        cfg["RADARR_OK"] = True
-        cfg["RADARR_ENABLED"] = True
-        save_config(cfg)
-
-        flash("Radarr connected ✔", "success")
-        return redirect("/settings")
-
-    except PermissionError as e:
-        flash(str(e), "error")
-    except requests.exceptions.ConnectTimeout:
-        flash("Radarr connection failed: timeout connecting to the host.", "error")
-    except requests.exceptions.ConnectionError:
-        flash("Radarr connection failed: could not connect (URL/host/network).", "error")
-    except Exception as e:
-        flash(f"Radarr connection failed: {e}", "error")
-
-    return redirect("/settings")
-
-
-@app.post("/test-sonarr")
-def test_sonarr():
-    cfg = load_config()
-
-    url = (request.form.get("SONARR_URL") or cfg.get("SONARR_URL") or "").rstrip("/")
-    api_key = request.form.get("SONARR_API_KEY") or cfg.get("SONARR_API_KEY") or ""
-
-    cfg["SONARR_OK"] = False
-    save_config(cfg)
-
-    if not url:
-        flash("Sonarr URL is empty.", "error")
-        return redirect("/settings")
-    if not api_key:
-        flash("Sonarr API Key is empty.", "error")
-        return redirect("/settings")
-
-    try:
-        _test_connection("Sonarr", url, api_key, int(cfg.get("HTTP_TIMEOUT_SECONDS", 30)))
-
-        cfg["SONARR_URL"] = url
-        cfg["SONARR_API_KEY"] = api_key
-        cfg["SONARR_OK"] = True
-        cfg["SONARR_ENABLED"] = True
-        save_config(cfg)
-
-        flash("Sonarr connected ✔", "success")
-        return redirect("/settings")
-
-    except PermissionError as e:
-        flash(str(e), "error")
-    except requests.exceptions.ConnectTimeout:
-        flash("Sonarr connection failed: timeout connecting to the host.", "error")
-    except requests.exceptions.ConnectionError:
-        flash("Sonarr connection failed: could not connect (URL/host/network).", "error")
-    except Exception as e:
-        flash(f"Sonarr connection failed: {e}", "error")
-
-    return redirect("/settings")
-
-
+# ----------------------------
+# Settings (WebUI only)
+# ----------------------------
 @app.get("/settings")
 def settings():
     cfg = load_config()
-
-    radarr_ok = bool(cfg.get("RADARR_OK"))
-    sonarr_ok = bool(cfg.get("SONARR_OK"))
-    radarr_enabled = bool(cfg.get("RADARR_ENABLED", True))
-    sonarr_enabled = bool(cfg.get("SONARR_ENABLED", False))
-
-    test_label = "Connected" if radarr_ok else "Test Connection"
-    test_disabled_attr = "disabled" if radarr_ok else ""
-    test_title = "Radarr connection is OK" if radarr_ok else "Test Radarr connection"
-
-    sonarr_test_label = "Connected" if sonarr_ok else "Test Connection"
-    sonarr_test_disabled_attr = "disabled" if sonarr_ok else ""
-    sonarr_test_title = "Sonarr connection is OK" if sonarr_ok else "Test Sonarr connection"
 
     body = f"""
       <div class="grid">
@@ -2004,6 +1919,7 @@ def settings():
           <div class="hd">
             <h2>Settings</h2>
             <div class="btnrow">
+              <a class="btn" href="/apps">Manage Apps</a>
               <a class="btn" href="/jobs">Manage Jobs</a>
               <form method="post" action="/apply-cron" style="margin:0;">
                 <button class="btn warn" type="submit">Apply Cron</button>
@@ -2012,166 +1928,39 @@ def settings():
           </div>
 
           <div class="bd">
-            <form id="settingsForm"
-                  method="post"
-                  action="/save-settings"
-                  data-radarr-ok="{ '1' if radarr_ok else '0' }"
-                  data-sonarr-ok="{ '1' if sonarr_ok else '0' }"
-                  style="margin:0;">
-
-              <div class="card settingsCard">
-                <div class="hd"><h2>Radarr setup</h2></div>
-                <div class="bd">
-
-                  <div class="toggleRow">
-                    <div>
-                      <div style="font-weight:800;">Enable Radarr</div>
-                      <div class="muted">Turn off to ignore Radarr features.</div>
-                    </div>
-                    <label class="switch" title="Enable/Disable Radarr">
-                      <input id="radarr_enabled"
-                             name="RADARR_ENABLED"
-                             type="checkbox"
-                             {"checked" if radarr_enabled else ""}
-                             data-initial="{ '1' if radarr_enabled else '0' }">
-                      <span class="slider"></span>
-                    </label>
-                  </div>
-
-                  <div id="radarrSection">
-                    <div class="form">
-                      <div class="field">
-                        <label>Radarr URL</label>
-                        <input type="text" name="RADARR_URL"
-                               value="{safe_html(cfg["RADARR_URL"])}"
-                               data-initial="{safe_html(cfg["RADARR_URL"])}">
-                      </div>
-                      <div class="field">
-                        <label>Radarr API Key</label>
-                        <input type="password" name="RADARR_API_KEY"
-                               value="{safe_html(cfg["RADARR_API_KEY"])}"
-                               data-initial="{safe_html(cfg["RADARR_API_KEY"])}">
-                      </div>
-                    </div>
-
-                    <div class="btnrow" style="margin-top:14px;">
-                      <button id="testRadarrBtn"
-                              class="btn good"
-                              type="submit"
-                              formaction="/test-radarr"
-                              formmethod="post"
-                              {test_disabled_attr}
-                              title="{safe_html(test_title)}">{safe_html(test_label)}</button>
-
-                      <button class="btn bad"
-                              type="submit"
-                              formaction="/reset-radarr"
-                              formmethod="post"
-                              onclick="return confirm('Clear Radarr URL/API key and disable Radarr?');">Reset Radarr</button>
-                    </div>
-                  </div>
-                </div>
+            <form method="post" action="/save-settings" style="margin:0;">
+              <div class="field" style="margin-bottom:12px;">
+                <label>HTTP Timeout Seconds</label>
+                <input type="number" min="5" name="HTTP_TIMEOUT_SECONDS" value="{cfg["HTTP_TIMEOUT_SECONDS"]}">
               </div>
 
-              <div class="card settingsCard">
-                <div class="hd">
-                  <h2>Sonarr setup</h2>
-                  <div class="muted">Optional</div>
-                </div>
-                <div class="bd">
-
-                  <div class="toggleRow">
-                    <div>
-                      <div style="font-weight:800;">Enable Sonarr</div>
-                      <div class="muted">Turn on if you want Sonarr support.</div>
-                    </div>
-                    <label class="switch" title="Enable/Disable Sonarr">
-                      <input id="sonarr_enabled"
-                             name="SONARR_ENABLED"
-                             type="checkbox"
-                             {"checked" if sonarr_enabled else ""}
-                             data-initial="{ '1' if sonarr_enabled else '0' }">
-                      <span class="slider"></span>
-                    </label>
-                  </div>
-
-                  <div id="sonarrSection">
-                    <div class="form">
-                      <div class="field">
-                        <label>Sonarr URL</label>
-                        <input type="text" name="SONARR_URL"
-                               value="{safe_html(cfg["SONARR_URL"])}"
-                               data-initial="{safe_html(cfg["SONARR_URL"])}">
-                      </div>
-                      <div class="field">
-                        <label>Sonarr API Key</label>
-                        <input type="password" name="SONARR_API_KEY"
-                               value="{safe_html(cfg["SONARR_API_KEY"])}"
-                               data-initial="{safe_html(cfg["SONARR_API_KEY"])}">
-                      </div>
-                    </div>
-
-                    <div class="btnrow" style="margin-top:14px;">
-                      <button id="testSonarrBtn"
-                              class="btn good"
-                              type="submit"
-                              formaction="/test-sonarr"
-                              formmethod="post"
-                              {sonarr_test_disabled_attr}
-                              title="{safe_html(sonarr_test_title)}">{safe_html(sonarr_test_label)}</button>
-
-                      <button class="btn bad"
-                              type="submit"
-                              formaction="/reset-sonarr"
-                              formmethod="post"
-                              onclick="return confirm('Clear Sonarr URL/API key and disable Sonarr?');">Reset Sonarr</button>
-
-                      <div class="muted">Leave blank if you don’t use Sonarr.</div>
-                    </div>
-                  </div>
-                </div>
+              <div class="field" style="margin-bottom:12px;">
+                <label>UI Scale <span class="muted" id="uiScaleVal" style="margin-left:6px;"></span></label>
+                <input id="uiScale"
+                       type="range"
+                       min="0.75"
+                       max="1.5"
+                       step="0.05"
+                       name="UI_SCALE"
+                       value="{safe_html(str(cfg.get('UI_SCALE', 1.0)))}">
               </div>
 
-              <div class="card settingsCard">
-                <div class="hd">
-                  <h2>WebUI</h2>
-                  <div class="muted">Global settings</div>
-                </div>
-                <div class="bd">
-                  <div class="form">
-                    <div class="field">
-                      <label>HTTP Timeout Seconds</label>
-                      <input type="number" min="5" name="HTTP_TIMEOUT_SECONDS"
-                             value="{cfg["HTTP_TIMEOUT_SECONDS"]}"
-                             data-initial="{cfg["HTTP_TIMEOUT_SECONDS"]}">
-                    </div>
-                    <div class="field">
-                      <label>UI Scale <span class="muted" id="uiScaleVal" style="margin-left:6px;"></span></label>
-                      <input id="uiScale"
-                             type="range"
-                             min="0.75"
-                             max="1.5"
-                             step="0.05"
-                             name="UI_SCALE"
-                             value="{safe_html(str(cfg.get('UI_SCALE', 1.0)))}"
-                             data-initial="{safe_html(str(cfg.get('UI_SCALE', 1.0)))}">
-                    </div>
-                    <div class="field">
-                      <label>UI Theme</label>
-                      <select name="UI_THEME" data-initial="{safe_html(cfg.get("UI_THEME","dark"))}">
-                        <option value="dark" {"selected" if cfg.get("UI_THEME","dark")=="dark" else ""}>Dark</option>
-                        <option value="light" {"selected" if cfg.get("UI_THEME","dark")=="light" else ""}>Light</option>
-                        <option value="reaparr" {"selected" if cfg.get("UI_THEME","dark")=="reaparr" else ""}>Reaparr</option>
-                      </select>
-                    </div>
-                  </div>
-
-                  <div class="btnrow" style="margin-top:14px;">
-                    <button id="saveSettingsBtn" class="btn primary" type="submit" disabled>Save Settings</button>
-                  </div>
-                </div>
+              <div class="field" style="margin-bottom:12px;">
+                <label>UI Theme</label>
+                <select name="UI_THEME">
+                  <option value="dark" {"selected" if cfg.get("UI_THEME","dark")=="dark" else ""}>Dark</option>
+                  <option value="light" {"selected" if cfg.get("UI_THEME","dark")=="light" else ""}>Light</option>
+                  <option value="reaparr" {"selected" if cfg.get("UI_THEME","dark")=="reaparr" else ""}>Reaparr</option>
+                </select>
               </div>
 
+              <div class="btnrow" style="margin-top:14px;">
+                <button class="btn primary" type="submit">Save Settings</button>
+              </div>
+
+              <div class="muted" style="margin-top:14px;">
+                App connections are managed in <a href="/apps"><b>Apps</b></a>.
+              </div>
             </form>
           </div>
         </div>
@@ -2182,16 +1971,7 @@ def settings():
 
 @app.post("/save-settings")
 def save_settings():
-    old = load_config()
     cfg = load_config()
-
-    cfg["RADARR_ENABLED"] = checkbox("RADARR_ENABLED")
-    cfg["SONARR_ENABLED"] = checkbox("SONARR_ENABLED")
-
-    cfg["RADARR_URL"] = (request.form.get("RADARR_URL") or "").rstrip("/")
-    cfg["RADARR_API_KEY"] = request.form.get("RADARR_API_KEY") or ""
-    cfg["SONARR_URL"] = (request.form.get("SONARR_URL") or "").rstrip("/")
-    cfg["SONARR_API_KEY"] = request.form.get("SONARR_API_KEY") or ""
 
     cfg["HTTP_TIMEOUT_SECONDS"] = clamp_int(request.form.get("HTTP_TIMEOUT_SECONDS") or 30, 5, 300, 30)
     cfg["UI_THEME"] = (request.form.get("UI_THEME") or cfg.get("UI_THEME", "dark")).lower()
@@ -2205,70 +1985,79 @@ def save_settings():
     if cfg["UI_THEME"] not in ("dark", "light", "reaparr"):
         cfg["UI_THEME"] = "dark"
 
-    if old.get("RADARR_URL") != cfg["RADARR_URL"] or old.get("RADARR_API_KEY") != cfg["RADARR_API_KEY"]:
-        cfg["RADARR_OK"] = False
-    if old.get("SONARR_URL") != cfg["SONARR_URL"] or old.get("SONARR_API_KEY") != cfg["SONARR_API_KEY"]:
-        cfg["SONARR_OK"] = False
-
-    if cfg.get("RADARR_ENABLED", True):
-        if not cfg.get("RADARR_OK", False):
-            flash("Radarr enabled: click Test Connection and make sure it shows Connected before saving.", "error")
-            save_config(cfg)
-            return redirect("/settings")
-    else:
-        cfg["RADARR_OK"] = False
-
-    sonarr_configured = bool((cfg.get("SONARR_URL") or "").strip() or (cfg.get("SONARR_API_KEY") or "").strip())
-    if cfg.get("SONARR_ENABLED", False):
-        if sonarr_configured and not cfg.get("SONARR_OK", False):
-            flash("Sonarr enabled: click Test Connection (or clear Sonarr fields) before saving.", "error")
-            save_config(cfg)
-            return redirect("/settings")
-    else:
-        cfg["SONARR_OK"] = False
-
     save_config(cfg)
     flash("Settings saved ✔", "success")
     return redirect("/settings")
 
 
-# -----------------------
-# Apps page + modal
-# -----------------------
+# ----------------------------
+# Apps page + modals
+# ----------------------------
+def app_selector_modal_html() -> str:
+    return """
+    <div class="modalBack" id="appPickBack">
+      <div class="modal" role="dialog" aria-modal="true" aria-labelledby="appPickTitle" style="width:min(520px,100%);">
+        <div class="mh">
+          <h3 id="appPickTitle">Add App</h3>
+        </div>
+        <div class="mb">
+          <div class="form" style="grid-template-columns: minmax(0,1fr);">
+            <div class="field">
+              <label>Select an app type</label>
+              <select id="appPick">
+                <option value="radarr">Radarr</option>
+                <option value="sonarr">Sonarr</option>
+              </select>
+            </div>
+          </div>
+          <div class="muted" style="margin-top:10px;">
+            Choose an app type, then click <b>Add</b> to configure it.
+          </div>
+        </div>
+        <div class="mf">
+          <button class="btn" type="button" onclick="hideModal('appPickBack')">Cancel</button>
+          <button class="btn primary" type="button" onclick="confirmAddSelectedApp()">Add</button>
+        </div>
+      </div>
+    </div>
+    """
+
+
 def app_modal_html(cfg: Dict[str, Any]) -> str:
-    # Provide current cfg to JS for prefill
     cfg_js = {
-        "RADARR_URL": cfg.get("RADARR_URL", ""),
-        "RADARR_API_KEY": cfg.get("RADARR_API_KEY", ""),
-        "RADARR_ENABLED": bool(cfg.get("RADARR_ENABLED", True)),
-        "RADARR_OK": bool(cfg.get("RADARR_OK", False)),
-
-        "SONARR_URL": cfg.get("SONARR_URL", ""),
-        "SONARR_API_KEY": cfg.get("SONARR_API_KEY", ""),
-        "SONARR_ENABLED": bool(cfg.get("SONARR_ENABLED", False)),
-        "SONARR_OK": bool(cfg.get("SONARR_OK", False)),
+        "APPS": [normalize_app(a) for a in (cfg.get("APPS") or [])]
     }
-
     return f"""
     <script>
       window.__APP_CFG = {json.dumps(cfg_js)};
     </script>
 
+    <form id="appDeleteForm" method="post" action="/apps/delete" style="display:none;">
+      <input type="hidden" id="app_delete_id" name="APP_ID" value="">
+    </form>
+
     <div class="modalBack" id="appBack">
       <div class="modal" role="dialog" aria-modal="true" aria-labelledby="appTitle">
         <div class="mh">
-          <h3 id="appTitle">Add / Configure App</h3>
+          <h3 id="appTitle">Configure App</h3>
         </div>
 
         <form method="post" action="/apps/save" style="margin:0;">
           <div class="mb">
+            <input type="hidden" id="app_id" name="APP_ID" value="">
+
             <div class="form">
               <div class="field">
-                <label>App</label>
+                <label>Type</label>
                 <select id="app_type" name="APP_TYPE" onchange="onAppTypeChanged()">
                   <option value="radarr">Radarr</option>
                   <option value="sonarr">Sonarr</option>
                 </select>
+              </div>
+
+              <div class="field">
+                <label>Name</label>
+                <input id="app_name" type="text" name="APP_NAME" value="">
               </div>
 
               <div class="field">
@@ -2300,6 +2089,7 @@ def app_modal_html(cfg: Dict[str, Any]) -> str:
 
           <div class="mf">
             <button class="btn" type="button" onclick="hideModal('appBack')">Cancel</button>
+            <button class="btn bad" type="button" onclick="submitDeleteApp()">Delete</button>
             <button class="btn primary" type="submit">Save</button>
           </div>
         </form>
@@ -2311,9 +2101,17 @@ def app_modal_html(cfg: Dict[str, Any]) -> str:
 @app.get("/apps")
 def apps():
     cfg = load_config()
+    apps_list = [normalize_app(a) for a in (cfg.get("APPS") or [])]
 
-    def card(title: str, ok: bool, enabled: bool, url: str, key: str, kind: str) -> str:
-        # small external-link icon button (no actual link if URL empty)
+    def card(a: Dict[str, Any]) -> str:
+        a = normalize_app(a)
+        kind = a.get("type", "radarr")
+        title = a.get("name", "App")
+        ok = bool(a.get("ok", False))
+        enabled = bool(a.get("enabled", True))
+        url = str(a.get("url") or "")
+        app_id = safe_html(a.get("id"))
+
         href = (url or "").strip()
         ext = ""
         if href:
@@ -2326,35 +2124,29 @@ def apps():
         if not enabled:
             pill = '<span class="pill bad">Disabled</span>'
         else:
-            pill = '<span class="pill good">Full Sync</span>' if ok else '<span class="pill bad">Not Connected</span>'
+            pill = '<span class="pill good">Connected</span>' if ok else '<span class="pill bad">Not Connected</span>'
+
+        type_label = "Radarr" if kind == "radarr" else "Sonarr"
 
         return f"""
-        <div class="appCard" title="{safe_html(title)}">
+        <div class="appCard" role="button" tabindex="0"
+             onclick="openEditApp('{app_id}')"
+             onkeydown="if(event.key==='Enter'||event.key===' '){{
+                event.preventDefault(); openEditApp('{app_id}');
+             }}"
+             title="Configure {safe_html(title)}">
           <div class="appCardTop">
-            <div class="appTitle">{safe_html(title)}</div>
+            <div style="min-width:0;">
+              <div class="appTitle">{safe_html(title)}</div>
+              <div class="appSub">{safe_html(type_label)} • {safe_html(url or 'No URL')}</div>
+            </div>
             {ext}
           </div>
           <div>{pill}</div>
         </div>
         """
 
-    radarr_card = card(
-        "Radarr",
-        ok=bool(cfg.get("RADARR_OK", False)),
-        enabled=bool(cfg.get("RADARR_ENABLED", True)),
-        url=str(cfg.get("RADARR_URL") or ""),
-        key=str(cfg.get("RADARR_API_KEY") or ""),
-        kind="radarr",
-    )
-
-    sonarr_card = card(
-        "Sonarr",
-        ok=bool(cfg.get("SONARR_OK", False)),
-        enabled=bool(cfg.get("SONARR_ENABLED", False)),
-        url=str(cfg.get("SONARR_URL") or ""),
-        key=str(cfg.get("SONARR_API_KEY") or ""),
-        kind="sonarr",
-    )
+    app_cards = "".join(card(a) for a in apps_list)
 
     add_card = """
       <div class="appCard addAppCard" id="addAppCard" role="button" tabindex="0" title="Add an app">
@@ -2371,14 +2163,14 @@ def apps():
           </div>
           <div class="bd">
             <div class="appsGrid">
-              {radarr_card}
-              {sonarr_card}
+              {app_cards}
               {add_card}
             </div>
           </div>
         </div>
       </div>
 
+      {app_selector_modal_html()}
       {app_modal_html(cfg)}
     """
     return render_template_string(shell("mediareaparr • Apps", "apps", body))
@@ -2387,7 +2179,10 @@ def apps():
 @app.post("/apps/save")
 def apps_save():
     cfg = load_config()
+
+    app_id = (request.form.get("APP_ID") or "").strip()
     app_type = (request.form.get("APP_TYPE") or "radarr").strip().lower()
+    name = (request.form.get("APP_NAME") or "").strip()
     enabled = checkbox("APP_ENABLED")
     url = (request.form.get("APP_URL") or "").strip().rstrip("/")
     api_key = (request.form.get("APP_API_KEY") or "").strip()
@@ -2396,17 +2191,37 @@ def apps_save():
         flash("Unknown app type.", "error")
         return redirect("/apps")
 
-    if app_type == "radarr":
-        cfg["RADARR_ENABLED"] = enabled
-        cfg["RADARR_URL"] = url
-        cfg["RADARR_API_KEY"] = api_key
-        cfg["RADARR_OK"] = False  # requires test
-    else:
-        cfg["SONARR_ENABLED"] = enabled
-        cfg["SONARR_URL"] = url
-        cfg["SONARR_API_KEY"] = api_key
-        cfg["SONARR_OK"] = False  # requires test
+    apps_list = [normalize_app(a) for a in (cfg.get("APPS") or [])]
 
+    if app_id:
+        updated = False
+        for i, a in enumerate(apps_list):
+            if a["id"] == app_id:
+                a["type"] = app_type
+                a["name"] = name or a["name"]
+                a["enabled"] = enabled
+                a["url"] = url
+                a["api_key"] = api_key
+                a["ok"] = False  # requires test after edits
+                apps_list[i] = normalize_app(a)
+                updated = True
+                break
+        if not updated:
+            app_id = ""
+
+    if not app_id:
+        default_name = "Radarr" if app_type == "radarr" else "Sonarr"
+        apps_list.append(normalize_app({
+            "id": make_app_id(),
+            "type": app_type,
+            "name": name or default_name,
+            "enabled": enabled,
+            "url": url,
+            "api_key": api_key,
+            "ok": False,
+        }))
+
+    cfg["APPS"] = [normalize_app(a) for a in apps_list]
     save_config(cfg)
     flash("App saved ✔ (run Test Connection to mark connected)", "success")
     return redirect("/apps")
@@ -2415,7 +2230,10 @@ def apps_save():
 @app.post("/apps/test")
 def apps_test():
     cfg = load_config()
+
+    app_id = (request.form.get("APP_ID") or "").strip()
     app_type = (request.form.get("APP_TYPE") or "radarr").strip().lower()
+    name = (request.form.get("APP_NAME") or "").strip()
     enabled = checkbox("APP_ENABLED")
     url = (request.form.get("APP_URL") or "").strip().rstrip("/")
     api_key = (request.form.get("APP_API_KEY") or "").strip()
@@ -2432,20 +2250,35 @@ def apps_test():
         return redirect("/apps")
 
     kind = "Radarr" if app_type == "radarr" else "Sonarr"
+
+    apps_list = [normalize_app(a) for a in (cfg.get("APPS") or [])]
+
     try:
         _test_connection(kind, url, api_key, int(cfg.get("HTTP_TIMEOUT_SECONDS", 30)))
 
-        if app_type == "radarr":
-            cfg["RADARR_ENABLED"] = enabled
-            cfg["RADARR_URL"] = url
-            cfg["RADARR_API_KEY"] = api_key
-            cfg["RADARR_OK"] = True
+        if app_id:
+            for i, a in enumerate(apps_list):
+                if a["id"] == app_id:
+                    a["type"] = app_type
+                    a["name"] = name or a["name"]
+                    a["enabled"] = enabled
+                    a["url"] = url
+                    a["api_key"] = api_key
+                    a["ok"] = True
+                    apps_list[i] = normalize_app(a)
+                    break
         else:
-            cfg["SONARR_ENABLED"] = enabled
-            cfg["SONARR_URL"] = url
-            cfg["SONARR_API_KEY"] = api_key
-            cfg["SONARR_OK"] = True
+            apps_list.append(normalize_app({
+                "id": make_app_id(),
+                "type": app_type,
+                "name": name or kind,
+                "enabled": enabled,
+                "url": url,
+                "api_key": api_key,
+                "ok": True,
+            }))
 
+        cfg["APPS"] = [normalize_app(a) for a in apps_list]
         save_config(cfg)
         flash(f"{kind} connected ✔", "success")
         return redirect("/apps")
@@ -2459,22 +2292,54 @@ def apps_test():
     except Exception as e:
         flash(f"{kind} connection failed: {e}", "error")
 
-    # Save what user entered even if test fails
-    if app_type == "radarr":
-        cfg["RADARR_ENABLED"] = enabled
-        cfg["RADARR_URL"] = url
-        cfg["RADARR_API_KEY"] = api_key
-        cfg["RADARR_OK"] = False
+    # Save user entered values even if test fails
+    if app_id:
+        for i, a in enumerate(apps_list):
+            if a["id"] == app_id:
+                a["type"] = app_type
+                a["name"] = name or a["name"]
+                a["enabled"] = enabled
+                a["url"] = url
+                a["api_key"] = api_key
+                a["ok"] = False
+                apps_list[i] = normalize_app(a)
+                break
     else:
-        cfg["SONARR_ENABLED"] = enabled
-        cfg["SONARR_URL"] = url
-        cfg["SONARR_API_KEY"] = api_key
-        cfg["SONARR_OK"] = False
-    save_config(cfg)
+        apps_list.append(normalize_app({
+            "id": make_app_id(),
+            "type": app_type,
+            "name": name or kind,
+            "enabled": enabled,
+            "url": url,
+            "api_key": api_key,
+            "ok": False,
+        }))
 
+    cfg["APPS"] = [normalize_app(a) for a in apps_list]
+    save_config(cfg)
     return redirect("/apps")
 
 
+@app.post("/apps/delete")
+def apps_delete():
+    cfg = load_config()
+    app_id = (request.form.get("APP_ID") or "").strip()
+    if not app_id:
+        return redirect("/apps")
+
+    apps_list = [normalize_app(a) for a in (cfg.get("APPS") or [])]
+    apps_list = [a for a in apps_list if a["id"] != app_id]
+    cfg["APPS"] = apps_list
+
+    # Note: we do NOT auto-rewrite jobs; we leave them as-is (jobs will show missing app).
+    save_config(cfg)
+    flash("App deleted ✔", "success")
+    return redirect("/apps")
+
+
+# ----------------------------
+# Jobs
+# ----------------------------
 @app.post("/jobs/toggle-enabled")
 def jobs_toggle_enabled():
     cfg = load_config()
@@ -2501,42 +2366,26 @@ def jobs_toggle_enabled():
 def jobs_page():
     cfg = load_config()
 
-    radarr_ready = is_app_ready(cfg, "radarr")
-    sonarr_ready = is_app_ready(cfg, "sonarr")
+    apps_all = [normalize_app(a) for a in (cfg.get("APPS") or [])]
+    ready_apps = [a for a in apps_all if is_app_ready(cfg, a["id"])]
 
-    radarr_labels = get_tag_labels(cfg, "radarr") if radarr_ready else []
-    sonarr_labels = get_tag_labels(cfg, "sonarr") if sonarr_ready else []
+    tags_map = {a["id"]: get_tag_labels(cfg, a["id"]) for a in ready_apps}
+    types_map = {a["id"]: a.get("type", "radarr") for a in ready_apps}
 
-    available_apps = []
-    if radarr_ready:
-        available_apps.append("radarr")
-    if sonarr_ready:
-        available_apps.append("sonarr")
+    default_app_id = ready_apps[0]["id"] if ready_apps else ""
 
-    default_app = "radarr"
-    if len(available_apps) == 1:
-        default_app = available_apps[0]
-    elif "radarr" in available_apps:
-        default_app = "radarr"
-    elif "sonarr" in available_apps:
-        default_app = "sonarr"
-
-    app_disabled_attr = "disabled" if len(available_apps) == 1 else ""
-
+    app_disabled_attr = "disabled" if len(ready_apps) <= 1 else ""
     app_options_html = ""
-    if "radarr" in available_apps:
-        app_options_html += '<option value="radarr">Radarr</option>'
-    if "sonarr" in available_apps:
-        app_options_html += '<option value="sonarr">Sonarr</option>'
+    for a in ready_apps:
+        label = f"{'Radarr' if a['type']=='radarr' else 'Sonarr'} • {a.get('name','App')}"
+        app_options_html += f'<option value="{safe_html(a["id"])}">{safe_html(label)}</option>'
 
     hour_opts = "".join([f'<option value="{h}">{h:02d}:00</option>' for h in range(0, 24)])
 
     tags_js = f"""
     <script>
-      window.__TAGS = {{
-        radarr: {json.dumps(radarr_labels)},
-        sonarr: {json.dumps(sonarr_labels)},
-      }};
+      window.__TAGS = {json.dumps(tags_map)};
+      window.__APP_TYPES = {json.dumps(types_map)};
     </script>
     """
 
@@ -2564,8 +2413,8 @@ def jobs_page():
 
               <div class="field">
                 <label>App</label>
-                <select name="APP" id="job_app" onchange="onJobAppChanged()"
-                        data-default-app="{safe_html(default_app)}" {app_disabled_attr} required>
+                <select name="APP_ID" id="job_app" onchange="onJobAppChanged()"
+                        data-default-app="{safe_html(default_app_id)}" {app_disabled_attr} required>
                   {app_options_html}
                 </select>
               </div>
@@ -2658,8 +2507,13 @@ def jobs_page():
     job_cards = []
     for j0 in cfg["JOBS"]:
         j = normalize_job(j0)
-        app_key = (j.get("APP") or "radarr").lower()
-        app_label = "Radarr" if app_key == "radarr" else "Sonarr"
+        a = find_app(cfg, j.get("APP_ID"))
+        if a:
+            app_kind = a.get("type", "radarr")
+            app_label = f"{'Radarr' if app_kind=='radarr' else 'Sonarr'} • {a.get('name','App')}"
+        else:
+            app_kind = "radarr"
+            app_label = "Missing app"
 
         sched = schedule_label(j["SCHED_DAY"], j["SCHED_HOUR"])
         tag_val = j.get("TAG_LABEL") or "—"
@@ -2669,7 +2523,7 @@ def jobs_page():
         excl_val = "ON" if j.get("ADD_IMPORT_EXCLUSION") else "OFF"
 
         sonarr_mode_line = ""
-        if app_key == "sonarr":
+        if a and a.get("type") == "sonarr":
             sonarr_mode_line = f"""
               <div class="metaRow">
                 <div class="metaLabel">Sonarr mode:</div>
@@ -2684,7 +2538,7 @@ def jobs_page():
                   data-id="{safe_html(j["id"])}"
                   data-name="{safe_html(j["name"])}"
                   data-enabled="{ '1' if j["enabled"] else '0' }"
-                  data-app="{safe_html(app_key)}"
+                  data-app-id="{safe_html(j.get("APP_ID",""))}"
                   data-tag="{safe_html(j["TAG_LABEL"])}"
                   data-sonarr-mode="{safe_html(j.get('SONARR_DELETE_MODE','episodes_only'))}"
                   data-days="{j["DAYS_OLD"]}"
@@ -2769,7 +2623,7 @@ def jobs_page():
               </div>
 
               <div class="jobRail">
-                {run_now_button_html(j)}
+                {run_now_button_html(j, app_label)}
                 {edit_btn}
                 {delete_btn}
               </div>
@@ -2777,9 +2631,9 @@ def jobs_page():
           </div>
         """)
 
-    can_add_job = len([a for a in ("radarr", "sonarr") if is_app_ready(cfg, a)]) > 0
+    can_add_job = len(ready_apps) > 0
     add_job_disabled_attr = "" if can_add_job else "disabled"
-    add_job_title = "Add Job" if can_add_job else "Connect Radarr or Sonarr in Apps/Settings (Test Connection) to add a job."
+    add_job_title = "Add Job" if can_add_job else "Connect an app in Apps (Test Connection) to add a job."
 
     add_job_button = f"""
       <button class="btn primary" type="button" onclick="openNewJob()" {add_job_disabled_attr}
@@ -2790,7 +2644,7 @@ def jobs_page():
     if not can_add_job:
         hint_html = """
           <div class="muted" style="margin-top:12px;">
-            Add Job is disabled because neither Radarr nor Sonarr is connected.
+            Add Job is disabled because no connected apps exist.
             Go to <a href="/apps"><b>Apps</b></a> and use <b>Test Connection</b>.
           </div>
         """
@@ -2833,17 +2687,10 @@ def jobs_save():
         name = (request.form.get("name") or "Job").strip()
         enabled = (request.form.get("enabled") or "1").strip() == "1"
 
-        allowed_apps = []
-        if is_app_ready(cfg, "radarr"):
-            allowed_apps.append("radarr")
-        if is_app_ready(cfg, "sonarr"):
-            allowed_apps.append("sonarr")
-        if not allowed_apps:
-            raise ValueError("No apps connected. Go to Apps/Settings and Test Connection first.")
-
-        app_key = (request.form.get("APP") or "").strip().lower()
-        if app_key not in allowed_apps:
-            raise ValueError(f"Selected app is not available. Available: {', '.join(allowed_apps)}.")
+        app_id = (request.form.get("APP_ID") or "").strip()
+        app_obj = find_app(cfg, app_id)
+        if not app_obj or not is_app_ready(cfg, app_id):
+            raise ValueError("Selected app is not available/connected. Go to Apps and Test Connection.")
 
         tag_label = (request.form.get("TAG_LABEL") or "").strip()
         if not tag_label:
@@ -2852,14 +2699,14 @@ def jobs_save():
         sonarr_mode = (request.form.get("SONARR_DELETE_MODE") or "episodes_only").strip()
         if sonarr_mode not in SONARR_DELETE_MODES:
             sonarr_mode = "episodes_only"
-        if app_key != "sonarr":
+        if app_obj.get("type") != "sonarr":
             sonarr_mode = "episodes_only"
 
         job = {
             "id": job_id or make_job_id(),
             "name": name,
             "enabled": enabled,
-            "APP": app_key,
+            "APP_ID": app_id,
             "TAG_LABEL": tag_label,
             "DAYS_OLD": clamp_int(request.form.get("DAYS_OLD") or 30, 1, 36500, 30),
             "SONARR_DELETE_MODE": sonarr_mode,
@@ -2889,23 +2736,7 @@ def jobs_save():
 
     except Exception as e:
         flash(str(e), "error")
-        from urllib.parse import urlencode
-        qs = urlencode({
-            "modal": "job",
-            "job_id": request.form.get("job_id", ""),
-            "APP": request.form.get("APP", "radarr"),
-            "name": request.form.get("name", ""),
-            "enabled": request.form.get("enabled", "1"),
-            "TAG_LABEL": request.form.get("TAG_LABEL", ""),
-            "SONARR_DELETE_MODE": request.form.get("SONARR_DELETE_MODE", "episodes_only"),
-            "DAYS_OLD": request.form.get("DAYS_OLD", ""),
-            "SCHED_DAY": request.form.get("SCHED_DAY", ""),
-            "SCHED_HOUR": request.form.get("SCHED_HOUR", ""),
-            "DRY_RUN": "1" if checkbox("DRY_RUN") else "0",
-            "DELETE_FILES": "1" if checkbox("DELETE_FILES") else "0",
-            "ADD_IMPORT_EXCLUSION": "1" if checkbox("ADD_IMPORT_EXCLUSION") else "0",
-        }, doseq=False)
-        return redirect(f"/jobs?{qs}")
+        return redirect("/jobs")
 
 
 @app.post("/jobs/delete")
@@ -2940,6 +2771,11 @@ def jobs_run_now():
     if not job.get("enabled", False):
         flash("This job is disabled. Enable it before running.", "error")
         return redirect("/jobs")
+
+    app_obj = find_app(cfg, job.get("APP_ID"))
+    if not app_obj or not is_app_ready(cfg, app_obj["id"]):
+        flash("This job's app is missing or not connected. Fix it in Apps.", "error")
+        return redirect("/apps")
 
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     (CONFIG_DIR / f"run_now_{job_id}.flag").write_text(now_iso(), encoding="utf-8")
@@ -2977,6 +2813,9 @@ def apply_cron():
     return redirect(request.referrer or "/jobs")
 
 
+# ----------------------------
+# Preview
+# ----------------------------
 @app.get("/preview")
 def preview():
     cfg = load_config()
@@ -2985,7 +2824,12 @@ def preview():
     job = find_job(cfg, job_id)
     if not job:
         jobs = [normalize_job(j) for j in (cfg.get("JOBS") or [])]
-        preferred = next((j for j in jobs if j.get("enabled") and is_app_ready(cfg, j.get("APP"))), None)
+        preferred = None
+        for jj in jobs:
+            a = find_app(cfg, jj.get("APP_ID"))
+            if jj.get("enabled") and a and is_app_ready(cfg, a["id"]):
+                preferred = jj
+                break
         if preferred:
             job = preferred
         elif jobs:
@@ -2993,8 +2837,16 @@ def preview():
         else:
             job = normalize_job(job_defaults())
 
+    app_obj = find_app(cfg, job.get("APP_ID"))
+    if not app_obj:
+        flash("Job app not found. Edit the job and select an app.", "error")
+        return redirect("/jobs")
+    if not is_app_ready(cfg, app_obj["id"]):
+        flash("Selected app is not connected/enabled. Fix it in Apps.", "error")
+        return redirect("/apps")
+
     try:
-        result = preview_candidates_sonarr(cfg, job) if job.get("APP") == "sonarr" else preview_candidates_radarr(cfg, job)
+        result = preview_candidates_sonarr(cfg, app_obj, job) if app_obj.get("type") == "sonarr" else preview_candidates_radarr(cfg, app_obj, job)
 
         error = result.get("error")
         candidates = result.get("candidates", [])
@@ -3017,9 +2869,9 @@ def preview():
               </tr>
             """
 
-        app_label = "Sonarr" if job.get("APP") == "sonarr" else "Radarr"
+        app_label = f"{'Sonarr' if app_obj.get('type')=='sonarr' else 'Radarr'} • {app_obj.get('name','App')}"
         sonarr_mode_line = ""
-        if job.get("APP") == "sonarr":
+        if app_obj.get("type") == "sonarr":
             sonarr_mode_line = f" • Mode: <b>{safe_html(sonarr_delete_mode_label(job.get('SONARR_DELETE_MODE')))}</b>"
 
         body = f"""
@@ -3029,7 +2881,7 @@ def preview():
                 <h2>Preview candidates</h2>
                 <div class="btnrow">
                   <a class="btn" href="/jobs">Back to Jobs</a>
-                  {run_now_button_html(job)}
+                  {run_now_button_html(job, app_label)}
                 </div>
               </div>
               <div class="bd">
@@ -3067,6 +2919,9 @@ def preview():
         return redirect("/dashboard")
 
 
+# ----------------------------
+# Dashboard
+# ----------------------------
 @app.get("/dashboard")
 def dashboard():
     state = load_state()
@@ -3080,6 +2935,7 @@ def dashboard():
                 <h2>Dashboard</h2>
                 <div class="btnrow">
                   <a class="btn" href="/jobs">Jobs</a>
+                  <a class="btn" href="/apps">Apps</a>
                   <a class="btn" href="/settings">Settings</a>
                 </div>
               </div>
@@ -3099,6 +2955,7 @@ def dashboard():
             <h2>Dashboard</h2>
             <div class="btnrow">
               <a class="btn" href="/jobs">Jobs</a>
+              <a class="btn" href="/apps">Apps</a>
               <a class="btn" href="/settings">Settings</a>
             </div>
           </div>
@@ -3114,6 +2971,9 @@ def dashboard():
     return render_template_string(shell("mediareaparr • Dashboard", "dash", body))
 
 
+# ----------------------------
+# Status
+# ----------------------------
 @app.get("/status")
 def status():
     cfg = load_config()
@@ -3122,15 +2982,25 @@ def status():
     def render_kv(d: Dict[str, Any]) -> str:
         rows = []
         for k, v in d.items():
-            if k == "JOBS":
+            if k == "APPS":
+                apps_list = [normalize_app(a) for a in (v or [])]
+                parts = []
+                for a in apps_list[:50]:
+                    typ = a.get("type")
+                    nm = a.get("name")
+                    ok = "ok" if a.get("ok") else "not-ok"
+                    en = "enabled" if a.get("enabled") else "disabled"
+                    parts.append(f"{nm} ({typ}, {en}, {ok}, url={a.get('url','')})")
+                summary = "; ".join(parts) + (" …" if len(apps_list) > 50 else "")
+                rows.append(
+                    f"<tr><td><code>{safe_html(k)}</code></td>"
+                    f"<td class='muted'>{safe_html(summary) if summary else safe_html(f'[{len(apps_list)} apps]')}</td></tr>"
+                )
+            elif k == "JOBS":
                 jobs = [normalize_job(x) for x in (v or [])]
                 parts = []
                 for j in jobs[:50]:
-                    app_key = (j.get("APP") or "radarr").lower()
-                    mode_txt = ""
-                    if app_key == "sonarr":
-                        mode_txt = f", mode={sonarr_delete_mode_label(j.get('SONARR_DELETE_MODE'))}"
-                    parts.append(f"{j.get('name','Job')} ({app_key}, tag={j.get('TAG_LABEL','')}{mode_txt})")
+                    parts.append(f"{j.get('name','Job')} (app_id={j.get('APP_ID','')}, tag={j.get('TAG_LABEL','')})")
                 summary = "; ".join(parts) + (" …" if len(jobs) > 50 else "")
                 rows.append(
                     f"<tr><td><code>{safe_html(k)}</code></td>"
@@ -3141,6 +3011,14 @@ def status():
             else:
                 rows.append(f"<tr><td><code>{safe_html(k)}</code></td><td class='muted'>{safe_html(v)}</td></tr>")
         return "".join(rows)
+
+    # Mask API keys inside APPS when rendering full cfg
+    cfg_for_view = dict(cfg)
+    cfg_for_view["APPS"] = []
+    for a in (cfg.get("APPS") or []):
+        aa = normalize_app(a)
+        aa["api_key"] = "***" if aa.get("api_key") else ""
+        cfg_for_view["APPS"].append(aa)
 
     body = f"""
       <div class="grid">
@@ -3153,7 +3031,7 @@ def status():
             <div style="margin-top:14px;" class="tablewrap">
               <table>
                 <thead><tr><th>Config Key</th><th>Value</th></tr></thead>
-                <tbody>{render_kv(cfg)}</tbody>
+                <tbody>{render_kv(cfg_for_view)}</tbody>
               </table>
             </div>
 
@@ -3177,3 +3055,4 @@ if __name__ == "__main__":
     p.add_argument("--port", type=int, default=int(os.environ.get("WEBUI_PORT", "7575")))
     args = p.parse_args()
     app.run(host=args.host, port=args.port)
+
