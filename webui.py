@@ -490,11 +490,6 @@ BASE_HEAD = """
     --switch-thumb: calc(14px * var(--ui));
     --switch-pad: calc(3px * var(--ui));
     --switch-travel: calc(var(--switch-w) - var(--switch-thumb) - (var(--switch-pad) * 2));
-
-    --sb-hover: #97c13d;
-    --sb-active-bg: #97c13d;
-    --sb-active-text: #0b1220;
-    --sb-active-border: #97c13d;
   }
 
   [data-theme="light"]{
@@ -512,11 +507,6 @@ BASE_HEAD = """
     --warn:#d97706;
     --bad:#dc2626;
     --shadow: 0 12px 30px rgba(0,0,0,.08);
-
-    --sb-hover: #6d28d9;
-    --sb-active-bg: #e5e7eb;
-    --sb-active-text: #6d28d9;
-    --sb-active-border: #6d28d9;
   }
 
   [data-theme="reaparr"]{
@@ -531,7 +521,7 @@ BASE_HEAD = """
 
     --accent:#26e08a;
     --accent2:#16b86e;
-    
+
     --reaparr_accent:#a7d541;
     --light_accent:#a7d541;
     --dark_accent:#a7d541;
@@ -540,11 +530,6 @@ BASE_HEAD = """
     --bad:#ff5c6c;
 
     --shadow: 0 12px 28px rgba(0,0,0,.55);
-
-    --sb-hover: var(--reaparr_accent);
-    --sb-active-bg: #15212f;
-    --sb-active-text: var(--reaparr_accent);
-    --sb-active-border: var(--reaparr_accent);
   }
 
   body.sbCollapsed{ --sidebar-w: 0px; }
@@ -708,7 +693,6 @@ BASE_HEAD = """
     font-size: 14px;
     text-decoration: none;
     cursor:pointer;
-    color: var(--text);
   }
 
   /* Prevent browser default active link color */
@@ -717,16 +701,36 @@ BASE_HEAD = """
   }
 
   .sbItem:hover{
-    color: var(--sb-hover);
+    color: #97c13d;
   }
 
   .sbItem.active{
     box-shadow: none !important;
-    background: var(--sb-active-bg);
-    color: var(--sb-active-text);
-    border-left: 1px solid var(--sb-active-border);
   }
-  
+
+  body[data-theme="reaparr"] .sbItem:hover{
+    color: var(--reaparr_accent);
+  }
+
+  /* ACTIVE INDICATOR = LEFT BORDER */
+  body[data-theme="reaparr"] .sbItem.active{
+    background: #15212f;
+    color: var(--reaparr_accent);
+    border-left: 3px solid var(--reaparr_accent);
+  }
+
+  body[data-theme="light"] .sbItem.active{
+    background: #e5e7eb;
+    color: var(--light_accent);
+    border-left: 3px solid var(--light_accent);
+  }
+
+  body[data-theme="dark"] .sbItem.active{
+    background: #97c13d;
+    color: var(--dark_accent);
+    border-left: 3px solid var(--dark_accent);
+  }
+
   .sbNav form{ margin: 0; }
   button.sbItem{ width: 100%; text-align: left; color: var(--text); }
 
@@ -749,7 +753,6 @@ BASE_HEAD = """
 
   @media (max-width: 900px){
     :root{ --sidebar-w: 220px; }
-    /* keep edge-to-edge (no mainArea padding) */
   }
   @media (max-width: 740px){
     :root{ --sidebar-w: 200px; }
@@ -781,7 +784,7 @@ BASE_HEAD = """
 
   .card .hd{
     padding: 14px 16px;
-    display:flex; 
+    display:flex;
     align-items:center;
     justify-content: space-between;
     gap:12px;
@@ -1087,6 +1090,91 @@ BASE_HEAD = """
   .metaLabel{ width: 100px; color: var(--muted); flex: 0 0 auto; }
   .metaVal{ color: var(--text); flex: 1 1 auto; min-width: 0; word-break: break-word; }
 
+  /* Apps grid like your screenshot */
+  .appsGrid{
+    display: grid;
+    gap: 16px;
+    justify-content: start;
+    align-content: start;
+    grid-template-columns: repeat(5, 300px);
+  }
+  @media (max-width: 1700px){ .appsGrid{ grid-template-columns: repeat(4, 300px); } }
+  @media (max-width: 1400px){ .appsGrid{ grid-template-columns: repeat(3, 300px); } }
+  @media (max-width: 1100px){ .appsGrid{ grid-template-columns: repeat(2, 300px); } }
+  @media (max-width: 760px){ .appsGrid{ grid-template-columns: 1fr; } }
+
+  .appCard{
+    width: 300px;
+    height: 128px;
+    border: 1px solid var(--line);
+    background: var(--panel2);
+    box-shadow: var(--shadow);
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    padding: 14px 14px;
+    position: relative;
+    user-select: none;
+  }
+  [data-theme="light"] .appCard{ background:#ffffff; }
+
+  .appCardTop{
+    display:flex;
+    align-items:flex-start;
+    justify-content: space-between;
+    gap: 12px;
+    min-width: 0;
+  }
+  .appTitle{
+    font-size: 22px;
+    font-weight: 500;
+    line-height: 1.05;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .appCardIconBtn{
+    width: 26px; height: 26px;
+    display:flex; align-items:center; justify-content:center;
+    border: 1px solid var(--line2);
+    background: transparent;
+    cursor: pointer;
+    opacity: .9;
+  }
+  .appCardIconBtn:hover{ opacity: 1; }
+
+  .pill{
+    display:inline-flex;
+    align-items:center;
+    gap: 6px;
+    border: 1px solid var(--line2);
+    padding: 3px 8px;
+    font-size: 11px;
+    font-weight: 700;
+    background: rgba(34,197,94,.12);
+  }
+  .pill.good{ border-color: rgba(34,197,94,.45); }
+  .pill.bad{ border-color: rgba(239,68,68,.55); background: rgba(239,68,68,.10); }
+  body[data-theme="reaparr"] .pill.good{ border-color: rgba(38,224,138,.45); background: rgba(38,224,138,.10); }
+
+  .addAppCard{
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+  }
+  .addAppCardInner{
+    width: 86px;
+    height: 54px;
+    border: 1px solid var(--line2);
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    font-size: 42px;
+    color: var(--muted);
+    line-height: 1;
+  }
+
   .modalBack{
     position: fixed; inset: 0;
     background: rgba(0,0,0,.68);
@@ -1205,85 +1293,6 @@ BASE_HEAD = """
   body[data-theme="reaparr"] .settingsCard{
     background: var(--panel);
   }
-
-  /* ============================
-     Apps page layout
-     ============================ */
-  .appsGrid{
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
-    gap: 16px;
-  }
-
-  @media (min-width: 1600px){
-    .appsGrid{
-      grid-template-columns: repeat(5, 300px);
-      justify-content: start;
-    }
-  }
-
-  .appCard{
-    width: 300px;
-    height: 128px;
-    background: var(--panel2);
-    border: 1px solid var(--line);
-    display: flex;
-    flex-direction: column;
-    justify-content: space-between;
-    padding: 14px;
-  }
-
-  [data-theme="light"] .appCard{ background:#ffffff; }
-
-  .appCardHeader{
-    display:flex;
-    align-items:center;
-    justify-content: space-between;
-    font-size: 18px;
-    font-weight: 700;
-  }
-
-  .appCardActions{
-    display:flex;
-    align-items:center;
-    gap: 8px;
-    color: var(--muted);
-  }
-
-  .appBadge{
-    align-self:flex-start;
-    font-size: 11px;
-    padding: 2px 8px;
-    background: var(--accent);
-    color: #052e16;
-    font-weight: 700;
-  }
-
-  body[data-theme="reaparr"] .appBadge{
-    background: var(--reaparr_accent);
-    color: #0b1220;
-  }
-
-  .addAppCard{
-    cursor: pointer;
-    justify-content: center;
-    align-items: center;
-    user-select: none;
-    border-style: dashed;
-    border-color: var(--line2);
-  }
-
-  .addAppCard:hover{
-    border-color: rgba(34,197,94,.55);
-    box-shadow: 0 0 0 3px rgba(34,197,94,.10), 0 10px 22px rgba(0,0,0,.22);
-    transform: translateY(-1px);
-  }
-
-  body[data-theme="reaparr"] .addAppCard:hover{
-    border-color: rgba(38,224,138,.55);
-    box-shadow: 0 0 0 3px rgba(38,224,138,.10), 0 10px 22px rgba(0,0,0,.45);
-  }
-
 </style>
 
 <script>
@@ -1313,6 +1322,48 @@ BASE_HEAD = """
     setSidebarCollapsed(!collapsed);
   }
 
+  // -----------------------
+  // Apps modal helpers
+  // -----------------------
+  function onAppTypeChanged(){
+    const t = ($("app_type")?.value || "radarr").toLowerCase();
+    const url = $("app_url");
+    const key = $("app_key");
+    const enabled = $("app_enabled");
+    const hint = $("appHint");
+
+    if (hint){
+      hint.textContent = (t === "sonarr")
+        ? "Configure Sonarr. Save then Test Connection."
+        : "Configure Radarr. Save then Test Connection.";
+    }
+
+    // When switching type, prefill from window.__APP_CFG if present
+    const cfg = (window.__APP_CFG || {});
+    if (t === "radarr"){
+      if (url) url.value = cfg.RADARR_URL || "";
+      if (key) key.value = cfg.RADARR_API_KEY || "";
+      if (enabled) enabled.checked = !!cfg.RADARR_ENABLED;
+    } else {
+      if (url) url.value = cfg.SONARR_URL || "";
+      if (key) key.value = cfg.SONARR_API_KEY || "";
+      if (enabled) enabled.checked = !!cfg.SONARR_ENABLED;
+    }
+  }
+
+  function openAddAppModal(){
+    // Default to Radarr, but user can switch
+    setVal("app_type", "radarr");
+    setChecked("app_enabled", true);
+    setVal("app_url", "");
+    setVal("app_key", "");
+    onAppTypeChanged();
+    showModal("appBack");
+  }
+
+  // -----------------------
+  // Job modal dirty tracking (your existing code)
+  // -----------------------
   window.__JOB_MODAL_INITIAL = "";
   window.__JOB_MODAL_DIRTY = false;
 
@@ -1358,28 +1409,10 @@ BASE_HEAD = """
   document.addEventListener("keydown", (e) => {
     if (e.key === "Escape") {
       hideModal("runNowBack");
+      hideModal("appBack");
       maybeCloseJobModal();
     }
   });
-
-  // --------------------------
-  // Apps modal helpers
-  // --------------------------
-  function openAddAppModal(){
-    // defaults
-    setVal("app_type", "radarr");
-    setChecked("app_enabled", true);
-    setVal("app_url", "");
-    setVal("app_key", "");
-    onAppTypeChanged();
-    showModal("appBack");
-  }
-
-  function onAppTypeChanged(){
-    const t = ($("app_type")?.value || "radarr").toLowerCase();
-    const title = $("appTitle");
-    if (title) title.textContent = (t === "sonarr") ? "Add / Configure Sonarr" : "Add / Configure Radarr";
-  }
 
   function ensureSelectOption(selectId, value, labelSuffix){
     const sel = $(selectId);
@@ -1443,7 +1476,6 @@ BASE_HEAD = """
     const defApp = appSel?.getAttribute("data-default-app") || "radarr";
     setVal("job_app", defApp);
 
-    // If defApp isn't available (e.g. only Sonarr exists), pick the first option
     if (appSel && appSel.selectedIndex < 0 && appSel.options.length > 0) appSel.selectedIndex = 0;
     const actualApp = appSel ? (appSel.value || defApp) : defApp;
 
@@ -1477,7 +1509,6 @@ BASE_HEAD = """
     setVal("job_app", appKey);
 
     const appSel = $("job_app");
-    // If stored app isn't available in dropdown, fall back to first option
     if (appSel && appSel.selectedIndex < 0 && appSel.options.length > 0) appSel.selectedIndex = 0;
     const actualApp = appSel ? (appSel.value || appKey) : appKey;
 
@@ -1638,10 +1669,27 @@ BASE_HEAD = """
   });
 
   document.addEventListener("DOMContentLoaded", () => {
+    // Sidebar collapsed state
     try {
       const v = localStorage.getItem("sbCollapsed");
       if (v === "1") document.body.classList.add("sbCollapsed");
     } catch(e){}
+
+    // Bind addAppCard click/keyboard if it exists on this page
+    const addCard = $("addAppCard");
+    if (addCard){
+      addCard.style.cursor = "pointer";
+      addCard.addEventListener("click", (e) => {
+        e.preventDefault();
+        openAddAppModal();
+      });
+      addCard.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" || e.key === " "){
+          e.preventDefault();
+          openAddAppModal();
+        }
+      });
+    }
 
     const radSec = $("radarrSection");
     const sonSec = $("sonarrSection");
@@ -1698,6 +1746,7 @@ BASE_HEAD = """
       updateSonarrModeVisibility(appKey);
     }
 
+    // UI scale live apply
     const uiScale = $("uiScale");
     const uiScaleVal = $("uiScaleVal");
     function applyUiScale(v){
@@ -2183,6 +2232,249 @@ def save_settings():
     return redirect("/settings")
 
 
+# -----------------------
+# Apps page + modal
+# -----------------------
+def app_modal_html(cfg: Dict[str, Any]) -> str:
+    # Provide current cfg to JS for prefill
+    cfg_js = {
+        "RADARR_URL": cfg.get("RADARR_URL", ""),
+        "RADARR_API_KEY": cfg.get("RADARR_API_KEY", ""),
+        "RADARR_ENABLED": bool(cfg.get("RADARR_ENABLED", True)),
+        "RADARR_OK": bool(cfg.get("RADARR_OK", False)),
+
+        "SONARR_URL": cfg.get("SONARR_URL", ""),
+        "SONARR_API_KEY": cfg.get("SONARR_API_KEY", ""),
+        "SONARR_ENABLED": bool(cfg.get("SONARR_ENABLED", False)),
+        "SONARR_OK": bool(cfg.get("SONARR_OK", False)),
+    }
+
+    return f"""
+    <script>
+      window.__APP_CFG = {json.dumps(cfg_js)};
+    </script>
+
+    <div class="modalBack" id="appBack">
+      <div class="modal" role="dialog" aria-modal="true" aria-labelledby="appTitle">
+        <div class="mh">
+          <h3 id="appTitle">Add / Configure App</h3>
+        </div>
+
+        <form method="post" action="/apps/save" style="margin:0;">
+          <div class="mb">
+            <div class="form">
+              <div class="field">
+                <label>App</label>
+                <select id="app_type" name="APP_TYPE" onchange="onAppTypeChanged()">
+                  <option value="radarr">Radarr</option>
+                  <option value="sonarr">Sonarr</option>
+                </select>
+              </div>
+
+              <div class="field">
+                <label>Enabled</label>
+                <label class="switch" title="Enable/Disable this app" style="margin-top:6px;">
+                  <input id="app_enabled" name="APP_ENABLED" type="checkbox" checked>
+                  <span class="slider"></span>
+                </label>
+              </div>
+
+              <div class="field">
+                <label>Base URL</label>
+                <input id="app_url" type="text" name="APP_URL" value="">
+              </div>
+
+              <div class="field">
+                <label>API Key</label>
+                <input id="app_key" type="password" name="APP_API_KEY" value="">
+              </div>
+            </div>
+
+            <div class="muted" id="appHint" style="margin-top:10px;">Configure Radarr. Save then Test Connection.</div>
+
+            <div class="btnrow" style="margin-top:14px;">
+              <button class="btn good" type="submit" formaction="/apps/test" formmethod="post">Test Connection</button>
+              <div class="muted">Testing saves the values and marks the app as connected.</div>
+            </div>
+          </div>
+
+          <div class="mf">
+            <button class="btn" type="button" onclick="hideModal('appBack')">Cancel</button>
+            <button class="btn primary" type="submit">Save</button>
+          </div>
+        </form>
+      </div>
+    </div>
+    """
+
+
+@app.get("/apps")
+def apps():
+    cfg = load_config()
+
+    def card(title: str, ok: bool, enabled: bool, url: str, key: str, kind: str) -> str:
+        # small external-link icon button (no actual link if URL empty)
+        href = (url or "").strip()
+        ext = ""
+        if href:
+            ext = f"""<a class="appCardIconBtn" href="{safe_html(href)}" target="_blank" rel="noreferrer" title="Open {safe_html(title)}">
+              ↗
+            </a>"""
+        else:
+            ext = """<div class="appCardIconBtn" title="No URL set" style="opacity:.4; cursor:default;">↗</div>"""
+
+        if not enabled:
+            pill = '<span class="pill bad">Disabled</span>'
+        else:
+            pill = '<span class="pill good">Full Sync</span>' if ok else '<span class="pill bad">Not Connected</span>'
+
+        return f"""
+        <div class="appCard" title="{safe_html(title)}">
+          <div class="appCardTop">
+            <div class="appTitle">{safe_html(title)}</div>
+            {ext}
+          </div>
+          <div>{pill}</div>
+        </div>
+        """
+
+    radarr_card = card(
+        "Radarr",
+        ok=bool(cfg.get("RADARR_OK", False)),
+        enabled=bool(cfg.get("RADARR_ENABLED", True)),
+        url=str(cfg.get("RADARR_URL") or ""),
+        key=str(cfg.get("RADARR_API_KEY") or ""),
+        kind="radarr",
+    )
+
+    sonarr_card = card(
+        "Sonarr",
+        ok=bool(cfg.get("SONARR_OK", False)),
+        enabled=bool(cfg.get("SONARR_ENABLED", False)),
+        url=str(cfg.get("SONARR_URL") or ""),
+        key=str(cfg.get("SONARR_API_KEY") or ""),
+        kind="sonarr",
+    )
+
+    add_card = """
+      <div class="appCard addAppCard" id="addAppCard" role="button" tabindex="0" title="Add an app">
+        <div class="addAppCardInner">+</div>
+      </div>
+    """
+
+    body = f"""
+      <div class="grid">
+        <div class="card">
+          <div class="hd">
+            <h2>Apps</h2>
+            <div class="muted">Application integrations</div>
+          </div>
+          <div class="bd">
+            <div class="appsGrid">
+              {radarr_card}
+              {sonarr_card}
+              {add_card}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {app_modal_html(cfg)}
+    """
+    return render_template_string(shell("mediareaparr • Apps", "apps", body))
+
+
+@app.post("/apps/save")
+def apps_save():
+    cfg = load_config()
+    app_type = (request.form.get("APP_TYPE") or "radarr").strip().lower()
+    enabled = checkbox("APP_ENABLED")
+    url = (request.form.get("APP_URL") or "").strip().rstrip("/")
+    api_key = (request.form.get("APP_API_KEY") or "").strip()
+
+    if app_type not in ("radarr", "sonarr"):
+        flash("Unknown app type.", "error")
+        return redirect("/apps")
+
+    if app_type == "radarr":
+        cfg["RADARR_ENABLED"] = enabled
+        cfg["RADARR_URL"] = url
+        cfg["RADARR_API_KEY"] = api_key
+        cfg["RADARR_OK"] = False  # requires test
+    else:
+        cfg["SONARR_ENABLED"] = enabled
+        cfg["SONARR_URL"] = url
+        cfg["SONARR_API_KEY"] = api_key
+        cfg["SONARR_OK"] = False  # requires test
+
+    save_config(cfg)
+    flash("App saved ✔ (run Test Connection to mark connected)", "success")
+    return redirect("/apps")
+
+
+@app.post("/apps/test")
+def apps_test():
+    cfg = load_config()
+    app_type = (request.form.get("APP_TYPE") or "radarr").strip().lower()
+    enabled = checkbox("APP_ENABLED")
+    url = (request.form.get("APP_URL") or "").strip().rstrip("/")
+    api_key = (request.form.get("APP_API_KEY") or "").strip()
+
+    if app_type not in ("radarr", "sonarr"):
+        flash("Unknown app type.", "error")
+        return redirect("/apps")
+
+    if not url:
+        flash("URL is empty.", "error")
+        return redirect("/apps")
+    if not api_key:
+        flash("API Key is empty.", "error")
+        return redirect("/apps")
+
+    kind = "Radarr" if app_type == "radarr" else "Sonarr"
+    try:
+        _test_connection(kind, url, api_key, int(cfg.get("HTTP_TIMEOUT_SECONDS", 30)))
+
+        if app_type == "radarr":
+            cfg["RADARR_ENABLED"] = enabled
+            cfg["RADARR_URL"] = url
+            cfg["RADARR_API_KEY"] = api_key
+            cfg["RADARR_OK"] = True
+        else:
+            cfg["SONARR_ENABLED"] = enabled
+            cfg["SONARR_URL"] = url
+            cfg["SONARR_API_KEY"] = api_key
+            cfg["SONARR_OK"] = True
+
+        save_config(cfg)
+        flash(f"{kind} connected ✔", "success")
+        return redirect("/apps")
+
+    except PermissionError as e:
+        flash(str(e), "error")
+    except requests.exceptions.ConnectTimeout:
+        flash(f"{kind} connection failed: timeout connecting to the host.", "error")
+    except requests.exceptions.ConnectionError:
+        flash(f"{kind} connection failed: could not connect (URL/host/network).", "error")
+    except Exception as e:
+        flash(f"{kind} connection failed: {e}", "error")
+
+    # Save what user entered even if test fails
+    if app_type == "radarr":
+        cfg["RADARR_ENABLED"] = enabled
+        cfg["RADARR_URL"] = url
+        cfg["RADARR_API_KEY"] = api_key
+        cfg["RADARR_OK"] = False
+    else:
+        cfg["SONARR_ENABLED"] = enabled
+        cfg["SONARR_URL"] = url
+        cfg["SONARR_API_KEY"] = api_key
+        cfg["SONARR_OK"] = False
+    save_config(cfg)
+
+    return redirect("/apps")
+
+
 @app.post("/jobs/toggle-enabled")
 def jobs_toggle_enabled():
     cfg = load_config()
@@ -2231,7 +2523,6 @@ def jobs_page():
 
     app_disabled_attr = "disabled" if len(available_apps) == 1 else ""
 
-    # Render only the apps that are actually available/ready
     app_options_html = ""
     if "radarr" in available_apps:
         app_options_html += '<option value="radarr">Radarr</option>'
@@ -2486,9 +2777,9 @@ def jobs_page():
           </div>
         """)
 
-    can_add_job = len(available_apps) > 0
+    can_add_job = len([a for a in ("radarr", "sonarr") if is_app_ready(cfg, a)]) > 0
     add_job_disabled_attr = "" if can_add_job else "disabled"
-    add_job_title = "Add Job" if can_add_job else "Connect Radarr or Sonarr in Settings (Test Connection) to add a job."
+    add_job_title = "Add Job" if can_add_job else "Connect Radarr or Sonarr in Apps/Settings (Test Connection) to add a job."
 
     add_job_button = f"""
       <button class="btn primary" type="button" onclick="openNewJob()" {add_job_disabled_attr}
@@ -2500,7 +2791,7 @@ def jobs_page():
         hint_html = """
           <div class="muted" style="margin-top:12px;">
             Add Job is disabled because neither Radarr nor Sonarr is connected.
-            Go to <a href="/settings"><b>Settings</b></a> and use <b>Test Connection</b>.
+            Go to <a href="/apps"><b>Apps</b></a> and use <b>Test Connection</b>.
           </div>
         """
 
@@ -2548,7 +2839,7 @@ def jobs_save():
         if is_app_ready(cfg, "sonarr"):
             allowed_apps.append("sonarr")
         if not allowed_apps:
-            raise ValueError("No apps connected. Go to Settings and Test Connection first.")
+            raise ValueError("No apps connected. Go to Apps/Settings and Test Connection first.")
 
         app_key = (request.form.get("APP") or "").strip().lower()
         if app_key not in allowed_apps:
@@ -2822,177 +3113,6 @@ def dashboard():
     """
     return render_template_string(shell("mediareaparr • Dashboard", "dash", body))
 
-@app.get("/apps")
-def apps():
-    cfg = load_config()
-
-    app_modal = f"""
-    <div class="modalBack" id="appBack">
-      <div class="modal" role="dialog" aria-modal="true" aria-labelledby="appTitle">
-        <div class="mh">
-          <h3 id="appTitle">Add / Configure App</h3>
-        </div>
-
-        <form method="post" action="/apps/save-app" style="margin:0;">
-          <div class="mb">
-            <div class="form">
-              <div class="field">
-                <label>App</label>
-                <select name="APP_TYPE" id="app_type" onchange="onAppTypeChanged()">
-                  <option value="radarr">Radarr</option>
-                  <option value="sonarr">Sonarr</option>
-                </select>
-              </div>
-
-              <div class="field">
-                <label>Enabled</label>
-                <label class="switch" title="Enable/Disable App" style="margin-top:2px;">
-                  <input id="app_enabled" name="APP_ENABLED" type="checkbox" checked>
-                  <span class="slider"></span>
-                </label>
-              </div>
-
-              <div class="field">
-                <label>URL</label>
-                <input id="app_url" type="text" name="APP_URL" placeholder="http://radarr:7878 or http://sonarr:8989" value="">
-              </div>
-
-              <div class="field">
-                <label>API Key</label>
-                <input id="app_key" type="password" name="APP_API_KEY" placeholder="API Key" value="">
-              </div>
-            </div>
-
-            <div class="muted" style="margin-top:10px;">
-              Tip: use <b>Test Connection</b> to validate and mark it Connected.
-            </div>
-          </div>
-
-          <div class="mf">
-            <button class="btn" type="button" onclick="hideModal('appBack')">Cancel</button>
-            <button class="btn good" type="submit" formaction="/apps/test-connection" formmethod="post">Test Connection</button>
-            <button class="btn primary" type="submit">Save</button>
-          </div>
-        </form>
-      </div>
-    </div>
-    """
-
-    body = f"""
-      <div class="grid">
-        <div class="card">
-          <div class="hd">
-            <h2>Applications</h2>
-          </div>
-          <div class="bd">
-
-            <div class="appsGrid">
-
-              <div class="appCard">
-                <div class="appCardHeader">
-                  <div>Radarr</div>
-                  <div class="appCardActions">↗</div>
-                </div>
-                <div class="appBadge">Full Sync</div>
-              </div>
-
-              <div class="appCard">
-                <div class="appCardHeader">
-                  <div>Sonarr</div>
-                  <div class="appCardActions">↗</div>
-                </div>
-                <div class="appBadge">Full Sync</div>
-              </div>
-
-              <div class="appCard" style="justify-content:center; align-items:center;">
-                <div style="font-size:42px; color:var(--muted);">+</div>
-              </div>
-
-            </div>
-
-          </div>
-        </div>
-      </div>
-      {app_modal}
-    """
-
-    return render_template_string(shell("mediareaparr • Apps", "apps", body))
-
-@app.post("/apps/test-connection")
-def apps_test_connection():
-    cfg = load_config()
-    app_type = (request.form.get("APP_TYPE") or "radarr").strip().lower()
-    url = (request.form.get("APP_URL") or "").rstrip("/")
-    api_key = (request.form.get("APP_API_KEY") or "").strip()
-    enabled = checkbox("APP_ENABLED")
-
-    if app_type not in ("radarr", "sonarr"):
-        flash("Unknown app type.", "error")
-        return redirect("/apps")
-    if not url:
-        flash("URL is empty.", "error")
-        return redirect("/apps")
-    if not api_key:
-        flash("API key is empty.", "error")
-        return redirect("/apps")
-
-    try:
-        _test_connection("Radarr" if app_type == "radarr" else "Sonarr", url, api_key, int(cfg.get("HTTP_TIMEOUT_SECONDS", 30)))
-
-        if app_type == "radarr":
-            cfg["RADARR_URL"] = url
-            cfg["RADARR_API_KEY"] = api_key
-            cfg["RADARR_ENABLED"] = enabled
-            cfg["RADARR_OK"] = True
-        else:
-            cfg["SONARR_URL"] = url
-            cfg["SONARR_API_KEY"] = api_key
-            cfg["SONARR_ENABLED"] = enabled
-            cfg["SONARR_OK"] = True
-
-        save_config(cfg)
-        flash(f"{'Radarr' if app_type=='radarr' else 'Sonarr'} connected ✔", "success")
-    except PermissionError as e:
-        flash(str(e), "error")
-    except requests.exceptions.ConnectTimeout:
-        flash("Connection failed: timeout connecting to the host.", "error")
-    except requests.exceptions.ConnectionError:
-        flash("Connection failed: could not connect (URL/host/network).", "error")
-    except Exception as e:
-        flash(f"Connection failed: {e}", "error")
-
-    return redirect("/apps")
-
-@app.post("/apps/save-app")
-def apps_save_app():
-    old = load_config()
-    cfg = load_config()
-
-    app_type = (request.form.get("APP_TYPE") or "radarr").strip().lower()
-    url = (request.form.get("APP_URL") or "").rstrip("/")
-    api_key = (request.form.get("APP_API_KEY") or "").strip()
-    enabled = checkbox("APP_ENABLED")
-
-    if app_type not in ("radarr", "sonarr"):
-        flash("Unknown app type.", "error")
-        return redirect("/apps")
-
-    if app_type == "radarr":
-        cfg["RADARR_ENABLED"] = enabled
-        cfg["RADARR_URL"] = url
-        cfg["RADARR_API_KEY"] = api_key
-        if old.get("RADARR_URL") != url or old.get("RADARR_API_KEY") != api_key:
-            cfg["RADARR_OK"] = False
-    else:
-        cfg["SONARR_ENABLED"] = enabled
-        cfg["SONARR_URL"] = url
-        cfg["SONARR_API_KEY"] = api_key
-        if old.get("SONARR_URL") != url or old.get("SONARR_API_KEY") != api_key:
-            cfg["SONARR_OK"] = False
-
-    save_config(cfg)
-    flash("App settings saved ✔", "success")
-    return redirect("/apps")
 
 @app.get("/status")
 def status():
