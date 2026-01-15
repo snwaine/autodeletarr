@@ -1330,68 +1330,6 @@ BASE_HEAD = """
   [data-theme="light"] .modal .mh{ background: #f3f4f6; }
   .modal .mh h3{ margin:0; font-size: 14px; letter-spacing: .2px; }
 
-  /* ---------------------------
-     App config modal layout (matches your screenshot)
-     --------------------------- */
-  .appModalShell{
-    width: min(820px, 100%);
-  }
-  .modalCloseX{
-    border: none;
-    background: transparent;
-    color: var(--muted);
-    font-size: 20px;
-    line-height: 1;
-    cursor: pointer;
-    padding: 6px 8px;
-  }
-  .modalCloseX:hover{ color: var(--text); }
-
-  .appGrid{
-    display: grid;
-    grid-template-columns: 180px minmax(0, 1fr);
-    gap: 12px 16px;
-    align-items: start;
-  }
-  @media (max-width: 720px){
-    .appGrid{ grid-template-columns: 1fr; }
-  }
-  .appLbl{
-    padding-top: 10px;
-    color: var(--text);
-    font-weight: 600;
-  }
-  @media (max-width: 720px){
-    .appLbl{ padding-top: 0; }
-  }
-  .appCtrl{
-    min-width: 0;
-  }
-  .appCtrl input[type=text],
-  .appCtrl input[type=password],
-  .appCtrl select{
-    width: 100%;
-  }
-  .appHelp{
-    margin-top: 6px;
-    font-size: 12px;
-    color: var(--muted);
-    line-height: 1.35;
-  }
-  .appFooter{
-    display:flex;
-    align-items:center;
-    justify-content: space-between;
-    gap: 10px;
-    width: 100%;
-  }
-  .appFooterRight{
-    display:flex;
-    align-items:center;
-    gap: 10px;
-    justify-content: flex-end;
-  }
-
   .modal form{
     display:flex;
     flex-direction: column;
@@ -1457,6 +1395,59 @@ BASE_HEAD = """
 
   .card, .jobCard{ border-radius: 0 !important; }
   .card .hd, .card .bd{ border-radius: 0 !important; }
+
+  /* App config modal layout (screenshot-style) */
+  .appModalShell{ width: min(820px, 100%); }
+  .modalCloseX{
+    border: none;
+    background: transparent;
+    color: var(--muted);
+    font-size: 20px;
+    line-height: 1;
+    cursor: pointer;
+    padding: 6px 8px;
+  }
+  .modalCloseX:hover{ color: var(--text); }
+  .appGrid{
+    display: grid;
+    grid-template-columns: 180px minmax(0, 1fr);
+    gap: 12px 16px;
+    align-items: start;
+  }
+  @media (max-width: 720px){
+    .appGrid{ grid-template-columns: 1fr; }
+  }
+  .appLbl{
+    padding-top: 10px;
+    color: var(--text);
+    font-weight: 600;
+  }
+  @media (max-width: 720px){
+    .appLbl{ padding-top: 0; }
+  }
+  .appCtrl{ min-width: 0; }
+  .appCtrl input[type=text],
+  .appCtrl input[type=password],
+  .appCtrl select{ width: 100%; }
+  .appHelp{
+    margin-top: 6px;
+    font-size: 12px;
+    color: var(--muted);
+    line-height: 1.35;
+  }
+  .appFooter{
+    display:flex;
+    align-items:center;
+    justify-content: space-between;
+    gap: 10px;
+    width: 100%;
+  }
+  .appFooterRight{
+    display:flex;
+    align-items:center;
+    gap: 10px;
+    justify-content: flex-end;
+  }
 </style>
 
 <script>
@@ -1487,8 +1478,37 @@ BASE_HEAD = """
   }
 
   // -----------------------
-  // Apps wizard
+  // Apps wizard (two separate modals)
   // -----------------------
+  function appTypeLabel(t){
+    t = (t || "radarr").toLowerCase();
+    return (t === "sonarr") ? "Sonarr" : "Radarr";
+  }
+
+  function appEl(prefix, baseId){ return $(baseId + "_" + prefix); }
+
+  function refreshAppButtons(prefix){
+    const url = (((appEl(prefix,"app_url")?.value) || "") + "").trim();
+    const key = (((appEl(prefix,"app_key")?.value) || "") + "").trim();
+    const testBtn = appEl(prefix,"appTestBtn");
+    const saveBtn = appEl(prefix,"appSaveBtn");
+    const testOk = ((appEl(prefix,"app_test_ok")?.value) || "") === "1";
+
+    // Disable Test if URL OR API key is empty
+    if (testBtn) testBtn.disabled = (url === "" || key === "");
+
+    // Save only enabled if test passed
+    if (saveBtn) saveBtn.disabled = !testOk;
+  }
+
+  function invalidateAppTest(prefix){
+    const ok = appEl(prefix,"app_test_ok");
+    if (ok) ok.value = "0";
+    const st = appEl(prefix,"appTestStatus");
+    if (st) { st.textContent = ""; st.className = "muted"; }
+    refreshAppButtons(prefix);
+  }
+
   function openAddAppModal(){
     setVal("appPick", "radarr");
     showModal("appPickBack");
@@ -1496,61 +1516,28 @@ BASE_HEAD = """
 
   function confirmAddSelectedApp(){
     const t = ($("appPick")?.value || "radarr").toLowerCase();
+    const prefix = (t === "sonarr") ? "s" : "r";
+    const modalId = (t === "sonarr") ? "appBackSonarr" : "appBackRadarr";
 
-    // New app
-    setVal("app_id", "");
-    setVal("app_type", t);
-    setVal("app_name", (t === "sonarr") ? "Sonarr" : "Radarr");
-    setChecked("app_enabled", true);
-    setVal("app_url", "");
-    setVal("app_key", "");
+    setVal("app_id_"+prefix, "");
+    setVal("app_mode_"+prefix, "add");
+    setVal("app_test_ok_"+prefix, "0");
+    setVal("app_name_"+prefix, (t === "sonarr") ? "Sonarr" : "Radarr");
+    setChecked("app_enabled_"+prefix, true);
 
-    onAppTypeChanged();
+    // Separate defaults
+    setVal("app_url_"+prefix, (t === "sonarr") ? "http://localhost:8989" : "http://localhost:7878");
+    setVal("app_key_"+prefix, "");
+
+    const title = appEl(prefix,"appModalTitle");
+    if (title) title.textContent = `Add Application - ${appTypeLabel(t)}`;
+    const st = appEl(prefix,"appTestStatus");
+    if (st) { st.textContent = ""; st.className = "muted"; }
+
+    refreshAppButtons(prefix);
 
     hideModal("appPickBack");
-    showModal("appBack");
-  }
-
-  function onAppTypeChanged(){
-    const t = ($("app_type")?.value || "radarr").toLowerCase();
-
-    // Hint text (kept from your existing UI)
-    const hint = $("appHint");
-    if (hint){
-      hint.textContent = (t === "sonarr")
-        ? "Configure Sonarr. Save then Test Connection."
-        : "Configure Radarr. Save then Test Connection.";
-    }
-
-    // Auto default name if empty
-    const nm = $("app_name");
-    if (nm && !(nm.value || "").trim()){
-      nm.value = (t === "sonarr") ? "Sonarr" : "Radarr";
-    }
-
-    // Title should match screenshot: "Edit Application - Radarr"
-    const title = $("appModalTitle");
-    if (title){
-      const displayName = (nm && (nm.value||"").trim())
-        ? (nm.value||"").trim()
-        : ((t === "sonarr") ? "Sonarr" : "Radarr");
-      title.textContent = `Edit Application - ${displayName}`;
-    }
-
-    // Field labels + help text like screenshot
-    const urlLbl = $("appUrlLabel");
-    const urlHelp = $("appUrlHelp");
-    const keyHelp = $("appKeyHelp");
-
-    if (t === "sonarr"){
-      if (urlLbl) urlLbl.textContent = "Sonarr Server";
-      if (urlHelp) urlHelp.textContent = "URL used to connect to Sonarr server, including http(s)://, port, and urlbase if required";
-      if (keyHelp) keyHelp.textContent = "The ApiKey generated by Sonarr in Settings/General";
-    } else {
-      if (urlLbl) urlLbl.textContent = "Radarr Server";
-      if (urlHelp) urlHelp.textContent = "URL used to connect to Radarr server, including http(s)://, port, and urlbase if required";
-      if (keyHelp) keyHelp.textContent = "The ApiKey generated by Radarr in Settings/General";
-    }
+    showModal(modalId);
   }
 
   function openEditApp(appId){
@@ -1558,19 +1545,35 @@ BASE_HEAD = """
     const a = apps.find(x => (x.id || "") === (appId || ""));
     if (!a) return;
 
-    setVal("app_id", a.id || "");
-    setVal("app_type", (a.type || "radarr"));
-    setVal("app_name", a.name || ((a.type === "sonarr") ? "Sonarr" : "Radarr"));
-    setChecked("app_enabled", !!a.enabled);
-    setVal("app_url", a.url || "");
-    setVal("app_key", a.api_key || "");
+    const t = ((a.type || "radarr") + "").toLowerCase();
+    const prefix = (t === "sonarr") ? "s" : "r";
+    const modalId = (t === "sonarr") ? "appBackSonarr" : "appBackRadarr";
 
-    onAppTypeChanged();
-    showModal("appBack");
+    setVal("app_id_"+prefix, a.id || "");
+    setVal("app_mode_"+prefix, "edit");
+    setVal("app_name_"+prefix, a.name || appTypeLabel(t));
+    setChecked("app_enabled_"+prefix, !!a.enabled);
+    setVal("app_url_"+prefix, a.url || "");
+    setVal("app_key_"+prefix, a.api_key || "");
+
+    // If previously connected, allow Save immediately (until URL/API changes)
+    setVal("app_test_ok_"+prefix, (a.ok && (a.url||"").trim() && (a.api_key||"").trim()) ? "1" : "0");
+
+    const title = appEl(prefix,"appModalTitle");
+    if (title) title.textContent = `Edit Application - ${appTypeLabel(t)}`;
+
+    const st = appEl(prefix,"appTestStatus");
+    if (st) {
+      if ((appEl(prefix,"app_test_ok")?.value || "") === "1") { st.textContent = "Last test: OK"; st.className = "muted"; }
+      else { st.textContent = ""; st.className = "muted"; }
+    }
+
+    refreshAppButtons(prefix);
+    showModal(modalId);
   }
 
-  function submitDeleteApp(){
-    const id = ($("app_id")?.value || "").trim();
+  function submitDeleteApp(prefix){
+    const id = ((appEl(prefix,"app_id")?.value || "") + "").trim();
     if (!id) return;
     if (!confirm("Delete this app? Jobs using it will need updating.")) return;
     const f = $("appDeleteForm");
@@ -1579,13 +1582,41 @@ BASE_HEAD = """
     if (f) f.submit();
   }
 
-  // Test button should reliably submit the same modal form to /apps/test
-  function submitAppTest(){
-    const f = $("appForm");
+  // Test should NOT close the modal; run AJAX test, then enable Save only if OK.
+  async function submitAppTest(prefix){
+    const f = appEl(prefix,"appForm");
+    const testBtn = appEl(prefix,"appTestBtn");
+    const saveBtn = appEl(prefix,"appSaveBtn");
+    const st = appEl(prefix,"appTestStatus");
     if (!f) return;
-    f.action = "/apps/test";
-    f.method = "post";
-    f.submit();
+
+    const url = (((appEl(prefix,"app_url")?.value) || "") + "").trim();
+    const key = (((appEl(prefix,"app_key")?.value) || "") + "").trim();
+    if (url === "" || key === "") { refreshAppButtons(prefix); return; }
+
+    if (testBtn) testBtn.disabled = true;
+    if (saveBtn) saveBtn.disabled = true;
+    if (st) { st.textContent = "Testing…"; st.className = "muted"; }
+
+    if (appEl(prefix,"app_test_ok")) appEl(prefix,"app_test_ok").value = "0";
+
+    try{
+      const resp = await fetch("/apps/test?ajax=1", { method: "POST", body: new FormData(f) });
+      const data = await resp.json();
+      const ok = !!data.ok;
+
+      if (appEl(prefix,"app_test_ok")) appEl(prefix,"app_test_ok").value = ok ? "1" : "0";
+      if (st){
+        st.textContent = ok ? (data.message || "Connection OK") : (data.message || "Connection failed");
+        st.className = "muted";
+      }
+    }catch(e){
+      if (st) { st.textContent = "Connection failed (network error)"; st.className = "muted"; }
+      if (appEl(prefix,"app_test_ok")) appEl(prefix,"app_test_ok").value = "0";
+    }finally{
+      if (testBtn) testBtn.disabled = false;
+      refreshAppButtons(prefix);
+    }
   }
 
   // -----------------------
@@ -1636,7 +1667,8 @@ BASE_HEAD = """
   document.addEventListener("keydown", (e) => {
     if (e.key === "Escape") {
       hideModal("runNowBack");
-      hideModal("appBack");
+      hideModal("appBackRadarr");
+      hideModal("appBackSonarr");
       hideModal("appPickBack");
       maybeCloseJobModal();
     }
@@ -1859,6 +1891,10 @@ BASE_HEAD = """
       uiScale.addEventListener("input", (e) => applyUiScale(e.target.value));
       uiScale.addEventListener("change", (e) => applyUiScale(e.target.value));
     }
+
+    // Ensure app modal buttons reflect initial state (Apps page only)
+    refreshAppButtons("r");
+    refreshAppButtons("s");
   });
 </script>
 """
@@ -2135,35 +2171,39 @@ def app_modal_html(cfg: Dict[str, Any]) -> str:
       <input type="hidden" id="app_delete_id" name="APP_ID" value="">
     </form>
 
-    <div class="modalBack" id="appBack">
-      <div class="modal appModalShell" role="dialog" aria-modal="true" aria-labelledby="appModalTitle">
+    <!-- RADARR MODAL -->
+    <div class="modalBack" id="appBackRadarr">
+      <div class="modal appModalShell" role="dialog" aria-modal="true" aria-labelledby="appModalTitle_r">
         <div class="mh">
-          <h3 id="appModalTitle">Edit Application</h3>
-          <button class="modalCloseX" type="button" onclick="hideModal('appBack')" aria-label="Close">×</button>
+          <h3 id="appModalTitle_r">Add Application - Radarr</h3>
+          <button class="modalCloseX" type="button" onclick="hideModal('appBackRadarr')" aria-label="Close">×</button>
         </div>
 
-        <form id="appForm" method="post" action="/apps/save" style="margin:0;">
+        <form id="appForm_r" method="post" action="/apps/save" style="margin:0;">
           <div class="mb">
-            <input type="hidden" id="app_id" name="APP_ID" value="">
+            <input type="hidden" id="app_id_r" name="APP_ID" value="">
+            <input type="hidden" id="app_mode_r" name="APP_MODE" value="add">
+            <input type="hidden" id="app_test_ok_r" name="APP_TEST_OK" value="0">
+            <input type="hidden" name="APP_TYPE" value="radarr">
 
             <div class="appGrid">
               <div class="appLbl">Name</div>
               <div class="appCtrl">
-                <input id="app_name" type="text" name="APP_NAME" value="">
+                <input id="app_name_r" type="text" name="APP_NAME" value="">
               </div>
 
-              <div class="appLbl" id="appUrlLabel">Radarr Server</div>
+              <div class="appLbl">Radarr Server</div>
               <div class="appCtrl">
-                <input id="app_url" type="text" name="APP_URL" value="">
-                <div class="appHelp" id="appUrlHelp">
+                <input id="app_url_r" type="text" name="APP_URL" value="" oninput="invalidateAppTest('r')">
+                <div class="appHelp">
                   URL used to connect to Radarr server, including http(s)://, port, and urlbase if required
                 </div>
               </div>
 
               <div class="appLbl">API Key</div>
               <div class="appCtrl">
-                <input id="app_key" type="password" name="APP_API_KEY" value="">
-                <div class="appHelp" id="appKeyHelp">
+                <input id="app_key_r" type="password" name="APP_API_KEY" value="" oninput="invalidateAppTest('r')">
+                <div class="appHelp">
                   The ApiKey generated by Radarr in Settings/General
                 </div>
               </div>
@@ -2171,31 +2211,89 @@ def app_modal_html(cfg: Dict[str, Any]) -> str:
               <div class="appLbl">Enabled</div>
               <div class="appCtrl" style="display:flex; align-items:center; gap:12px;">
                 <label class="switch" title="Enable/Disable this app">
-                  <input id="app_enabled" name="APP_ENABLED" type="checkbox" checked>
+                  <input id="app_enabled_r" name="APP_ENABLED" type="checkbox" checked>
                   <span class="slider"></span>
                 </label>
                 <span class="muted" style="font-size:12px;">Disable to ignore this app.</span>
               </div>
-
-              <div class="appLbl">Type</div>
-              <div class="appCtrl">
-                <select id="app_type" name="APP_TYPE" onchange="onAppTypeChanged()">
-                  <option value="radarr">Radarr</option>
-                  <option value="sonarr">Sonarr</option>
-                </select>
-              </div>
             </div>
 
-            <div class="muted" id="appHint" style="margin-top:12px;">Configure Radarr. Save then Test Connection.</div>
+            <div class="muted" id="appHint_r" style="margin-top:12px;">Configure Radarr. Test first, then Save.</div>
+            <div class="muted" id="appTestStatus_r" style="margin-top:8px;"></div>
           </div>
 
           <div class="mf">
             <div class="appFooter">
-              <button class="btn bad" type="button" onclick="submitDeleteApp()">Delete</button>
+              <button class="btn bad" type="button" onclick="submitDeleteApp('r')">Delete</button>
               <div class="appFooterRight">
-                <button class="btn good" type="button" onclick="submitAppTest()">Test</button>
-                <button class="btn" type="button" onclick="hideModal('appBack')">Cancel</button>
-                <button class="btn primary" type="submit">Save</button>
+                <button class="btn good" id="appTestBtn_r" type="button" onclick="submitAppTest('r')">Test</button>
+                <button class="btn" type="button" onclick="hideModal('appBackRadarr')">Cancel</button>
+                <button class="btn primary" id="appSaveBtn_r" type="submit" disabled>Save</button>
+              </div>
+            </div>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <!-- SONARR MODAL -->
+    <div class="modalBack" id="appBackSonarr">
+      <div class="modal appModalShell" role="dialog" aria-modal="true" aria-labelledby="appModalTitle_s">
+        <div class="mh">
+          <h3 id="appModalTitle_s">Add Application - Sonarr</h3>
+          <button class="modalCloseX" type="button" onclick="hideModal('appBackSonarr')" aria-label="Close">×</button>
+        </div>
+
+        <form id="appForm_s" method="post" action="/apps/save" style="margin:0;">
+          <div class="mb">
+            <input type="hidden" id="app_id_s" name="APP_ID" value="">
+            <input type="hidden" id="app_mode_s" name="APP_MODE" value="add">
+            <input type="hidden" id="app_test_ok_s" name="APP_TEST_OK" value="0">
+            <input type="hidden" name="APP_TYPE" value="sonarr">
+
+            <div class="appGrid">
+              <div class="appLbl">Name</div>
+              <div class="appCtrl">
+                <input id="app_name_s" type="text" name="APP_NAME" value="">
+              </div>
+
+              <div class="appLbl">Sonarr Server</div>
+              <div class="appCtrl">
+                <input id="app_url_s" type="text" name="APP_URL" value="" oninput="invalidateAppTest('s')">
+                <div class="appHelp">
+                  URL used to connect to Sonarr server, including http(s)://, port, and urlbase if required
+                </div>
+              </div>
+
+              <div class="appLbl">API Key</div>
+              <div class="appCtrl">
+                <input id="app_key_s" type="password" name="APP_API_KEY" value="" oninput="invalidateAppTest('s')">
+                <div class="appHelp">
+                  The ApiKey generated by Sonarr in Settings/General
+                </div>
+              </div>
+
+              <div class="appLbl">Enabled</div>
+              <div class="appCtrl" style="display:flex; align-items:center; gap:12px;">
+                <label class="switch" title="Enable/Disable this app">
+                  <input id="app_enabled_s" name="APP_ENABLED" type="checkbox" checked>
+                  <span class="slider"></span>
+                </label>
+                <span class="muted" style="font-size:12px;">Disable to ignore this app.</span>
+              </div>
+            </div>
+
+            <div class="muted" id="appHint_s" style="margin-top:12px;">Configure Sonarr. Test first, then Save.</div>
+            <div class="muted" id="appTestStatus_s" style="margin-top:8px;"></div>
+          </div>
+
+          <div class="mf">
+            <div class="appFooter">
+              <button class="btn bad" type="button" onclick="submitDeleteApp('s')">Delete</button>
+              <div class="appFooterRight">
+                <button class="btn good" id="appTestBtn_s" type="button" onclick="submitAppTest('s')">Test</button>
+                <button class="btn" type="button" onclick="hideModal('appBackSonarr')">Cancel</button>
+                <button class="btn primary" id="appSaveBtn_s" type="submit" disabled>Save</button>
               </div>
             </div>
           </div>
@@ -2293,6 +2391,7 @@ def apps_save():
     enabled = checkbox("APP_ENABLED")
     url = (request.form.get("APP_URL") or "").strip().rstrip("/")
     api_key = (request.form.get("APP_API_KEY") or "").strip()
+    test_ok = (request.form.get("APP_TEST_OK") or "").strip() == "1"
 
     if app_type not in ("radarr", "sonarr"):
         flash("Unknown app type.", "error")
@@ -2309,7 +2408,7 @@ def apps_save():
                 a["enabled"] = enabled
                 a["url"] = url
                 a["api_key"] = api_key
-                a["ok"] = False  # requires test after edits
+                a["ok"] = bool(test_ok)  # Save allowed only after passing test
                 apps_list[i] = normalize_app(a)
                 updated = True
                 break
@@ -2325,12 +2424,12 @@ def apps_save():
             "enabled": enabled,
             "url": url,
             "api_key": api_key,
-            "ok": False,
+            "ok": bool(test_ok),
         }))
 
     cfg["APPS"] = [normalize_app(a) for a in apps_list]
     save_config(cfg)
-    flash("App saved ✔ (run Test Connection to mark connected)", "success")
+    flash("App saved ✔", "success")
     return redirect("/apps")
 
 
@@ -2338,92 +2437,61 @@ def apps_save():
 def apps_test():
     cfg = load_config()
 
-    app_id = (request.form.get("APP_ID") or "").strip()
+    is_ajax = (request.args.get("ajax") or "").strip() == "1"
+
     app_type = (request.form.get("APP_TYPE") or "radarr").strip().lower()
-    name = (request.form.get("APP_NAME") or "").strip()
-    enabled = checkbox("APP_ENABLED")
     url = (request.form.get("APP_URL") or "").strip().rstrip("/")
     api_key = (request.form.get("APP_API_KEY") or "").strip()
 
     if app_type not in ("radarr", "sonarr"):
+        if is_ajax:
+            return {"ok": False, "message": "Unknown app type."}
         flash("Unknown app type.", "error")
-        return redirect("/apps")
-
-    if not url:
-        flash("URL is empty.", "error")
-        return redirect("/apps")
-    if not api_key:
-        flash("API Key is empty.", "error")
         return redirect("/apps")
 
     kind = "Radarr" if app_type == "radarr" else "Sonarr"
 
-    apps_list = [normalize_app(a) for a in (cfg.get("APPS") or [])]
+    if not url:
+        if is_ajax:
+            return {"ok": False, "message": "URL is empty."}
+        flash("URL is empty.", "error")
+        return redirect("/apps")
+
+    if not api_key:
+        if is_ajax:
+            return {"ok": False, "message": "API Key is empty."}
+        flash("API Key is empty.", "error")
+        return redirect("/apps")
 
     try:
         _test_connection(kind, url, api_key, int(cfg.get("HTTP_TIMEOUT_SECONDS", 30)))
-
-        if app_id:
-            for i, a in enumerate(apps_list):
-                if a["id"] == app_id:
-                    a["type"] = app_type
-                    a["name"] = name or a["name"]
-                    a["enabled"] = enabled
-                    a["url"] = url
-                    a["api_key"] = api_key
-                    a["ok"] = True
-                    apps_list[i] = normalize_app(a)
-                    break
-        else:
-            apps_list.append(normalize_app({
-                "id": make_app_id(),
-                "type": app_type,
-                "name": name or kind,
-                "enabled": enabled,
-                "url": url,
-                "api_key": api_key,
-                "ok": True,
-            }))
-
-        cfg["APPS"] = [normalize_app(a) for a in apps_list]
-        save_config(cfg)
+        if is_ajax:
+            return {"ok": True, "message": f"{kind} connection OK"}
         flash(f"{kind} connected ✔", "success")
         return redirect("/apps")
 
     except PermissionError as e:
+        if is_ajax:
+            return {"ok": False, "message": str(e)}
         flash(str(e), "error")
     except requests.exceptions.ConnectTimeout:
-        flash(f"{kind} connection failed: timeout connecting to the host.", "error")
+        msg = f"{kind} connection failed: timeout connecting to the host."
+        if is_ajax:
+            return {"ok": False, "message": msg}
+        flash(msg, "error")
     except requests.exceptions.ConnectionError:
-        flash(f"{kind} connection failed: could not connect (URL/host/network).", "error")
+        msg = f"{kind} connection failed: could not connect (URL/host/network)."
+        if is_ajax:
+            return {"ok": False, "message": msg}
+        flash(msg, "error")
     except Exception as e:
-        flash(f"{kind} connection failed: {e}", "error")
+        msg = f"{kind} connection failed: {e}"
+        if is_ajax:
+            return {"ok": False, "message": msg}
+        flash(msg, "error")
 
-    # Save user entered values even if test fails
-    if app_id:
-        for i, a in enumerate(apps_list):
-            if a["id"] == app_id:
-                a["type"] = app_type
-                a["name"] = name or a["name"]
-                a["enabled"] = enabled
-                a["url"] = url
-                a["api_key"] = api_key
-                a["ok"] = False
-                apps_list[i] = normalize_app(a)
-                break
-    else:
-        apps_list.append(normalize_app({
-            "id": make_app_id(),
-            "type": app_type,
-            "name": name or kind,
-            "enabled": enabled,
-            "url": url,
-            "api_key": api_key,
-            "ok": False,
-        }))
-
-    cfg["APPS"] = [normalize_app(a) for a in apps_list]
-    save_config(cfg)
+    if is_ajax:
+        return {"ok": False, "message": f"{kind} connection failed"}
     return redirect("/apps")
 
 
