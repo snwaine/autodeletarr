@@ -1,4 +1,3 @@
-```python
 import os
 import json
 import signal
@@ -3056,4 +3055,4 @@ if __name__ == "__main__":
     p.add_argument("--port", type=int, default=int(os.environ.get("WEBUI_PORT", "7575")))
     args = p.parse_args()
     app.run(host=args.host, port=args.port)
-```
+
