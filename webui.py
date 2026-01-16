@@ -5,7 +5,7 @@ import uuid
 from html import escape as html_escape
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Tuple
 
 import requests
 from flask import (
@@ -110,6 +110,19 @@ def parse_iso_date(s: str):
         return None
 
 
+def infer_type_from_url(url: str) -> str:
+    u = (url or "").strip().lower()
+    if ":8989" in u:
+        return "sonarr"
+    if ":7878" in u:
+        return "radarr"
+    if "sonarr" in u:
+        return "sonarr"
+    if "radarr" in u:
+        return "radarr"
+    return "radarr"
+
+
 # ----------------------------
 # Sonarr delete modes
 # ----------------------------
@@ -152,9 +165,9 @@ def normalize_app(a: Dict[str, Any]) -> Dict[str, Any]:
     d.update(a or {})
     d["id"] = str(d.get("id") or make_app_id())
 
-    t = str(d.get("type") or "radarr").strip().lower()
+    t = str(d.get("type") or "").strip().lower()
     if t not in ("radarr", "sonarr"):
-        t = "radarr"
+        t = infer_type_from_url(str(d.get("url") or ""))
     d["type"] = t
 
     default_name = "Radarr" if t == "radarr" else "Sonarr"
@@ -178,53 +191,30 @@ def find_app(cfg: Dict[str, Any], app_id: str) -> Optional[Dict[str, Any]]:
     return None
 
 
-def migrate_legacy_apps(cfg: Dict[str, Any]) -> None:
-    """
-    Backward compatibility: if old RADARR_* / SONARR_* exist and APPS is empty,
-    migrate them into APPS.
-    """
-    apps = cfg.get("APPS") or []
-    if isinstance(apps, list) and len(apps) > 0:
-        return
-
-    migrated: List[Dict[str, Any]] = []
-
-    r_url = str(cfg.get("RADARR_URL") or "").strip().rstrip("/")
-    r_key = str(cfg.get("RADARR_API_KEY") or "").strip()
-    r_enabled = bool(cfg.get("RADARR_ENABLED", True))
-    r_ok = bool(cfg.get("RADARR_OK", False))
-    if r_url or r_key:
-        migrated.append(normalize_app({
-            "type": "radarr",
-            "name": "Radarr",
-            "enabled": r_enabled,
-            "url": r_url,
-            "api_key": r_key,
-            "ok": r_ok,
-        }))
-
-    s_url = str(cfg.get("SONARR_URL") or "").strip().rstrip("/")
-    s_key = str(cfg.get("SONARR_API_KEY") or "").strip()
-    s_enabled = bool(cfg.get("SONARR_ENABLED", False))
-    s_ok = bool(cfg.get("SONARR_OK", False))
-    if s_url or s_key:
-        migrated.append(normalize_app({
-            "type": "sonarr",
-            "name": "Sonarr",
-            "enabled": s_enabled,
-            "url": s_url,
-            "api_key": s_key,
-            "ok": s_ok,
-        }))
-
-    cfg["APPS"] = migrated
-
-
 def is_app_ready(cfg: Dict[str, Any], app_id: str) -> bool:
     a = find_app(cfg, app_id)
     if not a:
         return False
     return bool(a.get("enabled") and a.get("url") and a.get("api_key") and a.get("ok"))
+
+
+def norm_url_key(url: str, api_key: str) -> Tuple[str, str]:
+    return ((url or "").strip().rstrip("/").lower(), (api_key or "").strip())
+
+
+def find_duplicate_app(apps_list: List[Dict[str, Any]], url: str, api_key: str, exclude_id: str = "") -> Optional[Dict[str, Any]]:
+    u, k = norm_url_key(url, api_key)
+    if not u or not k:
+        return None
+    ex = (exclude_id or "").strip()
+    for a in apps_list:
+        aa = normalize_app(a)
+        if ex and aa.get("id") == ex:
+            continue
+        au, ak = norm_url_key(aa.get("url"), aa.get("api_key"))
+        if au == u and ak == k:
+            return aa
+    return None
 
 
 # ----------------------------
@@ -356,24 +346,12 @@ def run_now_button_html(job: Dict[str, Any], app_label: str = "App") -> str:
 
 
 # ----------------------------
-# Config/state
+# Config/state (NO migration; apps start empty)
 # ----------------------------
 def load_config() -> Dict[str, Any]:
-    # Include legacy keys so migration can read them if present.
     cfg = {
         # Dynamic apps list
         "APPS": [],
-
-        # Legacy (only for migration/backward compat)
-        "RADARR_URL": env_default("RADARR_URL", "").rstrip("/"),
-        "RADARR_API_KEY": env_default("RADARR_API_KEY", ""),
-        "RADARR_ENABLED": False,
-        "RADARR_OK": False,
-
-        "SONARR_URL": env_default("SONARR_URL", "").rstrip("/"),
-        "SONARR_API_KEY": env_default("SONARR_API_KEY", ""),
-        "SONARR_ENABLED": False,
-        "SONARR_OK": False,
 
         # WebUI/global
         "HTTP_TIMEOUT_SECONDS": int(env_default("HTTP_TIMEOUT_SECONDS", "30")),
@@ -387,40 +365,36 @@ def load_config() -> Dict[str, Any]:
     if CONFIG_PATH.exists():
         try:
             data = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
-            # Update only known keys (but legacy keys are included above)
             for k in list(cfg.keys()):
                 if k in data:
                     cfg[k] = data[k]
+            # allow persisted APPS/JOBS even if not in cfg keys above
+            if "APPS" in data:
+                cfg["APPS"] = data.get("APPS")
+            if "JOBS" in data:
+                cfg["JOBS"] = data.get("JOBS")
         except Exception:
             pass
 
-    # Normalize theme/scale/timeout
     t = (cfg.get("UI_THEME") or "dark").lower()
     cfg["UI_THEME"] = t if t in ("dark", "light", "reaparr") else "dark"
     cfg["HTTP_TIMEOUT_SECONDS"] = clamp_int(cfg.get("HTTP_TIMEOUT_SECONDS", 30), 5, 300, 30)
+
     try:
         cfg["UI_SCALE"] = float(cfg.get("UI_SCALE", 1.0))
     except Exception:
         cfg["UI_SCALE"] = 1.0
     cfg["UI_SCALE"] = max(0.75, min(1.5, cfg["UI_SCALE"]))
 
-    # Migrate legacy fixed config into APPS if needed
-    migrate_legacy_apps(cfg)
-
     apps = cfg.get("APPS") or []
     if not isinstance(apps, list):
         apps = []
     cfg["APPS"] = [normalize_app(a) for a in apps]
 
-    # Normalize jobs
     jobs = cfg.get("JOBS") or []
     if not isinstance(jobs, list):
         jobs = []
     jobs = [normalize_job(j) for j in jobs]
-    if not jobs:
-        j = job_defaults()
-        j["name"] = "Default Job"
-        jobs = [normalize_job(j)]
     cfg["JOBS"] = jobs
 
     return cfg
@@ -1395,59 +1369,6 @@ BASE_HEAD = """
 
   .card, .jobCard{ border-radius: 0 !important; }
   .card .hd, .card .bd{ border-radius: 0 !important; }
-
-  /* App config modal layout (screenshot-style) */
-  .appModalShell{ width: min(820px, 100%); }
-  .modalCloseX{
-    border: none;
-    background: transparent;
-    color: var(--muted);
-    font-size: 20px;
-    line-height: 1;
-    cursor: pointer;
-    padding: 6px 8px;
-  }
-  .modalCloseX:hover{ color: var(--text); }
-  .appGrid{
-    display: grid;
-    grid-template-columns: 180px minmax(0, 1fr);
-    gap: 12px 16px;
-    align-items: start;
-  }
-  @media (max-width: 720px){
-    .appGrid{ grid-template-columns: 1fr; }
-  }
-  .appLbl{
-    padding-top: 10px;
-    color: var(--text);
-    font-weight: 600;
-  }
-  @media (max-width: 720px){
-    .appLbl{ padding-top: 0; }
-  }
-  .appCtrl{ min-width: 0; }
-  .appCtrl input[type=text],
-  .appCtrl input[type=password],
-  .appCtrl select{ width: 100%; }
-  .appHelp{
-    margin-top: 6px;
-    font-size: 12px;
-    color: var(--muted);
-    line-height: 1.35;
-  }
-  .appFooter{
-    display:flex;
-    align-items:center;
-    justify-content: space-between;
-    gap: 10px;
-    width: 100%;
-  }
-  .appFooterRight{
-    display:flex;
-    align-items:center;
-    gap: 10px;
-    justify-content: flex-end;
-  }
 </style>
 
 <script>
@@ -1478,35 +1399,230 @@ BASE_HEAD = """
   }
 
   // -----------------------
-  // Apps wizard (two separate modals)
+  // Apps modals (Radarr + Sonarr)
   // -----------------------
-  function appTypeLabel(t){
-    t = (t || "radarr").toLowerCase();
-    return (t === "sonarr") ? "Sonarr" : "Radarr";
+  window.__APP_MODAL_INITIAL = { r: "", s: "" };
+  window.__APP_MODAL_DIRTY = { r: false, s: false };
+
+  function appModalBackId(prefix){ return (prefix === "s") ? "appBackSonarr" : "appBackRadarr"; }
+  function appModalFormId(prefix){ return (prefix === "s") ? "appForm_s" : "appForm_r"; }
+  function appIdEl(prefix){ return $("app_id_" + prefix); }
+  function appUrlEl(prefix){ return $("app_url_" + prefix); }
+  function appKeyEl(prefix){ return $("app_key_" + prefix); }
+  function appNameEl(prefix){ return $("app_name_" + prefix); }
+  function appEnabledEl(prefix){ return $("app_enabled_" + prefix); }
+  function appTestOkEl(prefix){ return $("app_test_ok_" + prefix); }
+  function appTestBtn(prefix){ return $("appTestBtn_" + prefix); }
+  function appSaveBtn(prefix){ return $("appSaveBtn_" + prefix); }
+  function appTitleEl(prefix){ return $("appModalTitle_" + prefix); }
+  function appStatusEl(prefix){ return $("appTestStatus_" + prefix); }
+  function appUsedWarnEl(prefix){ return $("appUsedWarn_" + prefix); }
+  function appDeleteBtn(prefix){ return $("appDeleteBtn_" + prefix); }
+
+  function appTypeFromPrefix(prefix){ return (prefix === "s") ? "sonarr" : "radarr"; }
+  function prefixFromType(t){ return ((t || "radarr").toLowerCase() === "sonarr") ? "s" : "r"; }
+
+  function inferTypeFromUrl(url){
+    const u = (url || "").trim().toLowerCase();
+    if (u.includes(":8989")) return "sonarr";
+    if (u.includes(":7878")) return "radarr";
+    if (u.includes("sonarr")) return "sonarr";
+    if (u.includes("radarr")) return "radarr";
+    return "radarr";
   }
 
-  function appEl(prefix, baseId){ return $(baseId + "_" + prefix); }
+  function appFormSnapshot(prefix){
+    const form = document.getElementById(appModalFormId(prefix));
+    if (!form) return "";
+    const fd = new FormData(form);
+    const entries = [];
+    for (const [k, v] of fd.entries()){
+      entries.push([k, (v ?? "").toString()]);
+    }
+    const cbs = form.querySelectorAll('input[type="checkbox"][name]');
+    for (const cb of cbs){
+      if (!fd.has(cb.name)) entries.push([cb.name, ""]);
+    }
+    entries.sort((a,b) => (a[0]+a[1]).localeCompare(b[0]+b[1]));
+    return JSON.stringify(entries);
+  }
 
-  function refreshAppButtons(prefix){
-    const url = (((appEl(prefix,"app_url")?.value) || "") + "").trim();
-    const key = (((appEl(prefix,"app_key")?.value) || "") + "").trim();
-    const testBtn = appEl(prefix,"appTestBtn");
-    const saveBtn = appEl(prefix,"appSaveBtn");
-    const testOk = ((appEl(prefix,"app_test_ok")?.value) || "") === "1";
+  function appModalMarkClean(prefix){
+    window.__APP_MODAL_INITIAL[prefix] = appFormSnapshot(prefix);
+    window.__APP_MODAL_DIRTY[prefix] = false;
+  }
 
-    // Disable Test if URL OR API key is empty
-    if (testBtn) testBtn.disabled = (url === "" || key === "");
+  function appModalUpdateDirty(prefix){
+    const snap = appFormSnapshot(prefix);
+    window.__APP_MODAL_DIRTY[prefix] = (snap !== window.__APP_MODAL_INITIAL[prefix]);
+  }
 
-    // Save only enabled if test passed
-    if (saveBtn) saveBtn.disabled = !testOk;
+  function maybeCloseAppModal(prefix){
+    const backId = appModalBackId(prefix);
+    const back = $(backId);
+    if (!back || back.style.display !== "flex"){
+      hideModal(backId);
+      return;
+    }
+    appModalUpdateDirty(prefix);
+    if (window.__APP_MODAL_DIRTY[prefix]){
+      if (!confirm("Discard changes to this application?")) return;
+    }
+    hideModal(backId);
+  }
+
+  function setAppDeleteVisibility(prefix, mode){
+    const btn = appDeleteBtn(prefix);
+    if (!btn) return;
+    btn.style.display = (mode === "edit") ? "" : "none";
+  }
+
+  function setAppTitle(prefix, mode){
+    const t = (prefix === "s") ? "Sonarr" : "Radarr";
+    const el = appTitleEl(prefix);
+    if (el) el.textContent = (mode === "edit") ? `Edit Application - ${t}` : `Add Application - ${t}`;
+  }
+
+  function showAppUsage(prefix, appId){
+    const el = appUsedWarnEl(prefix);
+    if (!el) return;
+    const usage = (window.__APP_CFG && window.__APP_CFG.APP_USAGE) ? window.__APP_CFG.APP_USAGE : {};
+    const n = Number(usage[appId] || 0);
+    if (n > 0){
+      el.style.display = "";
+      el.textContent = `This application is used by ${n} job${n===1 ? "" : "s"}.`;
+    } else {
+      el.style.display = "none";
+      el.textContent = "";
+    }
+  }
+
+  function findDuplicateClient(url, key, excludeId){
+    const apps = (window.__APP_CFG && window.__APP_CFG.APPS) ? window.__APP_CFG.APPS : [];
+    const u = (url || "").trim().replace(/\/+$/,"").toLowerCase();
+    const k = (key || "").trim();
+    if (!u || !k) return null;
+    for (const a of apps){
+      const id = (a.id || "");
+      if (excludeId && id === excludeId) continue;
+      const au = ((a.url || "").trim().replace(/\/+$/,"").toLowerCase());
+      const ak = ((a.api_key || "").trim());
+      if (au === u && ak === k) return a;
+    }
+    return null;
   }
 
   function invalidateAppTest(prefix){
-    const ok = appEl(prefix,"app_test_ok");
+    const ok = appTestOkEl(prefix);
     if (ok) ok.value = "0";
-    const st = appEl(prefix,"appTestStatus");
-    if (st) { st.textContent = ""; st.className = "muted"; }
+    const st = appStatusEl(prefix);
+    if (st){ st.textContent = ""; st.className = "muted"; }
     refreshAppButtons(prefix);
+  }
+
+  function refreshAppButtons(prefix){
+    const url = ((appUrlEl(prefix)?.value || "") + "").trim();
+    const key = ((appKeyEl(prefix)?.value || "") + "").trim();
+    const testBtn = appTestBtn(prefix);
+    const saveBtn = appSaveBtn(prefix);
+    const testOk = ((appTestOkEl(prefix)?.value || "") === "1");
+
+    const curId = ((appIdEl(prefix)?.value || "") + "").trim();
+    const dup = findDuplicateClient(url, key, curId);
+
+    // Disable Test if URL OR API key is empty OR duplicate
+    if (testBtn) testBtn.disabled = (url === "" || key === "" || !!dup);
+
+    // Disable Save until test passes OR duplicate
+    if (saveBtn) saveBtn.disabled = (!testOk || !!dup);
+
+    // Show duplicate warning subtly (in status line)
+    const st = appStatusEl(prefix);
+    if (st && dup){
+      st.textContent = `Duplicate detected: matches '${(dup.name || "App")}'. (Same URL + API key)`;
+      st.className = "muted";
+    }
+  }
+
+  async function submitAppTest(prefix){
+    const form = document.getElementById(appModalFormId(prefix));
+    if (!form) return;
+
+    const url = ((appUrlEl(prefix)?.value || "") + "").trim();
+    const key = ((appKeyEl(prefix)?.value || "") + "").trim();
+    if (url === "" || key === "") { refreshAppButtons(prefix); return; }
+
+    const curId = ((appIdEl(prefix)?.value || "") + "").trim();
+    const dup = findDuplicateClient(url, key, curId);
+    if (dup){ refreshAppButtons(prefix); return; }
+
+    const testBtn = appTestBtn(prefix);
+    const saveBtn = appSaveBtn(prefix);
+    const st = appStatusEl(prefix);
+    if (st){ st.textContent = "Testing…"; st.className = "muted"; }
+
+    if (testBtn) testBtn.disabled = true;
+    if (saveBtn) saveBtn.disabled = true;
+    if (appTestOkEl(prefix)) appTestOkEl(prefix).value = "0";
+
+    try{
+      const resp = await fetch("/apps/test?ajax=1", { method: "POST", body: new FormData(form) });
+      const data = await resp.json();
+
+      const ok = !!data.ok;
+      const msg = (data.message || (ok ? "Connection OK" : "Connection failed"));
+      const detected = (data.detected_type || "");
+
+      if (ok){
+        if (appTestOkEl(prefix)) appTestOkEl(prefix).value = "1";
+      } else {
+        if (appTestOkEl(prefix)) appTestOkEl(prefix).value = "0";
+      }
+
+      // Auto-detect type from test: if mismatch, switch modal (keeps values)
+      if (ok && detected && (detected === "radarr" || detected === "sonarr")){
+        const curType = appTypeFromPrefix(prefix);
+        if (detected !== curType){
+          // keep current values
+          const keep = {
+            id: (appIdEl(prefix)?.value || ""),
+            name: (appNameEl(prefix)?.value || ""),
+            enabled: !!appEnabledEl(prefix)?.checked,
+            url: (appUrlEl(prefix)?.value || ""),
+            key: (appKeyEl(prefix)?.value || "")
+          };
+          // close current
+          hideModal(appModalBackId(prefix));
+
+          const newPrefix = prefixFromType(detected);
+          // populate other modal
+          setVal("app_id_" + newPrefix, keep.id);
+          setVal("app_name_" + newPrefix, keep.name);
+          setChecked("app_enabled_" + newPrefix, keep.enabled);
+          setVal("app_url_" + newPrefix, keep.url);
+          setVal("app_key_" + newPrefix, keep.key);
+          setVal("app_mode_" + newPrefix, keep.id ? "edit" : "add");
+          setVal("app_test_ok_" + newPrefix, "1");
+
+          setAppTitle(newPrefix, keep.id ? "edit" : "add");
+          setAppDeleteVisibility(newPrefix, keep.id ? "edit" : "add");
+          showAppUsage(newPrefix, keep.id);
+          if (appStatusEl(newPrefix)){ appStatusEl(newPrefix).textContent = msg + " (auto-detected)"; }
+          refreshAppButtons(newPrefix);
+          showModal(appModalBackId(newPrefix));
+          setTimeout(() => appModalMarkClean(newPrefix), 0);
+          return;
+        }
+      }
+
+      if (st){ st.textContent = msg; st.className = "muted"; }
+
+    }catch(e){
+      if (st){ st.textContent = "Connection failed (network error)"; st.className = "muted"; }
+      if (appTestOkEl(prefix)) appTestOkEl(prefix).value = "0";
+    }finally{
+      refreshAppButtons(prefix);
+    }
   }
 
   function openAddAppModal(){
@@ -1517,27 +1633,28 @@ BASE_HEAD = """
   function confirmAddSelectedApp(){
     const t = ($("appPick")?.value || "radarr").toLowerCase();
     const prefix = (t === "sonarr") ? "s" : "r";
-    const modalId = (t === "sonarr") ? "appBackSonarr" : "appBackRadarr";
 
-    setVal("app_id_"+prefix, "");
-    setVal("app_mode_"+prefix, "add");
-    setVal("app_test_ok_"+prefix, "0");
-    setVal("app_name_"+prefix, (t === "sonarr") ? "Sonarr" : "Radarr");
-    setChecked("app_enabled_"+prefix, true);
+    setVal("app_id_" + prefix, "");
+    setVal("app_mode_" + prefix, "add");
+    setVal("app_test_ok_" + prefix, "0");
+    setVal("app_name_" + prefix, (t === "sonarr") ? "Sonarr" : "Radarr");
+    setChecked("app_enabled_" + prefix, true);
 
-    // Separate defaults
-    setVal("app_url_"+prefix, (t === "sonarr") ? "http://localhost:8989" : "http://localhost:7878");
-    setVal("app_key_"+prefix, "");
+    // Separate default URLs
+    setVal("app_url_" + prefix, (t === "sonarr") ? "http://localhost:8989" : "http://localhost:7878");
+    setVal("app_key_" + prefix, "");
 
-    const title = appEl(prefix,"appModalTitle");
-    if (title) title.textContent = `Add Application - ${appTypeLabel(t)}`;
-    const st = appEl(prefix,"appTestStatus");
-    if (st) { st.textContent = ""; st.className = "muted"; }
-
-    refreshAppButtons(prefix);
+    setAppTitle(prefix, "add");
+    setAppDeleteVisibility(prefix, "add");
+    const uw = appUsedWarnEl(prefix);
+    if (uw){ uw.style.display = "none"; uw.textContent = ""; }
+    const st = appStatusEl(prefix);
+    if (st){ st.textContent = ""; st.className = "muted"; }
 
     hideModal("appPickBack");
-    showModal(modalId);
+    showModal(appModalBackId(prefix));
+    refreshAppButtons(prefix);
+    setTimeout(() => appModalMarkClean(prefix), 0);
   }
 
   function openEditApp(appId){
@@ -1545,35 +1662,37 @@ BASE_HEAD = """
     const a = apps.find(x => (x.id || "") === (appId || ""));
     if (!a) return;
 
-    const t = ((a.type || "radarr") + "").toLowerCase();
-    const prefix = (t === "sonarr") ? "s" : "r";
-    const modalId = (t === "sonarr") ? "appBackSonarr" : "appBackRadarr";
+    const t = ((a.type || "") + "").toLowerCase() || inferTypeFromUrl(a.url || "");
+    const prefix = prefixFromType(t);
 
-    setVal("app_id_"+prefix, a.id || "");
-    setVal("app_mode_"+prefix, "edit");
-    setVal("app_name_"+prefix, a.name || appTypeLabel(t));
-    setChecked("app_enabled_"+prefix, !!a.enabled);
-    setVal("app_url_"+prefix, a.url || "");
-    setVal("app_key_"+prefix, a.api_key || "");
+    setVal("app_id_" + prefix, a.id || "");
+    setVal("app_mode_" + prefix, "edit");
+    setVal("app_name_" + prefix, a.name || ((t === "sonarr") ? "Sonarr" : "Radarr"));
+    setChecked("app_enabled_" + prefix, !!a.enabled);
+    setVal("app_url_" + prefix, a.url || "");
+    setVal("app_key_" + prefix, a.api_key || "");
 
-    // If previously connected, allow Save immediately (until URL/API changes)
-    setVal("app_test_ok_"+prefix, (a.ok && (a.url||"").trim() && (a.api_key||"").trim()) ? "1" : "0");
+    // If it was previously connected, allow Save immediately (until URL/API changes)
+    setVal("app_test_ok_" + prefix, (a.ok && (a.url||"").trim() && (a.api_key||"").trim()) ? "1" : "0");
 
-    const title = appEl(prefix,"appModalTitle");
-    if (title) title.textContent = `Edit Application - ${appTypeLabel(t)}`;
+    setAppTitle(prefix, "edit");
+    setAppDeleteVisibility(prefix, "edit");
+    showAppUsage(prefix, a.id || "");
 
-    const st = appEl(prefix,"appTestStatus");
-    if (st) {
-      if ((appEl(prefix,"app_test_ok")?.value || "") === "1") { st.textContent = "Last test: OK"; st.className = "muted"; }
-      else { st.textContent = ""; st.className = "muted"; }
+    const st = appStatusEl(prefix);
+    if (st){
+      if ((appTestOkEl(prefix)?.value || "") === "1") st.textContent = "Last test: OK";
+      else st.textContent = "";
+      st.className = "muted";
     }
 
+    showModal(appModalBackId(prefix));
     refreshAppButtons(prefix);
-    showModal(modalId);
+    setTimeout(() => appModalMarkClean(prefix), 0);
   }
 
   function submitDeleteApp(prefix){
-    const id = ((appEl(prefix,"app_id")?.value || "") + "").trim();
+    const id = ((appIdEl(prefix)?.value || "") + "").trim();
     if (!id) return;
     if (!confirm("Delete this app? Jobs using it will need updating.")) return;
     const f = $("appDeleteForm");
@@ -1582,45 +1701,8 @@ BASE_HEAD = """
     if (f) f.submit();
   }
 
-  // Test should NOT close the modal; run AJAX test, then enable Save only if OK.
-  async function submitAppTest(prefix){
-    const f = appEl(prefix,"appForm");
-    const testBtn = appEl(prefix,"appTestBtn");
-    const saveBtn = appEl(prefix,"appSaveBtn");
-    const st = appEl(prefix,"appTestStatus");
-    if (!f) return;
-
-    const url = (((appEl(prefix,"app_url")?.value) || "") + "").trim();
-    const key = (((appEl(prefix,"app_key")?.value) || "") + "").trim();
-    if (url === "" || key === "") { refreshAppButtons(prefix); return; }
-
-    if (testBtn) testBtn.disabled = true;
-    if (saveBtn) saveBtn.disabled = true;
-    if (st) { st.textContent = "Testing…"; st.className = "muted"; }
-
-    if (appEl(prefix,"app_test_ok")) appEl(prefix,"app_test_ok").value = "0";
-
-    try{
-      const resp = await fetch("/apps/test?ajax=1", { method: "POST", body: new FormData(f) });
-      const data = await resp.json();
-      const ok = !!data.ok;
-
-      if (appEl(prefix,"app_test_ok")) appEl(prefix,"app_test_ok").value = ok ? "1" : "0";
-      if (st){
-        st.textContent = ok ? (data.message || "Connection OK") : (data.message || "Connection failed");
-        st.className = "muted";
-      }
-    }catch(e){
-      if (st) { st.textContent = "Connection failed (network error)"; st.className = "muted"; }
-      if (appEl(prefix,"app_test_ok")) appEl(prefix,"app_test_ok").value = "0";
-    }finally{
-      if (testBtn) testBtn.disabled = false;
-      refreshAppButtons(prefix);
-    }
-  }
-
   // -----------------------
-  // Job modal dirty tracking
+  // Job modal dirty tracking (existing)
   // -----------------------
   window.__JOB_MODAL_INITIAL = "";
   window.__JOB_MODAL_DIRTY = false;
@@ -1667,9 +1749,12 @@ BASE_HEAD = """
   document.addEventListener("keydown", (e) => {
     if (e.key === "Escape") {
       hideModal("runNowBack");
-      hideModal("appBackRadarr");
-      hideModal("appBackSonarr");
       hideModal("appPickBack");
+      // Close whichever app modal is open, with dirty check
+      const r = $(appModalBackId("r"));
+      const s = $(appModalBackId("s"));
+      if (r && r.style.display === "flex") maybeCloseAppModal("r");
+      if (s && s.style.display === "flex") maybeCloseAppModal("s");
       maybeCloseJobModal();
     }
   });
@@ -1837,12 +1922,40 @@ BASE_HEAD = """
       const form = $("jobForm");
       if (form && form.contains(e.target)) jobModalUpdateDirty();
     }
+    // app dirty tracking + invalidate test on url/key changes
+    const rBack = $(appModalBackId("r"));
+    const sBack = $(appModalBackId("s"));
+    if (rBack && rBack.style.display === "flex"){
+      const form = document.getElementById(appModalFormId("r"));
+      if (form && form.contains(e.target)) appModalUpdateDirty("r");
+      if (e.target && (e.target.id === "app_url_r" || e.target.id === "app_key_r")) invalidateAppTest("r");
+      refreshAppButtons("r");
+    }
+    if (sBack && sBack.style.display === "flex"){
+      const form = document.getElementById(appModalFormId("s"));
+      if (form && form.contains(e.target)) appModalUpdateDirty("s");
+      if (e.target && (e.target.id === "app_url_s" || e.target.id === "app_key_s")) invalidateAppTest("s");
+      refreshAppButtons("s");
+    }
   });
+
   document.addEventListener("change", (e) => {
     const back = $("jobBack");
     if (back && back.style.display === "flex") {
       const form = $("jobForm");
       if (form && form.contains(e.target)) jobModalUpdateDirty();
+    }
+    const rBack = $(appModalBackId("r"));
+    const sBack = $(appModalBackId("s"));
+    if (rBack && rBack.style.display === "flex"){
+      const form = document.getElementById(appModalFormId("r"));
+      if (form && form.contains(e.target)) appModalUpdateDirty("r");
+      refreshAppButtons("r");
+    }
+    if (sBack && sBack.style.display === "flex"){
+      const form = document.getElementById(appModalFormId("s"));
+      if (form && form.contains(e.target)) appModalUpdateDirty("s");
+      refreshAppButtons("s");
     }
   });
 
@@ -1892,7 +2005,7 @@ BASE_HEAD = """
       uiScale.addEventListener("change", (e) => applyUiScale(e.target.value));
     }
 
-    // Ensure app modal buttons reflect initial state (Apps page only)
+    // initial app button states
     refreshAppButtons("r");
     refreshAppButtons("s");
   });
@@ -2003,42 +2116,38 @@ def toggle_theme():
 
 
 # ----------------------------
-# Legacy settings endpoints (kept for old bookmarks)
+# Connection test + detection
 # ----------------------------
-@app.post("/reset-radarr")
-def reset_radarr_legacy():
-    flash("Radarr settings are now managed under Apps.", "error")
-    return redirect("/apps")
-
-
-@app.post("/reset-sonarr")
-def reset_sonarr_legacy():
-    flash("Sonarr settings are now managed under Apps.", "error")
-    return redirect("/apps")
-
-
-@app.post("/test-radarr")
-def test_radarr_legacy():
-    flash("Radarr test is now managed under Apps.", "error")
-    return redirect("/apps")
-
-
-@app.post("/test-sonarr")
-def test_sonarr_legacy():
-    flash("Sonarr test is now managed under Apps.", "error")
-    return redirect("/apps")
-
-
-def _test_connection(kind: str, url: str, api_key: str, timeout_s: int):
+def _test_connection(url: str, api_key: str, timeout_s: int) -> Dict[str, Any]:
     r = requests.get(
         (url or "").rstrip("/") + "/api/v3/system/status",
         headers={"X-Api-Key": api_key or ""},
         timeout=timeout_s,
     )
     if r.status_code in (401, 403):
-        raise PermissionError(f"{kind} connection failed: Unauthorized (API key incorrect).")
+        raise PermissionError("Unauthorized (API key incorrect).")
     r.raise_for_status()
-    return True
+    try:
+        return r.json() or {}
+    except Exception:
+        return {}
+
+
+def detect_app_type_from_status(status: Dict[str, Any]) -> Optional[str]:
+    if not isinstance(status, dict):
+        return None
+    candidates = [
+        status.get("appName"),
+        status.get("applicationName"),
+        status.get("name"),
+        status.get("instanceName"),
+    ]
+    txt = " ".join([str(x) for x in candidates if x]).lower()
+    if "sonarr" in txt:
+        return "sonarr"
+    if "radarr" in txt:
+        return "radarr"
+    return None
 
 
 # ----------------------------
@@ -2158,9 +2267,10 @@ def app_selector_modal_html() -> str:
     """
 
 
-def app_modal_html(cfg: Dict[str, Any]) -> str:
+def app_modals_html(cfg: Dict[str, Any], usage: Dict[str, int]) -> str:
     cfg_js = {
-        "APPS": [normalize_app(a) for a in (cfg.get("APPS") or [])]
+        "APPS": [normalize_app(a) for a in (cfg.get("APPS") or [])],
+        "APP_USAGE": usage,
     }
     return f"""
     <script>
@@ -2173,10 +2283,9 @@ def app_modal_html(cfg: Dict[str, Any]) -> str:
 
     <!-- RADARR MODAL -->
     <div class="modalBack" id="appBackRadarr">
-      <div class="modal appModalShell" role="dialog" aria-modal="true" aria-labelledby="appModalTitle_r">
+      <div class="modal" role="dialog" aria-modal="true" aria-labelledby="appModalTitle_r">
         <div class="mh">
           <h3 id="appModalTitle_r">Add Application - Radarr</h3>
-          <button class="modalCloseX" type="button" onclick="hideModal('appBackRadarr')" aria-label="Close">×</button>
         </div>
 
         <form id="appForm_r" method="post" action="/apps/save" style="margin:0;">
@@ -2186,51 +2295,40 @@ def app_modal_html(cfg: Dict[str, Any]) -> str:
             <input type="hidden" id="app_test_ok_r" name="APP_TEST_OK" value="0">
             <input type="hidden" name="APP_TYPE" value="radarr">
 
-            <div class="appGrid">
-              <div class="appLbl">Name</div>
-              <div class="appCtrl">
+            <div class="form">
+              <div class="field">
+                <label>Name</label>
                 <input id="app_name_r" type="text" name="APP_NAME" value="">
               </div>
 
-              <div class="appLbl">Radarr Server</div>
-              <div class="appCtrl">
-                <input id="app_url_r" type="text" name="APP_URL" value="" oninput="invalidateAppTest('r')">
-                <div class="appHelp">
-                  URL used to connect to Radarr server, including http(s)://, port, and urlbase if required
-                </div>
-              </div>
-
-              <div class="appLbl">API Key</div>
-              <div class="appCtrl">
-                <input id="app_key_r" type="password" name="APP_API_KEY" value="" oninput="invalidateAppTest('r')">
-                <div class="appHelp">
-                  The ApiKey generated by Radarr in Settings/General
-                </div>
-              </div>
-
-              <div class="appLbl">Enabled</div>
-              <div class="appCtrl" style="display:flex; align-items:center; gap:12px;">
-                <label class="switch" title="Enable/Disable this app">
+              <div class="field">
+                <label>Enabled</label>
+                <label class="switch" title="Enable/Disable this app" style="margin-top:6px;">
                   <input id="app_enabled_r" name="APP_ENABLED" type="checkbox" checked>
                   <span class="slider"></span>
                 </label>
-                <span class="muted" style="font-size:12px;">Disable to ignore this app.</span>
+              </div>
+
+              <div class="field">
+                <label>Base URL</label>
+                <input id="app_url_r" type="text" name="APP_URL" value="">
+              </div>
+
+              <div class="field">
+                <label>API Key</label>
+                <input id="app_key_r" type="password" name="APP_API_KEY" value="">
               </div>
             </div>
 
-            <div class="muted" id="appHint_r" style="margin-top:12px;">Configure Radarr. Test first, then Save.</div>
+            <div id="appUsedWarn_r" class="muted" style="margin-top:10px; display:none;"></div>
             <div class="muted" id="appTestStatus_r" style="margin-top:8px;"></div>
           </div>
 
           <div class="mf">
-            <div class="appFooter">
-              <button class="btn bad" type="button" onclick="submitDeleteApp('r')">Delete</button>
-              <div class="appFooterRight">
-                <button class="btn good" id="appTestBtn_r" type="button" onclick="submitAppTest('r')">Test</button>
-                <button class="btn" type="button" onclick="hideModal('appBackRadarr')">Cancel</button>
-                <button class="btn primary" id="appSaveBtn_r" type="submit" disabled>Save</button>
-              </div>
-            </div>
+            <button class="btn" type="button" onclick="maybeCloseAppModal('r')">Cancel</button>
+            <button class="btn bad" type="button" id="appDeleteBtn_r" style="display:none;" onclick="submitDeleteApp('r')">Delete</button>
+            <button class="btn good" id="appTestBtn_r" type="button" onclick="submitAppTest('r')">Test</button>
+            <button class="btn primary" id="appSaveBtn_r" type="submit" disabled>Save</button>
           </div>
         </form>
       </div>
@@ -2238,10 +2336,9 @@ def app_modal_html(cfg: Dict[str, Any]) -> str:
 
     <!-- SONARR MODAL -->
     <div class="modalBack" id="appBackSonarr">
-      <div class="modal appModalShell" role="dialog" aria-modal="true" aria-labelledby="appModalTitle_s">
+      <div class="modal" role="dialog" aria-modal="true" aria-labelledby="appModalTitle_s">
         <div class="mh">
           <h3 id="appModalTitle_s">Add Application - Sonarr</h3>
-          <button class="modalCloseX" type="button" onclick="hideModal('appBackSonarr')" aria-label="Close">×</button>
         </div>
 
         <form id="appForm_s" method="post" action="/apps/save" style="margin:0;">
@@ -2251,51 +2348,40 @@ def app_modal_html(cfg: Dict[str, Any]) -> str:
             <input type="hidden" id="app_test_ok_s" name="APP_TEST_OK" value="0">
             <input type="hidden" name="APP_TYPE" value="sonarr">
 
-            <div class="appGrid">
-              <div class="appLbl">Name</div>
-              <div class="appCtrl">
+            <div class="form">
+              <div class="field">
+                <label>Name</label>
                 <input id="app_name_s" type="text" name="APP_NAME" value="">
               </div>
 
-              <div class="appLbl">Sonarr Server</div>
-              <div class="appCtrl">
-                <input id="app_url_s" type="text" name="APP_URL" value="" oninput="invalidateAppTest('s')">
-                <div class="appHelp">
-                  URL used to connect to Sonarr server, including http(s)://, port, and urlbase if required
-                </div>
-              </div>
-
-              <div class="appLbl">API Key</div>
-              <div class="appCtrl">
-                <input id="app_key_s" type="password" name="APP_API_KEY" value="" oninput="invalidateAppTest('s')">
-                <div class="appHelp">
-                  The ApiKey generated by Sonarr in Settings/General
-                </div>
-              </div>
-
-              <div class="appLbl">Enabled</div>
-              <div class="appCtrl" style="display:flex; align-items:center; gap:12px;">
-                <label class="switch" title="Enable/Disable this app">
+              <div class="field">
+                <label>Enabled</label>
+                <label class="switch" title="Enable/Disable this app" style="margin-top:6px;">
                   <input id="app_enabled_s" name="APP_ENABLED" type="checkbox" checked>
                   <span class="slider"></span>
                 </label>
-                <span class="muted" style="font-size:12px;">Disable to ignore this app.</span>
+              </div>
+
+              <div class="field">
+                <label>Base URL</label>
+                <input id="app_url_s" type="text" name="APP_URL" value="">
+              </div>
+
+              <div class="field">
+                <label>API Key</label>
+                <input id="app_key_s" type="password" name="APP_API_KEY" value="">
               </div>
             </div>
 
-            <div class="muted" id="appHint_s" style="margin-top:12px;">Configure Sonarr. Test first, then Save.</div>
+            <div id="appUsedWarn_s" class="muted" style="margin-top:10px; display:none;"></div>
             <div class="muted" id="appTestStatus_s" style="margin-top:8px;"></div>
           </div>
 
           <div class="mf">
-            <div class="appFooter">
-              <button class="btn bad" type="button" onclick="submitDeleteApp('s')">Delete</button>
-              <div class="appFooterRight">
-                <button class="btn good" id="appTestBtn_s" type="button" onclick="submitAppTest('s')">Test</button>
-                <button class="btn" type="button" onclick="hideModal('appBackSonarr')">Cancel</button>
-                <button class="btn primary" id="appSaveBtn_s" type="submit" disabled>Save</button>
-              </div>
-            </div>
+            <button class="btn" type="button" onclick="maybeCloseAppModal('s')">Cancel</button>
+            <button class="btn bad" type="button" id="appDeleteBtn_s" style="display:none;" onclick="submitDeleteApp('s')">Delete</button>
+            <button class="btn good" id="appTestBtn_s" type="button" onclick="submitAppTest('s')">Test</button>
+            <button class="btn primary" id="appSaveBtn_s" type="submit" disabled>Save</button>
           </div>
         </form>
       </div>
@@ -2307,6 +2393,15 @@ def app_modal_html(cfg: Dict[str, Any]) -> str:
 def apps():
     cfg = load_config()
     apps_list = [normalize_app(a) for a in (cfg.get("APPS") or [])]
+
+    # app usage map: app_id -> count of jobs referencing it
+    jobs = [normalize_job(j) for j in (cfg.get("JOBS") or [])]
+    usage: Dict[str, int] = {}
+    for j in jobs:
+        aid = str(j.get("APP_ID") or "").strip()
+        if not aid:
+            continue
+        usage[aid] = usage.get(aid, 0) + 1
 
     def card(a: Dict[str, Any]) -> str:
         a = normalize_app(a)
@@ -2376,7 +2471,7 @@ def apps():
       </div>
 
       {app_selector_modal_html()}
-      {app_modal_html(cfg)}
+      {app_modals_html(cfg, usage)}
     """
     return render_template_string(shell("mediareaparr • Apps", "apps", body))
 
@@ -2394,10 +2489,24 @@ def apps_save():
     test_ok = (request.form.get("APP_TEST_OK") or "").strip() == "1"
 
     if app_type not in ("radarr", "sonarr"):
-        flash("Unknown app type.", "error")
+        app_type = infer_type_from_url(url)
+
+    # Require test pass to save (as requested)
+    if not test_ok:
+        flash("Please run Test and ensure it passes before saving.", "error")
+        return redirect("/apps")
+
+    if not url or not api_key:
+        flash("URL and API Key are required.", "error")
         return redirect("/apps")
 
     apps_list = [normalize_app(a) for a in (cfg.get("APPS") or [])]
+
+    # Duplicate detection
+    dup = find_duplicate_app(apps_list, url, api_key, exclude_id=app_id)
+    if dup:
+        flash(f"Duplicate application detected: matches '{dup.get('name','App')}'. (Same URL + API key)", "error")
+        return redirect("/apps")
 
     if app_id:
         updated = False
@@ -2408,7 +2517,7 @@ def apps_save():
                 a["enabled"] = enabled
                 a["url"] = url
                 a["api_key"] = api_key
-                a["ok"] = bool(test_ok)  # Save allowed only after passing test
+                a["ok"] = True  # since test passed
                 apps_list[i] = normalize_app(a)
                 updated = True
                 break
@@ -2424,7 +2533,7 @@ def apps_save():
             "enabled": enabled,
             "url": url,
             "api_key": api_key,
-            "ok": bool(test_ok),
+            "ok": True,  # since test passed
         }))
 
     cfg["APPS"] = [normalize_app(a) for a in apps_list]
@@ -2439,59 +2548,82 @@ def apps_test():
 
     is_ajax = (request.args.get("ajax") or "").strip() == "1"
 
-    app_type = (request.form.get("APP_TYPE") or "radarr").strip().lower()
+    app_id = (request.form.get("APP_ID") or "").strip()
+    app_type = (request.form.get("APP_TYPE") or "").strip().lower()
+    name = (request.form.get("APP_NAME") or "").strip()
+    enabled = checkbox("APP_ENABLED")
     url = (request.form.get("APP_URL") or "").strip().rstrip("/")
     api_key = (request.form.get("APP_API_KEY") or "").strip()
 
+    if not url or not api_key:
+        if is_ajax:
+            return {"ok": False, "message": "URL and API Key are required.", "detected_type": ""}
+        flash("URL and API Key are required.", "error")
+        return redirect("/apps")
+
+    apps_list = [normalize_app(a) for a in (cfg.get("APPS") or [])]
+    dup = find_duplicate_app(apps_list, url, api_key, exclude_id=app_id)
+    if dup:
+        msg = f"Duplicate application detected: matches '{dup.get('name','App')}'. (Same URL + API key)"
+        if is_ajax:
+            return {"ok": False, "message": msg, "detected_type": ""}
+        flash(msg, "error")
+        return redirect("/apps")
+
+    # Guess type if missing/invalid
     if app_type not in ("radarr", "sonarr"):
-        if is_ajax:
-            return {"ok": False, "message": "Unknown app type."}
-        flash("Unknown app type.", "error")
-        return redirect("/apps")
-
-    kind = "Radarr" if app_type == "radarr" else "Sonarr"
-
-    if not url:
-        if is_ajax:
-            return {"ok": False, "message": "URL is empty."}
-        flash("URL is empty.", "error")
-        return redirect("/apps")
-
-    if not api_key:
-        if is_ajax:
-            return {"ok": False, "message": "API Key is empty."}
-        flash("API Key is empty.", "error")
-        return redirect("/apps")
+        app_type = infer_type_from_url(url)
 
     try:
-        _test_connection(kind, url, api_key, int(cfg.get("HTTP_TIMEOUT_SECONDS", 30)))
+        status = _test_connection(url, api_key, int(cfg.get("HTTP_TIMEOUT_SECONDS", 30)))
+        detected = detect_app_type_from_status(status) or app_type
+
+        kind = "Radarr" if detected == "radarr" else "Sonarr"
+
         if is_ajax:
-            return {"ok": True, "message": f"{kind} connection OK"}
+            return {"ok": True, "message": f"{kind} connection OK", "detected_type": detected}
+
+        # Non-AJAX: also persist + set ok (kept for compatibility)
+        if app_id:
+            for i, a in enumerate(apps_list):
+                if a["id"] == app_id:
+                    a["type"] = detected
+                    a["name"] = name or a["name"]
+                    a["enabled"] = enabled
+                    a["url"] = url
+                    a["api_key"] = api_key
+                    a["ok"] = True
+                    apps_list[i] = normalize_app(a)
+                    break
+        else:
+            apps_list.append(normalize_app({
+                "id": make_app_id(),
+                "type": detected,
+                "name": name or kind,
+                "enabled": enabled,
+                "url": url,
+                "api_key": api_key,
+                "ok": True,
+            }))
+
+        cfg["APPS"] = [normalize_app(a) for a in apps_list]
+        save_config(cfg)
         flash(f"{kind} connected ✔", "success")
         return redirect("/apps")
 
     except PermissionError as e:
-        if is_ajax:
-            return {"ok": False, "message": str(e)}
-        flash(str(e), "error")
+        msg = f"Connection failed: {e}"
     except requests.exceptions.ConnectTimeout:
-        msg = f"{kind} connection failed: timeout connecting to the host."
-        if is_ajax:
-            return {"ok": False, "message": msg}
-        flash(msg, "error")
+        msg = "Connection failed: timeout connecting to the host."
     except requests.exceptions.ConnectionError:
-        msg = f"{kind} connection failed: could not connect (URL/host/network)."
-        if is_ajax:
-            return {"ok": False, "message": msg}
-        flash(msg, "error")
+        msg = "Connection failed: could not connect (URL/host/network)."
     except Exception as e:
-        msg = f"{kind} connection failed: {e}"
-        if is_ajax:
-            return {"ok": False, "message": msg}
-        flash(msg, "error")
+        msg = f"Connection failed: {e}"
 
     if is_ajax:
-        return {"ok": False, "message": f"{kind} connection failed"}
+        return {"ok": False, "message": msg, "detected_type": ""}
+
+    flash(msg, "error")
     return redirect("/apps")
 
 
@@ -2502,11 +2634,19 @@ def apps_delete():
     if not app_id:
         return redirect("/apps")
 
+    # Prevent deleting an app that is referenced by any job
+    jobs = [normalize_job(j) for j in (cfg.get("JOBS") or [])]
+    used_by = [j for j in jobs if str(j.get("APP_ID") or "") == app_id]
+    if used_by:
+        names = ", ".join([str(j.get("name") or "Job") for j in used_by[:6]])
+        more = " …" if len(used_by) > 6 else ""
+        flash(f"Cannot delete this app: used by job(s): {names}{more}. Update/delete those jobs first.", "error")
+        return redirect("/apps")
+
     apps_list = [normalize_app(a) for a in (cfg.get("APPS") or [])]
     apps_list = [a for a in apps_list if a["id"] != app_id]
     cfg["APPS"] = apps_list
 
-    # Note: we do NOT auto-rewrite jobs; we leave them as-is (jobs will show missing app).
     save_config(cfg)
     flash("App deleted ✔", "success")
     return redirect("/apps")
@@ -2820,7 +2960,7 @@ def jobs_page():
         hint_html = """
           <div class="muted" style="margin-top:12px;">
             Add Job is disabled because no connected apps exist.
-            Go to <a href="/apps"><b>Apps</b></a> and use <b>Test Connection</b>.
+            Go to <a href="/apps"><b>Apps</b></a> and use <b>Test</b> then <b>Save</b>.
           </div>
         """
 
@@ -2865,7 +3005,7 @@ def jobs_save():
         app_id = (request.form.get("APP_ID") or "").strip()
         app_obj = find_app(cfg, app_id)
         if not app_obj or not is_app_ready(cfg, app_id):
-            raise ValueError("Selected app is not available/connected. Go to Apps and Test Connection.")
+            raise ValueError("Selected app is not available/connected. Go to Apps and Test + Save.")
 
         tag_label = (request.form.get("TAG_LABEL") or "").strip()
         if not tag_label:
@@ -2919,11 +3059,6 @@ def jobs_delete():
     cfg = load_config()
     job_id = (request.form.get("job_id") or "").strip()
     jobs = [j for j in (cfg.get("JOBS") or []) if str(j.get("id")) != job_id]
-    if not jobs:
-        j = job_defaults()
-        j["name"] = "Default Job"
-        jobs = [normalize_job(j)]
-
     cfg["JOBS"] = [normalize_job(j) for j in jobs]
     save_config(cfg)
     flash("Job deleted ✔", "success")
@@ -2999,18 +3134,7 @@ def preview():
     job = find_job(cfg, job_id)
     if not job:
         jobs = [normalize_job(j) for j in (cfg.get("JOBS") or [])]
-        preferred = None
-        for jj in jobs:
-            a = find_app(cfg, jj.get("APP_ID"))
-            if jj.get("enabled") and a and is_app_ready(cfg, a["id"]):
-                preferred = jj
-                break
-        if preferred:
-            job = preferred
-        elif jobs:
-            job = jobs[0]
-        else:
-            job = normalize_job(job_defaults())
+        job = jobs[0] if jobs else normalize_job(job_defaults())
 
     app_obj = find_app(cfg, job.get("APP_ID"))
     if not app_obj:
@@ -3187,7 +3311,6 @@ def status():
                 rows.append(f"<tr><td><code>{safe_html(k)}</code></td><td class='muted'>{safe_html(v)}</td></tr>")
         return "".join(rows)
 
-    # Mask API keys inside APPS when rendering full cfg
     cfg_for_view = dict(cfg)
     cfg_for_view["APPS"] = []
     for a in (cfg.get("APPS") or []):
