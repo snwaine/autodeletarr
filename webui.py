@@ -137,9 +137,8 @@ def sonarr_delete_mode_label(mode: str) -> str:
 def app_defaults() -> Dict[str, Any]:
     return {
         "id": make_app_id(),
-        "type": "radarr",        # radarr|sonarr
+        "type": "radarr",  # radarr|sonarr
         "name": "New App",
-        "enabled": True,
         "url": "",
         "api_key": "",
         "ok": False,
@@ -160,7 +159,6 @@ def normalize_app(a: Dict[str, Any]) -> Dict[str, Any]:
     default_name = "Radarr" if t == "radarr" else "Sonarr"
     d["name"] = str(d.get("name") or default_name).strip()[:60] or default_name
 
-    d["enabled"] = bool(d.get("enabled", True))
     d["url"] = str(d.get("url") or "").strip().rstrip("/")
     d["api_key"] = str(d.get("api_key") or "").strip()
     d["ok"] = bool(d.get("ok", False))
@@ -182,7 +180,7 @@ def is_app_ready(cfg: Dict[str, Any], app_id: str) -> bool:
     a = find_app(cfg, app_id)
     if not a:
         return False
-    return bool(a.get("enabled") and a.get("url") and a.get("api_key") and a.get("ok"))
+    return bool(a.get("url") and a.get("api_key") and a.get("ok"))
 
 
 def _norm_url_key(url: str, api_key: str) -> tuple:
@@ -191,7 +189,8 @@ def _norm_url_key(url: str, api_key: str) -> tuple:
     return (u, k)
 
 
-def find_duplicate_app(apps_list: List[Dict[str, Any]], url: str, api_key: str, exclude_id: str = "") -> Optional[Dict[str, Any]]:
+def find_duplicate_app(apps_list: List[Dict[str, Any]], url: str, api_key: str, exclude_id: str = "") -> Optional[
+    Dict[str, Any]]:
     u, k = _norm_url_key(url, api_key)
     if not u or not k:
         return None
@@ -345,7 +344,6 @@ def load_config() -> Dict[str, Any]:
         # WebUI/global
         "HTTP_TIMEOUT_SECONDS": int(env_default("HTTP_TIMEOUT_SECONDS", "30")),
         "UI_THEME": env_default("UI_THEME", "dark"),
-        "UI_SCALE": float(env_default("UI_SCALE", "1.0")),
 
         # Jobs
         "JOBS": [],
@@ -360,15 +358,10 @@ def load_config() -> Dict[str, Any]:
         except Exception:
             pass
 
-    # Normalize theme/scale/timeout
+    # Normalize theme/timeout
     t = (cfg.get("UI_THEME") or "dark").lower()
     cfg["UI_THEME"] = t if t in ("dark", "light", "reaparr") else "dark"
     cfg["HTTP_TIMEOUT_SECONDS"] = clamp_int(cfg.get("HTTP_TIMEOUT_SECONDS", 30), 5, 300, 30)
-    try:
-        cfg["UI_SCALE"] = float(cfg.get("UI_SCALE", 1.0))
-    except Exception:
-        cfg["UI_SCALE"] = 1.0
-    cfg["UI_SCALE"] = max(0.75, min(1.5, cfg["UI_SCALE"]))
 
     apps = cfg.get("APPS") or []
     if not isinstance(apps, list):
@@ -436,9 +429,6 @@ def get_tag_labels(cfg: Dict[str, Any], app_id: str) -> List[str]:
 # Preview candidates (uses selected app instance)
 # ----------------------------
 def preview_candidates_radarr(cfg: Dict[str, Any], app_obj: Dict[str, Any], job: Dict[str, Any]):
-    if not app_obj.get("enabled", True):
-        return {"error": "This Radarr app is disabled.", "candidates": [], "cutoff": ""}
-
     tag_label = (job.get("TAG_LABEL") or "").strip()
     if not tag_label:
         return {"error": "Tag is empty. Edit the job and select a tag.", "candidates": [], "cutoff": ""}
@@ -480,9 +470,6 @@ def preview_candidates_radarr(cfg: Dict[str, Any], app_obj: Dict[str, Any], job:
 
 
 def preview_candidates_sonarr(cfg: Dict[str, Any], app_obj: Dict[str, Any], job: Dict[str, Any]):
-    if not app_obj.get("enabled", True):
-        return {"error": "This Sonarr app is disabled.", "candidates": [], "cutoff": ""}
-
     tag_label = (job.get("TAG_LABEL") or "").strip()
     if not tag_label:
         return {"error": "Tag is empty. Edit the job and select a tag.", "candidates": [], "cutoff": ""}
@@ -560,42 +547,44 @@ BASE_HEAD = """
     --bad:#ef4444;
     --shadow: 0 12px 28px rgba(0,0,0,.28);
 
-    --ui: 1;
-
     --top-h: 60px;
     --sidebar-w: 210px;
     --pageHeaderBackgroundColor: #1b2431;
 
-    --fs-1: calc(13px * var(--ui));
-    --fs-3: calc(16px * var(--ui));
+    --fs-1: 13px;
+    --fs-3: 16px;
 
-    --btn-fs: calc(10px * var(--ui));
-    --btn-py: calc(7px * var(--ui));
-    --btn-px: calc(9px * var(--ui));
-    --btn-gap: calc(6px * var(--ui));
+    --btn-fs: 10px;
+    --btn-py: 7px;
+    --btn-px: 9px;
+    --btn-gap: 6px;
 
-    --switch-w: calc(42px * var(--ui));
-    --switch-h: calc(20px * var(--ui));
-    --switch-thumb: calc(14px * var(--ui));
-    --switch-pad: calc(3px * var(--ui));
+    --switch-w: 42px;
+    --switch-h: 20px;
+    --switch-thumb: 14px;
+    --switch-pad: 3px;
     --switch-travel: calc(var(--switch-w) - var(--switch-thumb) - (var(--switch-pad) * 2));
   }
 
   [data-theme="light"]{
-    --bg:#f7f8fb;
-    --panel:#ffffff;
-    --panel2:#ffffff;
-    --muted:#526171;
-    --text:#0b1220;
-    --line:#e5e7eb;
-    --line2:#d1d5db;
-    --pageHeaderBackgroundColor:#f3f4f6;
-    --accent:#6d28d9;
-    --accent2:#7c3aed;
-
-    --warn:#d97706;
-    --bad:#dc2626;
-    --shadow: 0 12px 30px rgba(0,0,0,.08);
+    --bg:#111827;
+    --panel:#1f2937;
+    --panel2:#1b2431;
+    --pageHeaderBackgroundColor:#1b2431;
+    --muted:#9ca3af;
+    --text:#f1f5f9;
+    --line:#212d3d;
+    --line2:#212d3d;
+    --accent:#22c55e;
+    --accent2:#16a34a;
+    --inputbox_border:#505d6f;
+    --inputbox_background:#1f2937;
+    --reaparr_accent:#a7d541;
+    --light_accent:#a7d541;
+    --dark_accent:#a7d541;
+    --warn:#f59e0b;
+    --bad:#ef4444;
+    --shadow: 0 12px 28px rgba(0,0,0,.55);
   }
 
   [data-theme="reaparr"]{
@@ -607,17 +596,36 @@ BASE_HEAD = """
     --text:rgba(255,255,255,.92);
     --line:rgba(255,255,255,.10);
     --line2:rgba(255,255,255,.07);
-
     --accent:#26e08a;
     --accent2:#16b86e;
-
+    --inputbox_border:#505d6f;
+    --inputbox_background:#1f2937;
     --reaparr_accent:#a7d541;
     --light_accent:#a7d541;
     --dark_accent:#a7d541;
-
     --warn:#ffb020;
     --bad:#ff5c6c;
-
+    --shadow: 0 12px 28px rgba(0,0,0,.55);
+  }
+  
+  [data-theme="dark"]{
+    --bg:#111827;
+    --panel:#1f2937;
+    --panel2:#1b2431;
+    --pageHeaderBackgroundColor:#1b2431;
+    --muted:#9ca3af;
+    --text:#f1f5f9;
+    --line:#212d3d;
+    --line2:#212d3d;
+    --accent:#22c55e;
+    --accent2:#16a34a;
+    --inputbox_border:#505d6f;
+    --inputbox_background:#1f2937;
+    --reaparr_accent:#a7d541;
+    --light_accent:#a7d541;
+    --dark_accent:#a7d541;
+    --warn:#f59e0b;
+    --bad:#ef4444;
     --shadow: 0 12px 28px rgba(0,0,0,.55);
   }
 
@@ -663,7 +671,7 @@ BASE_HEAD = """
     height: 140px;
     pointer-events: none;
     background: linear-gradient(to bottom, rgba(0,0,0,0), rgba(0,0,0,.35));
-    z-index: 1;
+    z-index: 0;
   }
   body[data-theme="light"]:after{ background: linear-gradient(to bottom, rgba(255,255,255,0), rgba(0,0,0,.08)); }
   body[data-theme="reaparr"]:after{ background: linear-gradient(to bottom, rgba(7,10,13,0), rgba(7,10,13,.92)); }
@@ -702,7 +710,7 @@ BASE_HEAD = """
     position: fixed;
     top: 0; left: 0; right: 0;
     height: var(--top-h);
-    z-index: 8000;
+    z-index: 50;
     overflow: hidden;
     margin: 0 !important;
   }
@@ -752,7 +760,7 @@ BASE_HEAD = """
     background: var(--panel2);
     box-shadow: none;
     overflow: hidden;
-    z-index: 7000;
+    z-index: 40;
     display:flex;
     flex-direction: column;
   }
@@ -793,7 +801,7 @@ BASE_HEAD = """
   }
 
   .sbItem.active{
-    box-shadow: none !important;
+    box-shadow: none;
   }
 
   body[data-theme="reaparr"] .sbItem:hover{
@@ -813,7 +821,7 @@ BASE_HEAD = """
   }
 
   body[data-theme="dark"] .sbItem.active{
-    background: #97c13d;
+    background: #212d3d;
     color: var(--dark_accent);
     border-left: 3px solid var(--dark_accent);
   }
@@ -835,7 +843,7 @@ BASE_HEAD = """
     overflow: hidden;
     min-width: 0;
     padding: 0;
-    z-index: 2;
+    z-index: 10;
   }
 
   @media (max-width: 900px){
@@ -921,6 +929,7 @@ BASE_HEAD = """
     font-weight: 600;
     font-size: var(--btn-fs);
     gap: var(--btn-gap);
+    border-radius: 6px;
     cursor:pointer;
     display: inline-flex;
     align-items: center;
@@ -995,6 +1004,7 @@ BASE_HEAD = """
     max-width: 100%;
     min-width: 0;
     border: 1px solid var(--line2);
+    border-radius: 8px;
     background: var(--panel);
     color: var(--text);
     padding: 10px 10px;
@@ -1050,13 +1060,14 @@ BASE_HEAD = """
     background: var(--panel2);
   }
   [data-theme="light"] .check{ background: #ffffff; }
-  .check input{ transform: scale(calc(1.2 * var(--ui))); }
+  .check input{ transform: scale(1.2); }
 
   .switch{ position: relative; width: var(--switch-w); height: var(--switch-h); display: inline-block; flex: 0 0 auto; }
   .switch input{ opacity: 0; width: 0; height: 0; }
   .slider{
     position: absolute;
     inset: 0;
+    border-radius: 999px;
     cursor: pointer;
     background: rgba(255,255,255,.10);
     border: 1px solid var(--line2);
@@ -1069,6 +1080,7 @@ BASE_HEAD = """
     width: var(--switch-thumb);
     left: var(--switch-pad);
     top: 50%;
+    border-radius: 50%;
     transform: translateY(-50%);
     background: rgba(255,255,255,.85);
     transition: .18s ease;
@@ -1094,8 +1106,9 @@ BASE_HEAD = """
     justify-content: center;
   }
   .jobCard{
-    border: 1px solid var(--line);
+    border: 3px solid var(--line);
     background: var(--panel2);
+    box-shadow: var(--shadow);
     overflow:hidden;
     max-width: none;
     width: 100%;
@@ -1155,7 +1168,7 @@ BASE_HEAD = """
     padding: 10px 8px;
   }
 
-  .metaStack{ display:flex; flex-direction: column; gap: 6px; font-size: calc(11px * var(--ui)); }
+  .metaStack{ display:flex; flex-direction: column; gap: 6px; font-size: 11px; }
   .metaRow{ display:flex; align-items: baseline; gap: 8px; line-height: 1.35; }
   .metaLabel{ width: 110px; color: var(--muted); flex: 0 0 auto; }
   .metaVal{ color: var(--text); flex: 1 1 auto; min-width: 0; word-break: break-word; }
@@ -1176,7 +1189,7 @@ BASE_HEAD = """
   .appCard{
     width: 300px;
     height: 128px;
-    border: 1px solid var(--line);
+    border: 3px solid var(--line);
     background: var(--panel2);
     box-shadow: var(--shadow);
     display: flex;
@@ -1212,15 +1225,14 @@ BASE_HEAD = """
     text-overflow: ellipsis;
   }
 
-  .appCardIconBtn{
+  .appCardLinkBtn{
     width: 26px; height: 26px;
     display:flex; align-items:center; justify-content:center;
-    border: 1px solid var(--line2);
     background: transparent;
     cursor: pointer;
     opacity: .9;
   }
-  .appCardIconBtn:hover{ opacity: 1; }
+  .appCardLinkBtn:hover{ opacity: 1; }
 
   .pill{
     display:inline-flex;
@@ -1245,13 +1257,79 @@ BASE_HEAD = """
   .addAppCardInner{
     width: 86px;
     height: 54px;
-    border: 1px solid var(--line2);
+    border: 2px solid #8ba3af;
     display:flex;
-    align-items:center;
     justify-content:center;
     font-size: 42px;
     color: var(--muted);
     line-height: 1;
+  }
+
+  /* ---------------------------
+     Add App picker (tile grid)
+     --------------------------- */
+  .pickGrid{
+    display: grid;
+    gap: 12px;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  @media (max-width: 520px){
+    .pickGrid{ grid-template-columns: 1fr; }
+  }
+  .pickTile{
+    border: 1px solid var(--line);
+    background: var(--panel2);
+    box-shadow: var(--shadow);
+    padding: 14px 14px;
+    cursor: pointer;
+    user-select: none;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    min-height: 110px;
+  }
+
+  [data-theme="light"] .pickTile{ background: #ffffff; }
+  .pickTile:hover{
+    border-color: rgba(34,197,94,.55);
+    box-shadow: 0 0 0 3px rgba(34,197,94,.10), 0 10px 22px rgba(0,0,0,.22);
+    transform: translateY(-1px);
+  }
+  body[data-theme="reaparr"] .pickTile:hover{
+    border-color: rgba(38,224,138,.55);
+    box-shadow: 0 0 0 3px rgba(38,224,138,.10), 0 10px 22px rgba(0,0,0,.45);
+  }
+  .pickTop{
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    min-width: 0;
+  }
+  .pickTitle{
+    font-weight: 800;
+    font-size: 14px;
+    letter-spacing: .2px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .pickMeta{
+    font-size: 12px;
+    color: var(--muted);
+    line-height: 1.35;
+  }
+  .pickActions{
+    display: flex;
+    gap: 8px;
+    margin-top: auto;
+    align-items: center;
+    justify-content: flex-start;
+  }
+  .pickMini{
+    padding: 6px 8px;
+    font-size: 10px;
   }
 
   .modalBack{
@@ -1261,16 +1339,66 @@ BASE_HEAD = """
     display:none;
     align-items:center;
     justify-content:center;
-    z-index: 9999;
+    z-index: 1000;
     padding: 18px;
   }
+  
+  /* ---------------------------
+     Modal open: lock background UI
+     --------------------------- */
+  body.modalOpen{
+    overflow: hidden;
+  }
+
+  /* Darken + blur header & sidebar when modal is open */
+  body.modalOpen .pageHeader,
+  body.modalOpen .sidebar{
+    filter: blur(4px) brightness(0.5);
+    transition: filter .0s ease;
+  }
+
+  /* Prevent interaction with blurred UI */
+  body.modalOpen .pageHeader,
+  body.modalOpen .sidebar,
+  body.modalOpen .mainArea{
+    pointer-events: none;
+  }
+
+  /* Keep modal interactive */
+  body.modalOpen .modalBack{
+    pointer-events: auto;
+  }
+
+  body.modalOpen .pageHeader,
+  body.modalOpen .sidebar,
+  body.modalOpen .mainArea{
+    pointer-events: none;
+  }
+
+  body.modalOpen .modalBack{
+    pointer-events: auto;
+  }
+
+  body.modalOpen .pageContent,
+  body.modalOpen .card .bd{
+    overflow: hidden !important;
+  }  
+  
+  .modalBack.jobsModal{
+    z-index: 1010;
+  }
+
+  .jobsModal .modal{
+    z-index: 1011;
+  }
+
   .modal{
-    width: min(720px, 100%);
-    border: 1px solid var(--line);
+    width: min(475px, 100%);
+    border: 3px solid var(--line);
     background: var(--panel);
     box-shadow: var(--shadow);
     overflow:hidden;
-    max-height: calc(100vh - 40px);
+    max-height: calc(100vh - 315px);
     display:flex;
     flex-direction: column;
     min-height: 0;
@@ -1327,7 +1455,7 @@ BASE_HEAD = """
     display: flex;
     flex-direction: column;
     gap: 10px;
-    z-index: 99999;
+    z-index: 1100;
     pointer-events: none;
     max-width: min(420px, calc(100vw - 32px));
   }
@@ -1357,7 +1485,7 @@ BASE_HEAD = """
   /* ---------------------------
      App config modal (match screenshot)
      --------------------------- */
-  .appModalShell{ width: min(860px, 100%); }
+  .appModalShell{ width: min(400px, 100%); }
 
   .modalCloseX{
     border: none;
@@ -1371,10 +1499,19 @@ BASE_HEAD = """
   .modalCloseX:hover{ color: var(--text); }
 
   .appGrid{
-    display: grid;
-    grid-template-columns: 170px minmax(0, 1fr);
-    gap: 14px 16px;
-    align-items: start;
+    display: flex;
+    flex-wrap: wrap;
+    column-gap: 16px;
+    row-gap: 14px;
+    align-items: flex-start;
+  }
+  .appGrid > .appLbl{
+    width: 170px;
+    flex: 0 0 170px;
+  }
+  .appGrid > .appCtrl{
+    flex: 1 1 calc(100% - 170px);
+    min-width: 0;
   }
   @media (max-width: 720px){
     .appGrid{ grid-template-columns: 1fr; }
@@ -1393,8 +1530,9 @@ BASE_HEAD = """
     width: 100%;
     max-width: 100%;
     min-width: 0;
-    border: 1px solid var(--line2);
-    background: var(--panel);
+    border: 3px solid var(--inputbox_border);
+    border-radius: 8px;
+    background: var(--inputbox_background);
     color: var(--text);
     padding: 10px 10px;
     outline: none;
@@ -1414,10 +1552,16 @@ BASE_HEAD = """
   .appFooter{
     display:flex;
     align-items:center;
-    justify-content: space-between;
+    justify-content: flex-end;
     gap: 10px;
     width: 100%;
   }
+  
+  /* When Delete is visible, pin it left while keeping the other buttons right */
+  .appFooter > .btn.bad{
+    margin-right: auto;
+  }
+
   .appFooterRight{
     display:flex;
     align-items:center;
@@ -1428,10 +1572,31 @@ BASE_HEAD = """
 
 <script>
   function $(id){ return document.getElementById(id); }
-  function showModal(id){ const el = $(id); if (el) el.style.display = "flex"; }
-  function hideModal(id){ const el = $(id); if (el) el.style.display = "none"; }
   function setVal(id, v){ const el = $(id); if (el) el.value = v; }
   function setChecked(id, v){ const el = $(id); if (el) el.checked = !!v; }
+  function updateModalState(){
+    const backs = document.querySelectorAll(".modalBack");
+    let anyOpen = false;
+    for (const el of backs){
+      if (el && getComputedStyle(el).display !== "none"){
+        anyOpen = true;
+        break;
+      }
+    }
+    document.body.classList.toggle("modalOpen", anyOpen);
+  }
+
+  function showModal(id){
+    const el = $(id);
+    if (el) el.style.display = "flex";
+    updateModalState();
+  }
+  
+  function hideModal(id){
+    const el = $(id);
+    if (el) el.style.display = "none";
+    updateModalState();
+  }
 
   function escHtml(s){
     return (s ?? "").toString()
@@ -1501,11 +1666,6 @@ BASE_HEAD = """
   // -----------------------
   // Apps: selector -> open correct modal
   // -----------------------
-  function openAddAppModal(){
-    setVal("appPick", "radarr");
-    showModal("appPickBack");
-  }
-
   function openRadarrAdd(){
     // Add mode
     setVal("app_id_r", "");
@@ -1514,8 +1674,6 @@ BASE_HEAD = """
     setVal("app_name_r", "Radarr");
     setVal("app_url_r", "http://localhost:7878");
     setVal("app_key_r", "");
-    setChecked("app_enabled_r", true);
-
     const used = $("appUsedWarn_r");
     if (used) used.style.display = "none";
     const st = $("appTestStatus_r");
@@ -1540,8 +1698,6 @@ BASE_HEAD = """
     setVal("app_name_s", "Sonarr");
     setVal("app_url_s", "http://localhost:8989");
     setVal("app_key_s", "");
-    setChecked("app_enabled_s", true);
-
     const used = $("appUsedWarn_s");
     if (used) used.style.display = "none";
     const st = $("appTestStatus_s");
@@ -1554,13 +1710,6 @@ BASE_HEAD = """
     refreshAppButtons("s");
     showModal("appBackSonarr");
     setTimeout(() => appModalMarkClean("s"), 0);
-  }
-
-  function confirmAddSelectedApp(){
-    const t = ($("appPick")?.value || "radarr").toLowerCase();
-    hideModal("appPickBack");
-    if (t === "sonarr") openSonarrAdd();
-    else openRadarrAdd();
   }
 
   function openEditApp(appId){
@@ -1578,7 +1727,6 @@ BASE_HEAD = """
       setVal("app_name_s", a.name || "Sonarr");
       setVal("app_url_s", a.url || "");
       setVal("app_key_s", a.api_key || "");
-      setChecked("app_enabled_s", !!a.enabled);
 
       const title = $("appModalTitle_s"); if (title) title.textContent = "Edit Application - Sonarr";
 
@@ -1608,7 +1756,6 @@ BASE_HEAD = """
     setVal("app_name_r", a.name || "Radarr");
     setVal("app_url_r", a.url || "");
     setVal("app_key_r", a.api_key || "");
-    setChecked("app_enabled_r", !!a.enabled);
 
     const title = $("appModalTitle_r"); if (title) title.textContent = "Edit Application - Radarr";
 
@@ -1764,6 +1911,31 @@ BASE_HEAD = """
     }
   });
 
+  // -----------------------
+  // Add Application picker (tile grid)
+  // -----------------------
+  function openAddAppModal(){
+    showModal("appPickBack");
+  }
+
+  function pickAppType(t){
+    t = (t || "radarr").toLowerCase();
+    hideModal("appPickBack");
+    if (t === "sonarr") openSonarrAdd();
+    else openRadarrAdd();
+  }
+
+  function appMoreInfo(t){
+    t = (t || "").toLowerCase();
+    const supported = (t === "radarr" || t === "sonarr");
+    const msg = supported
+      ? (t === "radarr"
+          ? "Radarr manages movies. MediaReaparr can clean up by tag + age."
+          : "Sonarr manages series. MediaReaparr can clean up by tag + age, plus a delete mode.")
+      : "Coming soon in MediaReaparr.";
+    alert(msg);
+  }
+
   function ensureSelectOption(selectId, value, labelSuffix){
     const sel = $(selectId);
     if (!sel) return;
@@ -1911,8 +2083,6 @@ BASE_HEAD = """
     const hintDelete = $("rn_hint_delete");
     const hintNoDelete = $("rn_hint_no_delete");
     if (hintDelete) hintDelete.style.display = deleteFiles ? "" : "none";
-    if (hintNoDelete) hintNo_delete = deleteFiles ? "none" : "";
-
     if (hintNoDelete) hintNoDelete.style.display = deleteFiles ? "none" : "";
 
     showModal("runNowBack");
@@ -1967,6 +2137,17 @@ BASE_HEAD = """
       if (v === "1") document.body.classList.add("sbCollapsed");
     } catch(e){}
 
+    // Prevent clicks on interactive elements inside an appCard (links/buttons)
+    // from also triggering the card's click handler (which opens Edit).
+    document.addEventListener("click", (e) => {
+      const t = e.target;
+      if (!t) return;
+      const card = t.closest ? t.closest(".appCard") : null;
+      if (!card) return;
+      const interactive = t.closest ? t.closest("a,button") : null;
+      if (interactive) e.stopPropagation();
+    }, true);
+
     const addCard = $("addAppCard");
     if (addCard){
       addCard.style.cursor = "pointer";
@@ -1984,20 +2165,6 @@ BASE_HEAD = """
 
     const host = $("toastHost");
     if (host) setTimeout(() => { try { host.remove(); } catch(e){} }, 6000);
-
-    // UI scale live apply
-    const uiScale = $("uiScale");
-    const uiScaleVal = $("uiScaleVal");
-    function applyUiScale(v){
-      const n = Math.max(0.75, Math.min(1.5, Number(v) || 1));
-      document.documentElement.style.setProperty("--ui", String(n));
-      if (uiScaleVal) uiScaleVal.textContent = Math.round(n * 100) + "%";
-    }
-    if (uiScale){
-      applyUiScale(uiScale.value);
-      uiScale.addEventListener("input", (e) => applyUiScale(e.target.value));
-      uiScale.addEventListener("change", (e) => applyUiScale(e.target.value));
-    }
   });
 </script>
 """
@@ -2059,7 +2226,7 @@ def shell(page_title: str, active: str, body: str):
   <title>{safe_html(page_title)}</title>
   {BASE_HEAD}
 </head>
-<body data-theme="{safe_html(theme)}" style="--ui:{cfg.get('UI_SCALE',1.0)};">
+<body data-theme="{safe_html(theme)}">
   <div class="wrap">
     <div class="layoutReaparr">
       {topbar}
@@ -2134,22 +2301,11 @@ def settings():
               </div>
 
               <div class="field" style="margin-bottom:12px;">
-                <label>UI Scale <span class="muted" id="uiScaleVal" style="margin-left:6px;"></span></label>
-                <input id="uiScale"
-                       type="range"
-                       min="0.75"
-                       max="1.5"
-                       step="0.05"
-                       name="UI_SCALE"
-                       value="{safe_html(str(cfg.get('UI_SCALE', 1.0)))}">
-              </div>
-
-              <div class="field" style="margin-bottom:12px;">
                 <label>UI Theme</label>
                 <select name="UI_THEME">
-                  <option value="dark" {"selected" if cfg.get("UI_THEME","dark")=="dark" else ""}>Dark</option>
-                  <option value="light" {"selected" if cfg.get("UI_THEME","dark")=="light" else ""}>Light</option>
-                  <option value="reaparr" {"selected" if cfg.get("UI_THEME","dark")=="reaparr" else ""}>Reaparr</option>
+                  <option value="dark" {"selected" if cfg.get("UI_THEME", "dark") == "dark" else ""}>Dark</option>
+                  <option value="light" {"selected" if cfg.get("UI_THEME", "dark") == "light" else ""}>Light</option>
+                  <option value="reaparr" {"selected" if cfg.get("UI_THEME", "dark") == "reaparr" else ""}>Reaparr</option>
                 </select>
               </div>
 
@@ -2175,12 +2331,6 @@ def save_settings():
     cfg["HTTP_TIMEOUT_SECONDS"] = clamp_int(request.form.get("HTTP_TIMEOUT_SECONDS") or 30, 5, 300, 30)
     cfg["UI_THEME"] = (request.form.get("UI_THEME") or cfg.get("UI_THEME", "dark")).lower()
 
-    try:
-        cfg["UI_SCALE"] = float(request.form.get("UI_SCALE") or cfg.get("UI_SCALE", 1.0))
-    except Exception:
-        cfg["UI_SCALE"] = float(cfg.get("UI_SCALE", 1.0))
-    cfg["UI_SCALE"] = max(0.75, min(1.5, cfg["UI_SCALE"]))
-
     if cfg["UI_THEME"] not in ("dark", "light", "reaparr"):
         cfg["UI_THEME"] = "dark"
 
@@ -2197,24 +2347,41 @@ def app_selector_modal_html() -> str:
     <div class="modalBack" id="appPickBack">
       <div class="modal" role="dialog" aria-modal="true" aria-labelledby="appPickTitle" style="width:min(520px,100%);">
         <div class="mh">
-          <h3 id="appPickTitle">Add App</h3>
+          <h3 id="appPickTitle">Add Application</h3>
           <button class="modalCloseX" type="button" onclick="hideModal('appPickBack')" aria-label="Close">×</button>
         </div>
         <div class="mb">
-          <div class="field">
-            <label>Select an app type</label>
-            <select id="appPick">
-              <option value="radarr">Radarr</option>
-              <option value="sonarr">Sonarr</option>
-            </select>
-          </div>
-          <div class="muted" style="margin-top:10px;">
-            Choose an app type, then click <b>Add</b> to configure it.
-          </div>
+          <div class="pickGrid">
+            <div class="pickTile" role="button" tabindex="0"
+                 onclick="pickAppType('radarr')"
+                 onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();pickAppType('radarr');}">
+              <div class="pickTop">
+                <div class="pickTitle">Radarr</div>
+                <span class="pill good">Movies</span>
+              </div>
+              <div class="pickMeta">Movie library manager. Cleanup by <b>tag</b> + <b>age</b>.</div>
+              <div class="pickActions">
+                <button class="btn pickMini" type="button" onclick="event.stopPropagation(); appMoreInfo('radarr')">Info</button>
+                <span class="muted" style="font-size:11px;">Add →</span>
+              </div>
+            </div> 
+            <div class="pickTile" role="button" tabindex="0"
+                 onclick="pickAppType('sonarr')"
+                 onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();pickAppType('sonarr');}">
+              <div class="pickTop">
+                <div class="pickTitle">Sonarr</div>
+                <span class="pill good">Series</span>
+              </div>
+              <div class="pickMeta">Series library manager. Cleanup by <b>tag</b> + <b>age</b> + delete mode.</div>
+              <div class="pickActions">
+                <button class="btn pickMini" type="button" onclick="event.stopPropagation(); appMoreInfo('sonarr')">Info</button>
+                <span class="muted" style="font-size:11px;">Add →</span>
+              </div>
+            </div>
+          </div>                     
         </div>
         <div class="mf">
-          <button class="btn" type="button" onclick="hideModal('appPickBack')">Cancel</button>
-          <button class="btn primary" type="button" onclick="confirmAddSelectedApp()">Add</button>
+          <button class="btn" type="button" onclick="hideModal('appPickBack')">Close</button>
         </div>
       </div>
     </div>
@@ -2268,14 +2435,6 @@ def app_modals_html(cfg: Dict[str, Any], usage: Dict[str, int]) -> str:
                 <input id="app_key_r" type="password" name="APP_API_KEY" value="">
                 <div class="appHelp">The ApiKey generated by Radarr in Settings/General</div>
               </div>
-
-              <div class="appLbl">Enabled</div>
-              <div class="appCtrl" style="display:flex; align-items:center; gap:12px;">
-                <label class="switch" title="Enable/Disable this app">
-                  <input id="app_enabled_r" name="APP_ENABLED" type="checkbox" checked>
-                  <span class="slider"></span>
-                </label>
-              </div>
             </div>
 
             <div id="appUsedWarn_r" class="muted" style="margin-top:10px; display:none;"></div>
@@ -2328,14 +2487,6 @@ def app_modals_html(cfg: Dict[str, Any], usage: Dict[str, int]) -> str:
                 <input id="app_key_s" type="password" name="APP_API_KEY" value="">
                 <div class="appHelp">The ApiKey generated by Sonarr in Settings/General</div>
               </div>
-
-              <div class="appLbl">Enabled</div>
-              <div class="appCtrl" style="display:flex; align-items:center; gap:12px;">
-                <label class="switch" title="Enable/Disable this app">
-                  <input id="app_enabled_s" name="APP_ENABLED" type="checkbox" checked>
-                  <span class="slider"></span>
-                </label>
-              </div>
             </div>
 
             <div id="appUsedWarn_s" class="muted" style="margin-top:10px; display:none;"></div>
@@ -2377,23 +2528,19 @@ def apps():
         kind = a.get("type", "radarr")
         title = a.get("name", "App")
         ok = bool(a.get("ok", False))
-        enabled = bool(a.get("enabled", True))
         url = str(a.get("url") or "")
         app_id = safe_html(a.get("id"))
 
         href = (url or "").strip()
         ext = ""
         if href:
-            ext = f"""<a class="appCardIconBtn" href="{safe_html(href)}" target="_blank" rel="noreferrer" title="Open {safe_html(title)}">
+            ext = f"""<a class="appCardLinkBtn" href="{safe_html(href)}" target="_blank" rel="noreferrer" title="Open {safe_html(title)}">
               ↗
             </a>"""
         else:
-            ext = """<div class="appCardIconBtn" title="No URL set" style="opacity:.4; cursor:default;">↗</div>"""
+            ext = """<div class="appCardLinkBtn" title="No URL set" style="opacity:.4; cursor:default;">↗</div>"""
 
-        if not enabled:
-            pill = '<span class="pill bad">Disabled</span>'
-        else:
-            pill = '<span class="pill good">Connected</span>' if ok else '<span class="pill bad">Not Connected</span>'
+        pill = '<span class="pill good">Connected</span>' if ok else '<span class="pill bad">Not Connected</span>'
 
         type_label = "Radarr" if kind == "radarr" else "Sonarr"
 
@@ -2484,7 +2631,6 @@ def apps_save():
     app_id = (request.form.get("APP_ID") or "").strip()
     app_type = (request.form.get("APP_TYPE") or "radarr").strip().lower()
     name = (request.form.get("APP_NAME") or "").strip()
-    enabled = checkbox("APP_ENABLED")
     url = (request.form.get("APP_URL") or "").strip().rstrip("/")
     api_key = (request.form.get("APP_API_KEY") or "").strip()
     test_ok = (request.form.get("APP_TEST_OK") or "0").strip() == "1"
@@ -2503,7 +2649,7 @@ def apps_save():
     # Duplicate detection (same URL + API key)
     dup = find_duplicate_app(apps_list, url, api_key, exclude_id=app_id)
     if dup:
-        flash(f"Duplicate application detected: matches '{dup.get('name','App')}'. (Same URL + API key)", "error")
+        flash(f"Duplicate application detected: matches '{dup.get('name', 'App')}'. (Same URL + API key)", "error")
         return redirect("/apps")
 
     if app_id:
@@ -2512,7 +2658,6 @@ def apps_save():
             if a["id"] == app_id:
                 a["type"] = app_type
                 a["name"] = name or a["name"]
-                a["enabled"] = enabled
                 a["url"] = url
                 a["api_key"] = api_key
                 a["ok"] = True  # since test_ok is true
@@ -2528,7 +2673,6 @@ def apps_save():
             "id": make_app_id(),
             "type": app_type,
             "name": name or default_name,
-            "enabled": enabled,
             "url": url,
             "api_key": api_key,
             "ok": True,
@@ -2547,7 +2691,6 @@ def apps_test():
     app_id = (request.form.get("APP_ID") or "").strip()
     app_type = (request.form.get("APP_TYPE") or "radarr").strip().lower()
     name = (request.form.get("APP_NAME") or "").strip()
-    enabled = checkbox("APP_ENABLED")
     url = (request.form.get("APP_URL") or "").strip().rstrip("/")
     api_key = (request.form.get("APP_API_KEY") or "").strip()
 
@@ -2572,7 +2715,7 @@ def apps_test():
     # Duplicate detection (same URL + API key)
     dup = find_duplicate_app(apps_list, url, api_key, exclude_id=app_id)
     if dup:
-        msg = f"Duplicate application detected: matches '{dup.get('name','App')}'. (Same URL + API key)"
+        msg = f"Duplicate application detected: matches '{dup.get('name', 'App')}'. (Same URL + API key)"
         if is_ajax:
             return {"ok": False, "message": msg}
         flash(msg, "error")
@@ -2594,7 +2737,6 @@ def apps_test():
                 if a["id"] == app_id:
                     a["type"] = app_type
                     a["name"] = name or a["name"]
-                    a["enabled"] = enabled
                     a["url"] = url
                     a["api_key"] = api_key
                     a["ok"] = True
@@ -2605,7 +2747,6 @@ def apps_test():
                 "id": make_app_id(),
                 "type": app_type,
                 "name": name or kind,
-                "enabled": enabled,
                 "url": url,
                 "api_key": api_key,
                 "ok": True,
@@ -2696,7 +2837,7 @@ def jobs_page():
     app_disabled_attr = "disabled" if len(ready_apps) <= 1 else ""
     app_options_html = ""
     for a in ready_apps:
-        label = f"{'Radarr' if a['type']=='radarr' else 'Sonarr'} • {a.get('name','App')}"
+        label = f"{'Radarr' if a['type'] == 'radarr' else 'Sonarr'} • {a.get('name', 'App')}"
         app_options_html += f'<option value="{safe_html(a["id"])}">{safe_html(label)}</option>'
 
     hour_opts = "".join([f'<option value="{h}">{h:02d}:00</option>' for h in range(0, 24)])
@@ -2714,7 +2855,7 @@ def jobs_page():
     )
 
     job_modal = f"""
-    <div class="modalBack" id="jobBack">
+    <div class="modalBack jobsModal" id="jobBack">
       <div class="modal" role="dialog" aria-modal="true" aria-labelledby="jobTitle">
         <div class="mh">
           <h3 id="jobTitle">Add Job</h3>
@@ -2828,7 +2969,7 @@ def jobs_page():
         a = find_app(cfg, j.get("APP_ID"))
         if a:
             app_kind = a.get("type", "radarr")
-            app_label = f"{'Radarr' if app_kind=='radarr' else 'Sonarr'} • {a.get('name','App')}"
+            app_label = f"{'Radarr' if app_kind == 'radarr' else 'Sonarr'} • {a.get('name', 'App')}"
         else:
             app_kind = "radarr"
             app_label = "Missing app"
@@ -2855,16 +2996,16 @@ def jobs_page():
                   onclick="openEditJob(this)"
                   data-id="{safe_html(j["id"])}"
                   data-name="{safe_html(j["name"])}"
-                  data-enabled="{ '1' if j["enabled"] else '0' }"
-                  data-app-id="{safe_html(j.get("APP_ID",""))}"
+                  data-enabled="{'1' if j["enabled"] else '0'}"
+                  data-app-id="{safe_html(j.get("APP_ID", ""))}"
                   data-tag="{safe_html(j["TAG_LABEL"])}"
-                  data-sonarr-mode="{safe_html(j.get('SONARR_DELETE_MODE','episodes_only'))}"
+                  data-sonarr-mode="{safe_html(j.get('SONARR_DELETE_MODE', 'episodes_only'))}"
                   data-days="{j["DAYS_OLD"]}"
                   data-day="{safe_html(j["SCHED_DAY"])}"
                   data-hour="{j["SCHED_HOUR"]}"
-                  data-dry="{ '1' if j["DRY_RUN"] else '0' }"
-                  data-del="{ '1' if j["DELETE_FILES"] else '0' }"
-                  data-excl="{ '1' if j["ADD_IMPORT_EXCLUSION"] else '0' }">Edit</button>
+                  data-dry="{'1' if j["DRY_RUN"] else '0'}"
+                  data-del="{'1' if j["DELETE_FILES"] else '0'}"
+                  data-excl="{'1' if j["ADD_IMPORT_EXCLUSION"] else '0'}">Edit</button>
         """
 
         delete_btn = f"""
@@ -3164,7 +3305,8 @@ def preview():
         return redirect("/apps")
 
     try:
-        result = preview_candidates_sonarr(cfg, app_obj, job) if app_obj.get("type") == "sonarr" else preview_candidates_radarr(cfg, app_obj, job)
+        result = preview_candidates_sonarr(cfg, app_obj, job) if app_obj.get(
+            "type") == "sonarr" else preview_candidates_radarr(cfg, app_obj, job)
 
         error = result.get("error")
         candidates = result.get("candidates", [])
@@ -3179,15 +3321,15 @@ def preview():
             rows += f"""
               <tr>
                 <td>{c["age_days"]}</td>
-                <td>{safe_html(c.get("title",""))}</td>
-                <td>{safe_html(str(c.get("year","")))}</td>
-                <td><code>{safe_html(c.get("added",""))}</code></td>
-                <td>{safe_html(str(c.get("id","")))}</td>
-                <td class="muted">{safe_html(c.get("path","") or "")}</td>
+                <td>{safe_html(c.get("title", ""))}</td>
+                <td>{safe_html(str(c.get("year", "")))}</td>
+                <td><code>{safe_html(c.get("added", ""))}</code></td>
+                <td>{safe_html(str(c.get("id", "")))}</td>
+                <td class="muted">{safe_html(c.get("path", "") or "")}</td>
               </tr>
             """
 
-        app_label = f"{'Sonarr' if app_obj.get('type')=='sonarr' else 'Radarr'} • {app_obj.get('name','App')}"
+        app_label = f"{'Sonarr' if app_obj.get('type') == 'sonarr' else 'Radarr'} • {app_obj.get('name', 'App')}"
         sonarr_mode_line = ""
         if app_obj.get("type") == "sonarr":
             sonarr_mode_line = f" • Mode: <b>{safe_html(sonarr_delete_mode_label(job.get('SONARR_DELETE_MODE')))}</b>"
@@ -3279,9 +3421,9 @@ def dashboard():
           </div>
           <div class="bd">
             <div class="muted">Last run status: <b>{safe_html(status_text)}</b></div>
-            <div class="muted" style="margin-top:6px;">Job: <b>{safe_html(str(last_run.get("job_name","")))}</b> (<code>{safe_html(str(last_run.get("job_id","")))}</code>)</div>
-            <div class="muted" style="margin-top:6px;">Finished: <code>{safe_html(str(last_run.get("finished_at","")))}</code></div>
-            <div class="muted" style="margin-top:6px;">Candidates: <b>{safe_html(str(last_run.get("candidates_found",0)))}</b></div>
+            <div class="muted" style="margin-top:6px;">Job: <b>{safe_html(str(last_run.get("job_name", "")))}</b> (<code>{safe_html(str(last_run.get("job_id", "")))}</code>)</div>
+            <div class="muted" style="margin-top:6px;">Finished: <code>{safe_html(str(last_run.get("finished_at", "")))}</code></div>
+            <div class="muted" style="margin-top:6px;">Candidates: <b>{safe_html(str(last_run.get("candidates_found", 0)))}</b></div>
           </div>
         </div>
       </div>
@@ -3307,8 +3449,7 @@ def status():
                     typ = a.get("type")
                     nm = a.get("name")
                     ok = "ok" if a.get("ok") else "not-ok"
-                    en = "enabled" if a.get("enabled") else "disabled"
-                    parts.append(f"{nm} ({typ}, {en}, {ok}, url={a.get('url','')})")
+                    parts.append(f"{nm} ({typ}, {ok}, url={a.get('url', '')})")
                 summary = "; ".join(parts) + (" …" if len(apps_list) > 50 else "")
                 rows.append(
                     f"<tr><td><code>{safe_html(k)}</code></td>"
@@ -3318,7 +3459,7 @@ def status():
                 jobs = [normalize_job(x) for x in (v or [])]
                 parts = []
                 for j in jobs[:50]:
-                    parts.append(f"{j.get('name','Job')} (app_id={j.get('APP_ID','')}, tag={j.get('TAG_LABEL','')})")
+                    parts.append(f"{j.get('name', 'Job')} (app_id={j.get('APP_ID', '')}, tag={j.get('TAG_LABEL', '')})")
                 summary = "; ".join(parts) + (" …" if len(jobs) > 50 else "")
                 rows.append(
                     f"<tr><td><code>{safe_html(k)}</code></td>"
@@ -3367,6 +3508,7 @@ def status():
 
 if __name__ == "__main__":
     import argparse
+
     p = argparse.ArgumentParser()
     p.add_argument("--host", default="0.0.0.0")
     p.add_argument("--port", type=int, default=int(os.environ.get("WEBUI_PORT", "7575")))
