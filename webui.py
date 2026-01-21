@@ -360,7 +360,7 @@ def load_config() -> Dict[str, Any]:
 
     # Normalize theme/timeout
     t = (cfg.get("UI_THEME") or "dark").lower()
-    cfg["UI_THEME"] = t if t in ("dark", "light", "reaparr") else "dark"
+    cfg["UI_THEME"] = t if t in ("dark", "light") else "dark"
     cfg["HTTP_TIMEOUT_SECONDS"] = clamp_int(cfg.get("HTTP_TIMEOUT_SECONDS", 30), 5, 300, 30)
 
     apps = cfg.get("APPS") or []
@@ -416,13 +416,23 @@ def app_get(cfg: Dict[str, Any], app_obj: Dict[str, Any], path: str):
 
 
 def get_tag_labels(cfg: Dict[str, Any], app_id: str) -> List[str]:
+    """
+    Best-effort tag fetch. Never throws (so Jobs page can't 500).
+    """
     if not is_app_ready(cfg, app_id):
         return []
     app_obj = find_app(cfg, app_id)
     if not app_obj:
         return []
-    tags = app_get(cfg, app_obj, "/api/v3/tag")
-    return sorted({t.get("label") for t in (tags or []) if t.get("label")}, key=lambda x: str(x).lower())
+    try:
+        tags = app_get(cfg, app_obj, "/api/v3/tag")
+        return sorted(
+            {t.get("label") for t in (tags or []) if t.get("label")},
+            key=lambda x: str(x).lower()
+        )
+    except Exception:
+        # App is offline / timeout / bad gateway / etc.
+        return []
 
 
 # ----------------------------
@@ -539,26 +549,20 @@ BASE_HEAD = """
     --text:#f1f5f9;
     --line:#334155;
     --line2:#475569;
-
-    --accent:#22c55e;
+    --accent:#a7d541;
     --accent2:#16a34a;
-
     --warn:#f59e0b;
     --bad:#ef4444;
     --shadow: 0 12px 28px rgba(0,0,0,.28);
-
     --top-h: 60px;
     --sidebar-w: 210px;
-    --pageHeaderBackgroundColor: #1b2431;
-
+    --HeaderBackgroundColor: #1b2431;
     --fs-1: 13px;
     --fs-3: 16px;
-
     --btn-fs: 10px;
     --btn-py: 7px;
     --btn-px: 9px;
     --btn-gap: 6px;
-
     --switch-w: 42px;
     --switch-h: 20px;
     --switch-thumb: 14px;
@@ -566,73 +570,210 @@ BASE_HEAD = """
     --switch-travel: calc(var(--switch-w) - var(--switch-thumb) - (var(--switch-pad) * 2));
   }
 
-  [data-theme="light"]{
+  [data-theme="dark"]{
     --bg:#111827;
     --panel:#1f2937;
     --panel2:#1b2431;
-    --pageHeaderBackgroundColor:#1b2431;
+    --HeaderBackgroundColor:#2a2a2a;
+    --sidebarBackgroundColor:#2a2a2a;
+    --BackgroundColor1:#333333;
+    --FieldinptuColor:#595959;
+    --sidebarActiveBackgroundColor:#333333;
+    --toolbarBackgroundColor:#262626;
+    --pageBackgroundColor:#202020;
     --muted:#9ca3af;
     --text:#f1f5f9;
     --line:#212d3d;
     --line2:#212d3d;
-    --accent:#22c55e;
-    --accent2:#16a34a;
     --inputbox_border:#505d6f;
     --inputbox_background:#1f2937;
-    --reaparr_accent:#a7d541;
-    --light_accent:#a7d541;
-    --dark_accent:#a7d541;
+    --accent:#a7d541;
+    --accent2:#16a34a;
     --warn:#f59e0b;
     --bad:#ef4444;
     --shadow: 0 12px 28px rgba(0,0,0,.55);
   }
 
-  [data-theme="reaparr"]{
-    --bg:#070a0d;
-    --panel:#0f1620;
-    --panel2:#121b26;
-    --pageHeaderBackgroundColor:#121b26;
-    --muted:rgba(255,255,255,.64);
-    --text:rgba(255,255,255,.92);
-    --line:rgba(255,255,255,.10);
-    --line2:rgba(255,255,255,.07);
-    --accent:#26e08a;
-    --accent2:#16b86e;
-    --inputbox_border:#505d6f;
-    --inputbox_background:#1f2937;
-    --reaparr_accent:#a7d541;
-    --light_accent:#a7d541;
-    --dark_accent:#a7d541;
-    --warn:#ffb020;
-    --bad:#ff5c6c;
-    --shadow: 0 12px 28px rgba(0,0,0,.55);
-  }
-  
-  [data-theme="dark"]{
-    --bg:#111827;
-    --panel:#1f2937;
-    --panel2:#1b2431;
-    --pageHeaderBackgroundColor:#1b2431;
-    --muted:#9ca3af;
-    --text:#f1f5f9;
-    --line:#212d3d;
-    --line2:#212d3d;
-    --accent:#22c55e;
+  [data-theme="light"]{
+    --bg:#f6f7fb;
+    --panel:#ffffff;
+    --panel2:#f1f5f9;
+    --HeaderBackgroundColor:#ffffff;
+    --sidebarBackgroundColor:#ffffff;
+    --sidebarActiveBackgroundColor:#e5e7eb;
+    --toolbarBackgroundColor:#ffffff;
+    --pageBackgroundColor:#f5f7fa;
+    --text:#0f172a;
+    --muted:#475569;
+    --line:#e2e8f0;
+    --line2:#cbd5e1;
+    --accent:#a7d541;
     --accent2:#16a34a;
-    --inputbox_border:#505d6f;
-    --inputbox_background:#1f2937;
-    --reaparr_accent:#a7d541;
-    --light_accent:#a7d541;
-    --dark_accent:#a7d541;
-    --warn:#f59e0b;
-    --bad:#ef4444;
-    --shadow: 0 12px 28px rgba(0,0,0,.55);
+    --BackgroundColor1:#ffffff;
+    --FieldinptuColor:#ffffff;
+    --inputbox_border:#cbd5e1;
+    --inputbox_background:#ffffff;
+    --warn:#b45309;
+    --bad:#dc2626;
+    --shadow: 0 10px 24px rgba(2,6,23,.10);
   }
+
+  body[data-theme="dark"] input[type="checkbox"],
+  body[data-theme="light"] input[type="checkbox"]{
+    accent-color: var(--accent);
+  }
+
+  body[data-theme="light"] a{ color: #0f172a; }
+  body[data-theme="light"] a:hover{ color: #0f172a; }
+
+  body[data-theme="light"] .btn{
+    border-color: var(--line2);
+  }
+
+   /* ------------------------------------------------
+      FakeSelect (custom dropdown) - per theme
+      ------------------------------------------------ */
+   .nativeSelect{
+     position:absolute !important;
+     left:-9999px !important;
+     width:1px !important;
+     height:1px !important;
+     opacity:0 !important;
+     pointer-events:none !important;
+   }
+
+   .fakeSelect{ width:100%; position:relative; }
+   .fakeSelectBtn{
+     width:100%;
+     border:1px solid var(--BackgroundColor1);
+     border-radius:8px;
+     background:var(--FieldinptuColor);
+     color:var(--text);
+     padding:10px 15px 10px 10px;
+     outline:none;
+     cursor:pointer;
+     display:flex;
+     align-items:center;
+     justify-content:space-between;
+     gap:10px;
+   }
+   .fakeSelectBtn:disabled{
+     opacity:.45;
+     cursor:not-allowed;
+     filter:grayscale(.35);
+   }
+   .fakeSelectValue{
+     min-width:0;
+     overflow:hidden;
+     text-overflow:ellipsis;
+     white-space:nowrap;
+     text-align:left;
+   }
+   .fakeSelectChevron{
+     width:10px; height:10px;
+     transform: rotate(45deg);
+     border-right:2px solid var(--muted);
+     border-bottom:2px solid var(--muted);
+     flex:0 0 auto;
+     margin-top:-2px;
+   }
+   .fakeSelectMenu{
+     position:absolute;
+     left:0; right:0;
+     top:calc(100% + 3px);
+     z-index:2000;
+     background:var(--FieldinptuColor);
+     border:1px solid var(--line2);
+     box-shadow:var(--shadow);
+     max-height:260px;
+     overflow:auto;
+     display:none;
+     border-radius:10px;
+     padding:4px;
+   }
+   .fakeSelect.open .fakeSelectMenu{ display:block; }
+
+   .fakeOpt{
+     padding:6px 8px;
+     border-radius:8px;
+     cursor:pointer;
+     color:var(--text);
+     user-select:none;
+   }
+   .fakeOpt + .fakeOpt{ margin-top:4px; }
+   .fakeOpt[data-disabled="1"]{ opacity:.6; cursor:not-allowed; }
+
+   /* per-theme highlight colours */
+   body[data-theme="dark"] .fakeOpt:hover,
+   body[data-theme="dark"] .fakeOpt[aria-selected="true"],
+   body[data-theme="dark"] .fakeOpt.active{
+     background: #e5e7eb;
+     color: #111827;
+   }
+
+   body[data-theme="light"] .fakeOpt:hover,
+   body[data-theme="light"] .fakeOpt[aria-selected="true"],
+   body[data-theme="light"] .fakeOpt.active{
+     background: rgba(34,197,94,.85);
+     color: #04130a;
+   }
 
   body.sbCollapsed{ --sidebar-w: 0px; }
 
   *, *::before, *::after { box-sizing: border-box; }
   html, body{ height: 100%; }
+
+  /* ===========================
+     Themed scrollbars
+     =========================== */
+
+  /* ---------- Firefox ---------- */
+  /* ---------- Firefox ---------- */
+  body[data-theme="dark"] *{
+    scrollbar-width: thin;
+    scrollbar-color: var(--accent) var(--panel2);
+  }
+  body[data-theme="light"] *{
+    scrollbar-width: thin;
+    scrollbar-color var(--accent) var(--panel2);
+  }
+
+  /* ---------- WebKit (Chrome / Edge / Safari) ---------- */
+
+  ::-webkit-scrollbar{
+    width: 10px;
+    height: 10px;
+  }
+
+  ::-webkit-scrollbar-track{
+    background: var(--panel2);
+  }
+
+  /* DARK THEME — green thumb */
+  body[data-theme="light"] ::-webkit-scrollbar-thumb{
+    background: var(--FieldinptuColor);
+    );
+    border-radius: 8px;
+    border: 2px solid var(--BackgroundColor1);
+  }
+
+  body[data-theme="dark"] ::-webkit-scrollbar-thumb:hover{
+    background: var(--FieldinptuColor);
+    );
+  }
+
+  /* LIGHT THEME — neutral grey thumb */
+  body[data-theme="light"] ::-webkit-scrollbar-thumb{
+    background: var(--FieldinptuColor);
+    );
+    border-radius: 8px;
+    border: 2px solid var(--BackgroundColor1);
+  }
+
+  body[data-theme="light"] ::-webkit-scrollbar-thumb:hover{
+    background: var(--FieldinptuColor);
+    );
+  }
 
   body{
     margin:0;
@@ -651,18 +792,10 @@ BASE_HEAD = """
     overflow: hidden;
   }
 
-  body[data-theme="reaparr"]{
-    background:
-      radial-gradient(900px 450px at 20% -10%, rgba(38,224,138,.14), transparent 60%),
-      radial-gradient(800px 420px at 90% 0%, rgba(38,224,138,.10), transparent 55%),
-      radial-gradient(700px 460px at 50% 105%, rgba(38,224,138,.08), transparent 60%),
-      linear-gradient(180deg, #070a0d, #0b0f14 40%, #070a0d);
-    background-attachment: fixed;
+  /* Light theme: soften the bottom landing gradient (dark one looks heavy on light UI) */
+  body[data-theme="light"]:after{
+    background: linear-gradient(to bottom, rgba(255,255,255,0), rgba(2,6,23,.06));
   }
-
-  body[data-theme="dark"] { color-scheme: dark; }
-  body[data-theme="light"] { color-scheme: light; }
-  body[data-theme="reaparr"] { color-scheme: dark; }
 
   body:after{
     content:"";
@@ -673,8 +806,6 @@ BASE_HEAD = """
     background: linear-gradient(to bottom, rgba(0,0,0,0), rgba(0,0,0,.35));
     z-index: 0;
   }
-  body[data-theme="light"]:after{ background: linear-gradient(to bottom, rgba(255,255,255,0), rgba(0,0,0,.08)); }
-  body[data-theme="reaparr"]:after{ background: linear-gradient(to bottom, rgba(7,10,13,0), rgba(7,10,13,.92)); }
 
   a{ color: var(--text); text-decoration: none; }
   a:hover{ text-decoration: underline; }
@@ -713,6 +844,16 @@ BASE_HEAD = """
     z-index: 50;
     overflow: hidden;
     margin: 0 !important;
+    box-shadow: 0 0px 28px rgba(0, 0, 0, .55);
+  }
+
+  /* Light theme header shadow should be subtle */
+  body[data-theme="light"] .pageHeader{
+    box-shadow: 0 8px 18px rgba(2,6,23,.10);
+  }
+
+  body[data-theme="light"] .sidebar{
+    border-right: 3px solid var(--line);
   }
 
   .pageHeader .ptIn{
@@ -721,7 +862,7 @@ BASE_HEAD = """
     grid-template-columns: var(--sidebar-w) 1fr auto;
     align-items: center;
     padding: 0;
-    background: var(--pageHeaderBackgroundColor);
+    background: var(--HeaderBackgroundColor);
   }
 
   .ptRightActions{
@@ -756,14 +897,19 @@ BASE_HEAD = """
     left: 0;
     width: var(--sidebar-w);
     height: calc(100vh - var(--top-h));
-    border-right: 3px solid var(--line);
-    background: var(--panel2);
+    border-right: 3px solid var(--sidebarActiveBackgroundColor);
+    background: var(--sidebarBackgroundColor);
     box-shadow: none;
     overflow: hidden;
     z-index: 40;
     display:flex;
     flex-direction: column;
   }
+
+  /* Light theme sidebar items should read as dark text */
+  body[data-theme="light"] button.sbItem{ color: var(--text); }
+  body[data-theme="light"] .sbItem{ color: var(--text); }
+  body[data-theme="light"] .sbItem:hover{ color: var(--accent2); }
 
   .sbNav{
     padding: 0px;
@@ -804,26 +950,16 @@ BASE_HEAD = """
     box-shadow: none;
   }
 
-  body[data-theme="reaparr"] .sbItem:hover{
-    color: var(--reaparr_accent);
-  }
-
-  body[data-theme="reaparr"] .sbItem.active{
-    background: #15212f;
-    color: var(--reaparr_accent);
-    border-left: 3px solid var(--reaparr_accent);
-  }
-
   body[data-theme="light"] .sbItem.active{
-    background: #e5e7eb;
-    color: var(--light_accent);
-    border-left: 3px solid var(--light_accent);
+    background: var(--sidebarActiveBackgroundColor);
+    color: var(--accent);
+    border-left: 3px solid var(--accent);
   }
 
   body[data-theme="dark"] .sbItem.active{
-    background: #212d3d;
-    color: var(--dark_accent);
-    border-left: 3px solid var(--dark_accent);
+    background: var(--sidebarActiveBackgroundColor);
+    color: var(--accent);
+    border-left: 3px solid var(--accent);
   }
 
   .sbNav form{ margin: 0; }
@@ -868,7 +1004,7 @@ BASE_HEAD = """
   .card{
     grid-column: span 12;
     border: none;
-    background: var(--panel);
+    background: var(--pageBackgroundColor);
     box-shadow: var(--shadow);
     overflow:hidden;
     display: flex;
@@ -877,21 +1013,30 @@ BASE_HEAD = """
     height: 100%;
   }
 
+  /* Light theme cards: slightly clearer separation */
+  body[data-theme="light"] .card{
+    border: 1px solid var(--line);
+  }
+  body[data-theme="light"] .jobCard{
+    border: 1px solid var(--line);
+  }
+
   .card .hd{
     padding: 14px 16px;
     display:flex;
     align-items:center;
+    height: 60px;
+    min-height: 60px;
+    max-height: 60px;
     justify-content: space-between;
     gap:12px;
-    background: var(--panel2);
+    background: var(--toolbarBackgroundColor);
     overflow: hidden;
     position: sticky;
     top: 0;
     z-index: 2;
     flex: 0 0 auto;
   }
-
-  [data-theme="light"] .card .hd{ background: #f3f4f6; }
 
   .card .hd h2{
     margin:0;
@@ -901,21 +1046,10 @@ BASE_HEAD = """
 
   .card .bd{
     padding: 14px 16px;
-    background: var(--panel);
+    background: var(--pageBackgroundColor);
     min-height: 0;
     overflow: auto;
     flex: 1 1 auto;
-  }
-
-  body[data-theme="reaparr"] .card{
-    background: var(--panel);
-  }
-  body[data-theme="reaparr"] .card .hd,
-  body[data-theme="reaparr"] .jobHeader,
-  body[data-theme="reaparr"] .modal .mh,
-  body[data-theme="reaparr"] .modal .mf,
-  body[data-theme="reaparr"] .pageHeader .ptIn{
-    background: linear-gradient(180deg, rgba(255,255,255,.03), transparent), var(--pageHeaderBackgroundColor);
   }
 
   .muted{ color: var(--muted); }
@@ -923,7 +1057,7 @@ BASE_HEAD = """
 
   .btn{
     border: 1px solid var(--line2);
-    background: var(--panel2);
+    background: var(--HeaderBackgroundColor);
     color: var(--text);
     padding: var(--btn-py) var(--btn-px);
     font-weight: 600;
@@ -935,16 +1069,18 @@ BASE_HEAD = """
     align-items: center;
     transition: box-shadow .18s ease, border-color .18s ease, transform .18s ease, filter .18s ease;
   }
+  
+  /* Light theme: hover glow should be lighter (avoid dark heavy glow) */
+  body[data-theme="light"] .btn:hover{
+    box-shadow: 0 0 0 3px rgba(167,213,65,.16), 0 10px 18px rgba(2,6,23,.10);
+  }
+  
   a.btn:hover{ text-decoration: none; }
 
   .btn:hover{
     border-color: rgba(34,197,94,.55);
     box-shadow: 0 0 0 3px rgba(34,197,94,.10), 0 10px 22px rgba(0,0,0,.22);
     transform: translateY(-1px);
-  }
-  body[data-theme="reaparr"] .btn:hover{
-    border-color: rgba(38,224,138,.55);
-    box-shadow: 0 0 0 3px rgba(38,224,138,.10), 0 10px 22px rgba(0,0,0,.45);
   }
 
   .btn:active{
@@ -974,26 +1110,26 @@ BASE_HEAD = """
     border-color: rgba(239,68,68,.55);
     background: linear-gradient(135deg, rgba(239,68,68,.20), rgba(239,68,68,.08));
   }
-  body[data-theme="reaparr"] .btn.primary,
-  body[data-theme="reaparr"] .btn.good{
-    border-color: rgba(38,224,138,.45);
-    background: linear-gradient(135deg, rgba(38,224,138,.20), rgba(38,224,138,.08));
-  }
-  body[data-theme="reaparr"] .btn.bad{
-    border-color: rgba(255,92,108,.55);
-    background: linear-gradient(135deg, rgba(255,92,108,.20), rgba(255,92,108,.08));
-  }
 
   .field{
-    border: 1px solid var(--line);
-    padding: 10px 12px;
-    background: var(--panel2);
+    padding: 4px 7px;
+    background: var(--BackgroundColor1);
     position: relative;
     min-width: 0;
   }
-  [data-theme="light"] .field{ background: var(--panel); }
 
-  .field label{ display:block; font-size: 12px; color: var(--muted); margin-bottom: 8px; }
+  /* Light theme inputs: ensure borders are visible */
+  body[data-theme="light"] .field input[type=text],
+  body[data-theme="light"] .field input[type=password],
+  body[data-theme="light"] .field input[type=number],
+  body[data-theme="light"] .field select,
+  body[data-theme="light"] .field textarea{
+    border-color: var(--line2);
+    background: var(--FieldinptuColor);
+    color: var(--text);
+  }
+
+  .field label{ display:block; font-size: 14px; color: var(--text); margin-bottom: 8px; }
 
   .field input[type=text],
   .field input[type=password],
@@ -1003,23 +1139,13 @@ BASE_HEAD = """
     width: 100%;
     max-width: 100%;
     min-width: 0;
-    border: 1px solid var(--line2);
+    border: 1px solid var(--BackgroundColor1);
     border-radius: 8px;
-    background: var(--panel);
+    background: var(--FieldinptuColor);
     color: var(--text);
     padding: 10px 10px;
     outline: none;
   }
-
-  body[data-theme="reaparr"] .field input[type=text],
-  body[data-theme="reaparr"] .field input[type=password],
-  body[data-theme="reaparr"] .field input[type=number],
-  body[data-theme="reaparr"] .field select,
-  body[data-theme="reaparr"] .field textarea{ background: rgba(0,0,0,.22); }
-
-  [data-theme="light"] .field input,
-  [data-theme="light"] .field select,
-  [data-theme="light"] .field textarea{ background: #ffffff; }
 
   .field select{
     appearance: none;
@@ -1037,31 +1163,27 @@ BASE_HEAD = """
     background-repeat: no-repeat;
   }
 
-  body[data-theme="dark"] .field select option{ background-color: #1f2937; color: #f1f5f9; }
-  body[data-theme="light"] .field select option{ background-color: #ffffff; color: #0b1220; }
-  body[data-theme="reaparr"] .field select option{ background-color: #0f1620; color: rgba(255,255,255,.92); }
-
   .field input:focus, .field select:focus, .field textarea:focus{
-    border-color: rgba(34,197,94,.55);
-    box-shadow: 0 0 0 3px rgba(34,197,94,.14);
-  }
-  body[data-theme="reaparr"] .field input:focus,
-  body[data-theme="reaparr"] .field select:focus,
-  body[data-theme="reaparr"] .field textarea:focus{
-    border-color: rgba(38,224,138,.55);
-    box-shadow: 0 0 0 3px rgba(38,224,138,.14);
+    border-color: var( --BackgroundColor1);
+    box-shadow: 0 0 0 3px var( --BackgroundColor1);
   }
 
   .checks{ display:flex; flex-direction: column; gap: 10px; margin-top: 4px; }
   .check{
     display:flex; align-items:center; gap:10px;
-    border: 1px solid var(--line);
     padding: 10px 12px;
-    background: var(--panel2);
   }
-  [data-theme="light"] .check{ background: #ffffff; }
   .check input{ transform: scale(1.2); }
 
+  .check input:focus-visible{
+    outline: none;
+    box-shadow: 0 0 0 3px rgba(34,197,94,.35);
+  }
+
+  .check input:disabled{
+    opacity: .45;
+    cursor: not-allowed;
+  }
   .switch{ position: relative; width: var(--switch-w); height: var(--switch-h); display: inline-block; flex: 0 0 auto; }
   .switch input{ opacity: 0; width: 0; height: 0; }
   .slider{
@@ -1090,10 +1212,6 @@ BASE_HEAD = """
     background: linear-gradient(135deg, rgba(34,197,94,.60), rgba(22,163,74,.35));
     border-color: rgba(34,197,94,.55);
   }
-  body[data-theme="reaparr"] .switch input:checked + .slider{
-    background: linear-gradient(135deg, rgba(38,224,138,.60), rgba(22,184,110,.35));
-    border-color: rgba(38,224,138,.55);
-  }
   .switch input:checked + .slider:before{
     transform: translate(var(--switch-travel), -50%);
     background: rgba(255,255,255,.92);
@@ -1106,8 +1224,8 @@ BASE_HEAD = """
     justify-content: center;
   }
   .jobCard{
-    border: 3px solid var(--line);
-    background: var(--panel2);
+    border: 3px solid var(--BackgroundColor1);
+    background: var(--BackgroundColor1);
     box-shadow: var(--shadow);
     overflow:hidden;
     max-width: none;
@@ -1117,18 +1235,15 @@ BASE_HEAD = """
   @media (min-width: 1200px){ .jobsGrid{ grid-template-columns: repeat(3, minmax(300px, 1fr)); gap: 16px; } }
   @media (min-width: 1800px){ .jobsGrid{ grid-template-columns: repeat(4, minmax(300px, 1fr)); gap: 20px; } }
 
-  [data-theme="light"] .jobCard{ background: #ffffff; }
-
   .jobHeader{
     padding: 12px 12px;
     border-bottom: 1px solid var(--line);
-    background: var(--panel2);
+    background: var(--HeaderBackgroundColor);
     display: grid;
     grid-template-columns: 1fr auto 1fr;
     align-items: center;
     gap: 10px;
   }
-  [data-theme="light"] .jobHeader{ background: #f3f4f6; }
 
   .jobHeaderLeft{ justify-self: start; min-width: 0; }
   .jobHeaderCenter{ justify-self: center; }
@@ -1147,13 +1262,12 @@ BASE_HEAD = """
 
   .jobBody{
     padding: 12px 12px;
-    background: var(--panel2);
+    background: var(--BackgroundColor1);
     display: grid;
     grid-template-columns: 1fr 70px;
     gap: 12px;
     align-items: start;
   }
-  [data-theme="light"] .jobBody{ background: #ffffff; }
 
   .jobRail{
     display: flex;
@@ -1199,7 +1313,6 @@ BASE_HEAD = """
     position: relative;
     user-select: none;
   }
-  [data-theme="light"] .appCard{ background:#ffffff; }
 
   .appCardTop{
     display:flex;
@@ -1246,7 +1359,6 @@ BASE_HEAD = """
   }
   .pill.good{ border-color: rgba(34,197,94,.45); }
   .pill.bad{ border-color: rgba(239,68,68,.55); background: rgba(239,68,68,.10); }
-  body[data-theme="reaparr"] .pill.good{ border-color: rgba(38,224,138,.45); background: rgba(38,224,138,.10); }
 
   .addAppCard{
     align-items: center;
@@ -1295,10 +1407,6 @@ BASE_HEAD = """
     box-shadow: 0 0 0 3px rgba(34,197,94,.10), 0 10px 22px rgba(0,0,0,.22);
     transform: translateY(-1px);
   }
-  body[data-theme="reaparr"] .pickTile:hover{
-    border-color: rgba(38,224,138,.55);
-    box-shadow: 0 0 0 3px rgba(38,224,138,.10), 0 10px 22px rgba(0,0,0,.45);
-  }
   .pickTop{
     display: flex;
     align-items: center;
@@ -1342,7 +1450,7 @@ BASE_HEAD = """
     z-index: 1000;
     padding: 18px;
   }
-  
+
   /* ---------------------------
      Modal open: lock background UI
      --------------------------- */
@@ -1368,22 +1476,12 @@ BASE_HEAD = """
   body.modalOpen .modalBack{
     pointer-events: auto;
   }
-
-  body.modalOpen .pageHeader,
-  body.modalOpen .sidebar,
-  body.modalOpen .mainArea{
-    pointer-events: none;
-  }
-
-  body.modalOpen .modalBack{
-    pointer-events: auto;
-  }
-
+  
   body.modalOpen .pageContent,
   body.modalOpen .card .bd{
     overflow: hidden !important;
   }  
-  
+
   .modalBack.jobsModal{
     z-index: 1010;
   }
@@ -1394,8 +1492,8 @@ BASE_HEAD = """
 
   .modal{
     width: min(475px, 100%);
-    border: 3px solid var(--line);
-    background: var(--panel);
+    border: 3px solid var(--BackgroundColor1);
+    background: var(--BackgroundColor1);
     box-shadow: var(--shadow);
     overflow:hidden;
     max-height: calc(100vh - 315px);
@@ -1405,15 +1503,15 @@ BASE_HEAD = """
   }
   .modal .mh{
     padding: 14px 16px;
-    border-bottom: 1px solid var(--line);
+    border-bottom: 3px solid var(--BackgroundColor1);
     display:flex;
     align-items:center;
     justify-content: space-between;
     gap: 12px;
-    background: var(--panel2);
+    background: var(--HeaderBackgroundColor);
+    overflow: auto;
     flex: 0 0 auto;
   }
-  [data-theme="light"] .modal .mh{ background: #f3f4f6; }
   .modal .mh h3{ margin:0; font-size: 14px; letter-spacing: .2px; }
 
   .modal form{
@@ -1425,7 +1523,7 @@ BASE_HEAD = """
 
   .modal .mb{
     padding: 14px 16px;
-    background: var(--panel);
+    background: var(--BackgroundColor1);
     overflow: auto;
     flex: 1 1 auto;
     min-height: 0;
@@ -1433,14 +1531,13 @@ BASE_HEAD = """
   }
   .modal .mf{
     padding: 14px 16px;
-    border-top: 1px solid var(--line);
+    border-top: 1px solid var(--BackgroundColor1);
     display:flex;
     justify-content: flex-end;
     gap: 10px;
-    background: var(--panel2);
+    background: var(--BackgroundColor1);
     flex: 0 0 auto;
   }
-  [data-theme="light"] .modal .mf{ background: #f3f4f6; }
 
   table{ width:100%; border-collapse: collapse; overflow:hidden; border: 1px solid var(--line); }
   th, td{ padding: 10px 10px; border-bottom: 1px solid var(--line); font-size: var(--fs-1); vertical-align: top; }
@@ -1474,8 +1571,6 @@ BASE_HEAD = """
   }
   .toast.ok{ border-color: rgba(34,197,94,.45); }
   .toast.err{ border-color: rgba(239,68,68,.55); }
-  body[data-theme="reaparr"] .toast.ok{ border-color: rgba(38,224,138,.45); }
-  body[data-theme="reaparr"] .toast.err{ border-color: rgba(255,92,108,.55); }
   @keyframes toastIn { to { opacity: 1; transform: translateY(0); } }
   @keyframes toastOut { to { opacity: 0; transform: translateY(10px); } }
 
@@ -1537,8 +1632,6 @@ BASE_HEAD = """
     padding: 10px 10px;
     outline: none;
   }
-  body[data-theme="reaparr"] .appCtrl input[type=text],
-  body[data-theme="reaparr"] .appCtrl input[type=password]{ background: rgba(0,0,0,.22); }
   [data-theme="light"] .appCtrl input[type=text],
   [data-theme="light"] .appCtrl input[type=password]{ background: #ffffff; }
 
@@ -1556,7 +1649,7 @@ BASE_HEAD = """
     gap: 10px;
     width: 100%;
   }
-  
+
   /* When Delete is visible, pin it left while keeping the other buttons right */
   .appFooter > .btn.bad{
     margin-right: auto;
@@ -1574,6 +1667,151 @@ BASE_HEAD = """
   function $(id){ return document.getElementById(id); }
   function setVal(id, v){ const el = $(id); if (el) el.value = v; }
   function setChecked(id, v){ const el = $(id); if (el) el.checked = !!v; }
+
+   // -----------------------
+   // FakeSelect (custom dropdown) - keeps native <select> hidden for form submit
+   // -----------------------
+   function initFakeSelect(fake){
+     if (!fake) return;
+     const selectId = fake.getAttribute("data-for");
+     const native = document.getElementById(selectId);
+     if (!native) return;
+
+     const btn = fake.querySelector(".fakeSelectBtn");
+     const val = fake.querySelector(".fakeSelectValue");
+     const menu = fake.querySelector(".fakeSelectMenu");
+
+     function syncDisabled(){
+       const dis = !!native.disabled;
+       if (btn) btn.disabled = dis;
+       fake.classList.toggle("disabled", dis);
+     }
+
+     function close(){
+       fake.classList.remove("open");
+       if (btn) btn.setAttribute("aria-expanded", "false");
+     }
+
+     function open(){
+       if (native.disabled) return;
+       buildMenu();
+       fake.classList.add("open");
+       if (btn) btn.setAttribute("aria-expanded", "true");
+       if (menu) menu.focus();
+     }
+
+     function setSelectedByValue(v){
+       native.value = v;
+       native.dispatchEvent(new Event("change", { bubbles:true }));
+       buildMenu(); // refresh active/selected
+     }
+
+     function buildMenu(){
+       if (!menu) return;
+       menu.innerHTML = "";
+       syncDisabled();
+
+       const opts = Array.from(native.options || []);
+       for (const o of opts){
+         const item = document.createElement("div");
+         item.className = "fakeOpt";
+         item.setAttribute("role","option");
+         item.setAttribute("data-value", o.value);
+
+         const isDisabled = !!o.disabled || (o.value === "" && o.disabled);
+         if (isDisabled) item.setAttribute("data-disabled","1");
+
+         const isSelected = (native.value === o.value);
+         item.setAttribute("aria-selected", isSelected ? "true" : "false");
+         if (isSelected) item.classList.add("active");
+
+         item.textContent = o.textContent;
+         item.addEventListener("click", () => {
+           if (isDisabled) return;
+           setSelectedByValue(o.value);
+           close();
+           if (btn) btn.focus();
+         });
+         menu.appendChild(item);
+       }
+
+       // button text
+       const cur = native.options[native.selectedIndex];
+       if (val) val.textContent = cur ? cur.textContent : "-- Select --";
+     }
+
+     // initial
+     buildMenu();
+
+     if (btn){
+       btn.addEventListener("click", (e) => {
+         e.preventDefault();
+         if (fake.classList.contains("open")) close();
+         else open();
+       });
+     }
+
+     // outside click close
+     document.addEventListener("mousedown", (e) => {
+       if (!fake.contains(e.target)) close();
+     });
+
+     // keyboard in menu
+     if (menu){
+       menu.addEventListener("keydown", (e) => {
+         const items = Array.from(menu.querySelectorAll(".fakeOpt"))
+           .filter(x => x.getAttribute("data-disabled") !== "1");
+         if (!items.length) return;
+
+         const active = menu.querySelector(".fakeOpt.active") || items[0];
+         let idx = items.indexOf(active);
+
+         if (e.key === "Escape"){
+           e.preventDefault();
+           close();
+           if (btn) btn.focus();
+           return;
+         }
+         if (e.key === "ArrowDown"){
+           e.preventDefault();
+           idx = Math.min(items.length - 1, idx + 1);
+           items.forEach(x => x.classList.remove("active"));
+           items[idx].classList.add("active");
+           items[idx].scrollIntoView({ block:"nearest" });
+           return;
+         }
+         if (e.key === "ArrowUp"){
+           e.preventDefault();
+           idx = Math.max(0, idx - 1);
+           items.forEach(x => x.classList.remove("active"));
+           items[idx].classList.add("active");
+           items[idx].scrollIntoView({ block:"nearest" });
+           return;
+         }
+         if (e.key === "Enter" || e.key === " "){
+           e.preventDefault();
+           const v = items[idx].getAttribute("data-value");
+           setSelectedByValue(v);
+           close();
+           if (btn) btn.focus();
+           return;
+         }
+       });
+     }
+
+     // if native changes (your code rebuilds options), refresh fake
+     native.addEventListener("change", () => buildMenu());
+
+     // expose hooks for manual rebuild / set
+     fake.__rebuild = buildMenu;
+     fake.__set = setSelectedByValue;
+     fake.__syncDisabled = syncDisabled;
+   }
+
+   function initAllFakeSelects(root){
+     const scope = root || document;
+     scope.querySelectorAll(".fakeSelect").forEach(initFakeSelect);
+   }
   function updateModalState(){
     const backs = document.querySelectorAll(".modalBack");
     let anyOpen = false;
@@ -1591,7 +1829,7 @@ BASE_HEAD = """
     if (el) el.style.display = "flex";
     updateModalState();
   }
-  
+
   function hideModal(id){
     const el = $(id);
     if (el) el.style.display = "none";
@@ -1968,15 +2206,22 @@ BASE_HEAD = """
       ensureSelectOption("job_tag", selectedValue, " (missing)");
       setVal("job_tag", selectedValue);
     }
+      // refresh fake select UI
+      const fake = $("fake_job_tag");
+      if (fake && fake.__rebuild) fake.__rebuild();
   }
 
   function updateSonarrModeVisibility(appId){
     const wrap = $("sonarrDeleteModeField");
     const sel = $("job_sonarr_mode");
+    const fakeWrap = $("fakeWrap_job_sonarr_mode");
     const t = (window.__APP_TYPES && window.__APP_TYPES[appId]) ? window.__APP_TYPES[appId] : "radarr";
     const isSonarr = (t === "sonarr");
     if (wrap) wrap.style.display = isSonarr ? "" : "none";
+    if (fakeWrap) fakeWrap.style.display = isSonarr ? "" : "none";
     if (sel) sel.disabled = !isSonarr;
+    const fake = $("fake_job_sonarr_mode");
+    if (fake && fake.__syncDisabled) fake.__syncDisabled();
   }
 
   function onJobAppChanged(){
@@ -2137,6 +2382,9 @@ BASE_HEAD = """
       if (v === "1") document.body.classList.add("sbCollapsed");
     } catch(e){}
 
+    // init FakeSelects
+    initAllFakeSelects(document);
+
     // Prevent clicks on interactive elements inside an appCard (links/buttons)
     // from also triggering the card's click handler (which opens Edit).
     document.addEventListener("click", (e) => {
@@ -2173,15 +2421,15 @@ BASE_HEAD = """
 def shell(page_title: str, active: str, body: str):
     cfg = load_config()
     theme = (cfg.get("UI_THEME") or "dark").lower()
-    if theme not in ("dark", "light", "reaparr"):
+    if theme not in ("dark", "light"):
         theme = "dark"
 
     def sb_item(name, href, key):
         cls = "sbItem active" if active == key else "sbItem"
         return f'<a class="{cls}" href="{href}"><span class="sbText">{safe_html(name)}</span></a>'
 
-    next_theme = {"dark": "light", "light": "reaparr", "reaparr": "dark"}.get(theme, "dark")
-    next_label = {"dark": "Dark", "light": "Light", "reaparr": "Reaparr"}.get(next_theme, "Dark")
+    next_theme = "light" if theme == "dark" else "dark"
+    next_label = "Light" if theme == "dark" else "Dark"
 
     theme_btn_sidebar = f"""
       <form method="post" action="/toggle-theme">
@@ -2265,7 +2513,7 @@ def serve_logo_assets(filename):
 def toggle_theme():
     cfg = load_config()
     cur = (cfg.get("UI_THEME") or "dark").lower()
-    nxt = {"dark": "light", "light": "reaparr", "reaparr": "dark"}.get(cur, "dark")
+    nxt = "light" if cur == "dark" else "dark"
     cfg["UI_THEME"] = nxt
     save_config(cfg)
     flash(f"Theme set to {cfg['UI_THEME']} ✔", "success")
@@ -2302,12 +2550,19 @@ def settings():
 
               <div class="field" style="margin-bottom:12px;">
                 <label>UI Theme</label>
-                <select name="UI_THEME">
-                  <option value="dark" {"selected" if cfg.get("UI_THEME", "dark") == "dark" else ""}>Dark</option>
-                  <option value="light" {"selected" if cfg.get("UI_THEME", "dark") == "light" else ""}>Light</option>
-                  <option value="reaparr" {"selected" if cfg.get("UI_THEME", "dark") == "reaparr" else ""}>Reaparr</option>
-                </select>
-              </div>
+                 <select class="nativeSelect" id="settings_theme" name="UI_THEME">
+                   <option value="dark" {"selected" if cfg.get("UI_THEME", "dark") == "dark" else ""}>Dark</option>
+                   <option value="light" {"selected" if cfg.get("UI_THEME", "dark") == "light" else ""}>Light</option>
+                 </select>
+
+                 <div class="fakeSelect" data-for="settings_theme" id="fake_settings_theme">
+                   <button type="button" class="fakeSelectBtn" aria-haspopup="listbox" aria-expanded="false">
+                     <span class="fakeSelectValue">Theme</span>
+                     <span class="fakeSelectChevron" aria-hidden="true"></span>
+                   </button>
+                   <div class="fakeSelectMenu" role="listbox" tabindex="-1"></div>
+                 </div>
+               </div>
 
               <div class="btnrow" style="margin-top:14px;">
                 <button class="btn primary" type="submit">Save Settings</button>
@@ -2331,7 +2586,7 @@ def save_settings():
     cfg["HTTP_TIMEOUT_SECONDS"] = clamp_int(request.form.get("HTTP_TIMEOUT_SECONDS") or 30, 5, 300, 30)
     cfg["UI_THEME"] = (request.form.get("UI_THEME") or cfg.get("UI_THEME", "dark")).lower()
 
-    if cfg["UI_THEME"] not in ("dark", "light", "reaparr"):
+    if cfg["UI_THEME"] not in ("dark", "light"):
         cfg["UI_THEME"] = "dark"
 
     save_config(cfg)
@@ -2829,8 +3084,11 @@ def jobs_page():
     apps_all = [normalize_app(a) for a in (cfg.get("APPS") or [])]
     ready_apps = [a for a in apps_all if is_app_ready(cfg, a["id"])]
 
-    tags_map = {a["id"]: get_tag_labels(cfg, a["id"]) for a in ready_apps}
-    types_map = {a["id"]: a.get("type", "radarr") for a in ready_apps}
+    tags_map = {}
+    types_map = {}
+    for a in ready_apps:
+        types_map[a["id"]] = a.get("type", "radarr")
+        tags_map[a["id"]] = get_tag_labels(cfg, a["id"])
 
     default_app_id = ready_apps[0]["id"] if ready_apps else ""
 
@@ -2873,17 +3131,31 @@ def jobs_page():
 
             <div class="field" style="margin-bottom:12px;">
               <label>App</label>
-              <select name="APP_ID" id="job_app" onchange="onJobAppChanged()"
-                      data-default-app="{safe_html(default_app_id)}" {app_disabled_attr} required>
-                {app_options_html}
-              </select>
+               <select class="nativeSelect" name="APP_ID" id="job_app" onchange="onJobAppChanged()"
+                       data-default-app="{safe_html(default_app_id)}" {app_disabled_attr} required>
+                 {app_options_html}
+               </select>
+               <div class="fakeSelect" data-for="job_app" id="fake_job_app">
+                 <button type="button" class="fakeSelectBtn" aria-haspopup="listbox" aria-expanded="false">
+                   <span class="fakeSelectValue">Select app</span>
+                   <span class="fakeSelectChevron" aria-hidden="true"></span>
+                 </button>
+                 <div class="fakeSelectMenu" role="listbox" tabindex="-1"></div>
+               </div>
             </div>
 
             <div class="field" style="margin-bottom:12px;">
               <label>Tag Label</label>
-              <select name="TAG_LABEL" id="job_tag" required>
-                <option value="" selected disabled>-- Select a tag --</option>
-              </select>
+               <select class="nativeSelect" name="TAG_LABEL" id="job_tag" required>
+                 <option value="" selected disabled>-- Select a tag --</option>
+               </select>
+               <div class="fakeSelect" data-for="job_tag" id="fake_job_tag">
+                 <button type="button" class="fakeSelectBtn" aria-haspopup="listbox" aria-expanded="false">
+                   <span class="fakeSelectValue">-- Select a tag --</span>
+                   <span class="fakeSelectChevron" aria-hidden="true"></span>
+                 </button>
+                 <div class="fakeSelectMenu" role="listbox" tabindex="-1"></div>
+               </div>
             </div>
 
             <div class="field" style="margin-bottom:12px;">
@@ -2893,38 +3165,68 @@ def jobs_page():
 
             <div class="field" id="sonarrDeleteModeField" style="display:none; margin-bottom:12px;">
               <label>Sonarr Delete Mode</label>
-              <select name="SONARR_DELETE_MODE" id="job_sonarr_mode">
-                {sonarr_mode_opts}
-              </select>
+               <select class="nativeSelect" name="SONARR_DELETE_MODE" id="job_sonarr_mode">
+                 {sonarr_mode_opts}
+               </select>
+               <div id="fakeWrap_job_sonarr_mode">
+                 <div class="fakeSelect" data-for="job_sonarr_mode" id="fake_job_sonarr_mode">
+                   <button type="button" class="fakeSelectBtn" aria-haspopup="listbox" aria-expanded="false">
+                     <span class="fakeSelectValue">Select mode</span>
+                     <span class="fakeSelectChevron" aria-hidden="true"></span>
+                   </button>
+                   <div class="fakeSelectMenu" role="listbox" tabindex="-1"></div>
+                 </div>
+               </div>
             </div>
 
             <div class="field" style="margin-bottom:12px;">
               <label>Scheduler Day</label>
-              <select name="SCHED_DAY" id="job_day">
-                <option value="daily">Daily</option>
-                <option value="mon">Monday</option>
-                <option value="tue">Tuesday</option>
-                <option value="wed">Wednesday</option>
-                <option value="thu">Thursday</option>
-                <option value="fri">Friday</option>
-                <option value="sat">Saturday</option>
-                <option value="sun">Sunday</option>
-              </select>
+               <select class="nativeSelect" name="SCHED_DAY" id="job_day">
+                 <option value="daily">Daily</option>
+                 <option value="mon">Monday</option>
+                 <option value="tue">Tuesday</option>
+                 <option value="wed">Wednesday</option>
+                 <option value="thu">Thursday</option>
+                 <option value="fri">Friday</option>
+                 <option value="sat">Saturday</option>
+                 <option value="sun">Sunday</option>
+               </select>
+               <div class="fakeSelect" data-for="job_day" id="fake_job_day">
+                 <button type="button" class="fakeSelectBtn" aria-haspopup="listbox" aria-expanded="false">
+                   <span class="fakeSelectValue">Daily</span>
+                   <span class="fakeSelectChevron" aria-hidden="true"></span>
+                 </button>
+                 <div class="fakeSelectMenu" role="listbox" tabindex="-1"></div>
+               </div>
             </div>
 
             <div class="field" style="margin-bottom:12px;">
               <label>Scheduler Time</label>
-              <select name="SCHED_HOUR" id="job_hour">
-                {hour_opts}
-              </select>
+               <select class="nativeSelect" name="SCHED_HOUR" id="job_hour">
+                 {hour_opts}
+               </select>
+               <div class="fakeSelect" data-for="job_hour" id="fake_job_hour">
+                 <button type="button" class="fakeSelectBtn" aria-haspopup="listbox" aria-expanded="false">
+                   <span class="fakeSelectValue">03:00</span>
+                   <span class="fakeSelectChevron" aria-hidden="true"></span>
+                 </button>
+                 <div class="fakeSelectMenu" role="listbox" tabindex="-1"></div>
+               </div>
             </div>
 
             <div class="field" style="margin-bottom:12px;">
               <label>Enabled</label>
-              <select name="enabled" id="job_enabled">
-                <option value="1">Enabled</option>
-                <option value="0">Disabled</option>
-              </select>
+               <select class="nativeSelect" name="enabled" id="job_enabled">
+                 <option value="1">Enabled</option>
+                 <option value="0">Disabled</option>
+               </select>
+               <div class="fakeSelect" data-for="job_enabled" id="fake_job_enabled">
+                 <button type="button" class="fakeSelectBtn" aria-haspopup="listbox" aria-expanded="false">
+                   <span class="fakeSelectValue">Enabled</span>
+                   <span class="fakeSelectChevron" aria-hidden="true"></span>
+                 </button>
+                 <div class="fakeSelectMenu" role="listbox" tabindex="-1"></div>
+               </div>
             </div>
 
             <div class="checks" style="margin-top:12px;">
@@ -3393,11 +3695,6 @@ def dashboard():
             <div class="card">
               <div class="hd">
                 <h2>Dashboard</h2>
-                <div class="btnrow">
-                  <a class="btn" href="/jobs">Jobs</a>
-                  <a class="btn" href="/apps">Apps</a>
-                  <a class="btn" href="/settings">Settings</a>
-                </div>
               </div>
               <div class="bd">
                 <div class="muted">No runs recorded yet.</div>
@@ -3413,11 +3710,6 @@ def dashboard():
         <div class="card">
           <div class="hd">
             <h2>Dashboard</h2>
-            <div class="btnrow">
-              <a class="btn" href="/jobs">Jobs</a>
-              <a class="btn" href="/apps">Apps</a>
-              <a class="btn" href="/settings">Settings</a>
-            </div>
           </div>
           <div class="bd">
             <div class="muted">Last run status: <b>{safe_html(status_text)}</b></div>
