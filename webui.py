@@ -24,9 +24,6 @@ app = Flask(__name__)
 app.secret_key = os.environ.get("FLASK_SECRET_KEY", "mediareaparr-secret")
 
 
-# ----------------------------
-# Utils
-# ----------------------------
 def env_default(name: str, default: str = "") -> str:
     return os.environ.get(name, default)
 
@@ -222,6 +219,9 @@ def job_defaults() -> Dict[str, Any]:
         "DELETE_FILES": True,
         "ADD_IMPORT_EXCLUSION": False,
         "SONARR_DELETE_MODE": "episodes_only",
+        # Radarr-only: delete movie if avg score below threshold
+        "RADARR_SCORE_FILTER_ENABLED": False,
+        "RADARR_MIN_AVG_SCORE": 60,  # 0-100
     }
 
 
@@ -250,6 +250,10 @@ def normalize_job(j: Dict[str, Any]) -> Dict[str, Any]:
     if mode not in SONARR_DELETE_MODES:
         mode = "episodes_only"
     d["SONARR_DELETE_MODE"] = mode
+
+    # Radarr-only score filter
+    d["RADARR_SCORE_FILTER_ENABLED"] = bool(d.get("RADARR_SCORE_FILTER_ENABLED", False))
+    d["RADARR_MIN_AVG_SCORE"] = clamp_int(d.get("RADARR_MIN_AVG_SCORE", 60), 0, 100, 60)
 
     return d
 
@@ -434,6 +438,46 @@ def get_tag_labels(cfg: Dict[str, Any], app_id: str) -> List[str]:
         # App is offline / timeout / bad gateway / etc.
         return []
 
+def _score_to_0_100(v) -> Optional[int]:
+    try:
+        if v is None:
+            return None
+        f = float(v)
+        # If it's a 0–10 style rating, convert to 0–100
+        if 0 <= f <= 10:
+            return int(round(f * 10))
+        # If it's already 0–100
+        if 0 <= f <= 100:
+            return int(round(f))
+    except Exception:
+        return None
+    return None
+
+
+def radarr_movie_score_0_100(movie: Dict[str, Any]) -> Optional[int]:
+    ratings = movie.get("ratings") or {}
+    values = []
+
+    for src in ratings.values():
+        if not isinstance(src, dict):
+            continue
+        v = src.get("value")
+        if v is None:
+            continue
+        try:
+            v = float(v)
+        except Exception:
+            continue
+
+        if 0 <= v <= 10:
+            values.append(v * 10)
+        elif 0 <= v <= 100:
+            values.append(v)
+
+    if not values:
+        return None
+
+    return int(round(sum(values) / len(values)))
 
 # ----------------------------
 # Preview candidates (uses selected app instance)
@@ -446,6 +490,10 @@ def preview_candidates_radarr(cfg: Dict[str, Any], app_obj: Dict[str, Any], job:
     days_old = int(job.get("DAYS_OLD", 30))
     now = datetime.now(timezone.utc)
     cutoff = now - timedelta(days=days_old)
+
+    # Radarr score filter (preview should match delete logic)
+    score_filter_enabled = bool(job.get("RADARR_SCORE_FILTER_ENABLED", False))
+    min_score = clamp_int(job.get("RADARR_MIN_AVG_SCORE", 60), 0, 100, 60)
 
     tags = app_get(cfg, app_obj, "/api/v3/tag")
     tag = next((t for t in tags if t.get("label") == tag_label), None)
@@ -463,17 +511,32 @@ def preview_candidates_radarr(cfg: Dict[str, Any], app_obj: Dict[str, Any], job:
         added = parse_iso_date(added_str) if added_str else None
         if not added:
             continue
-        if added < cutoff:
-            age_days = int((now - added).total_seconds() // 86400)
-            candidates.append({
-                "kind": "movie",
-                "id": m.get("id"),
-                "title": m.get("title"),
-                "year": m.get("year"),
-                "added": added_str,
-                "age_days": age_days,
-                "path": m.get("path"),
-            })
+        if added >= cutoff:
+            continue
+
+        # Compute score once so we can filter + display consistently
+        score = radarr_movie_score_0_100(m)
+
+        # Apply score gating (only include items that would be deleted)
+        if score_filter_enabled:
+            # If no score is available, skip from preview to avoid false positives
+            if score is None:
+                continue
+            # Movies scoring >= threshold should NOT be shown in delete preview
+            if score >= min_score:
+                continue
+
+        age_days = int((now - added).total_seconds() // 86400)
+        candidates.append({
+            "kind": "movie",
+            "id": m.get("id"),
+            "title": m.get("title"),
+            "year": m.get("year"),
+            "added": added_str,
+            "age_days": age_days,
+            "score": score,
+            "path": m.get("path"),
+        })
 
     candidates.sort(key=lambda x: x["age_days"], reverse=True)
     return {"error": None, "candidates": candidates, "tag_id": tag_id, "cutoff": cutoff.isoformat()}
@@ -623,7 +686,7 @@ BASE_HEAD = """
     accent-color: var(--accent);
   }
 
-  body[data-theme="light"] a{ color: #0f172a; }
+  body[data-theme="light"] a,
   body[data-theme="light"] a:hover{ color: #0f172a; }
 
   body[data-theme="light"] .btn{
@@ -728,14 +791,10 @@ BASE_HEAD = """
      =========================== */
 
   /* ---------- Firefox ---------- */
-  /* ---------- Firefox ---------- */
-  body[data-theme="dark"] *{
-    scrollbar-width: thin;
-    scrollbar-color: var(--accent) var(--panel2);
-  }
+  body[data-theme="dark"] *,
   body[data-theme="light"] *{
     scrollbar-width: thin;
-    scrollbar-color var(--accent) var(--panel2);
+    scrollbar-color: var(--accent) var(--panel2);
   }
 
   /* ---------- WebKit (Chrome / Edge / Safari) ---------- */
@@ -750,29 +809,25 @@ BASE_HEAD = """
   }
 
   /* DARK THEME — green thumb */
-  body[data-theme="light"] ::-webkit-scrollbar-thumb{
-    background: var(--FieldinptuColor);
-    );
-    border-radius: 8px;
-    border: 2px solid var(--BackgroundColor1);
+  body[data-theme="dark"] ::-webkit-scrollbar-thumb{
+    background: rgba(167,213,65,.45);
+     border-radius: 8px;
+    border: 2px solid var(--panel2);
   }
 
   body[data-theme="dark"] ::-webkit-scrollbar-thumb:hover{
-    background: var(--FieldinptuColor);
-    );
+    background: rgba(167,213,65,.65);
   }
 
-  /* LIGHT THEME — neutral grey thumb */
+  /* LIGHT THEME — neutral thumb */
   body[data-theme="light"] ::-webkit-scrollbar-thumb{
-    background: var(--FieldinptuColor);
-    );
-    border-radius: 8px;
-    border: 2px solid var(--BackgroundColor1);
+   background: var(--FieldinptuColor);
+   border-radius: 8px;
+   border: 2px solid var(--BackgroundColor1);
   }
 
   body[data-theme="light"] ::-webkit-scrollbar-thumb:hover{
-    background: var(--FieldinptuColor);
-    );
+    background: rgba(148,163,184,.85);
   }
 
   body{
@@ -907,8 +962,11 @@ BASE_HEAD = """
   }
 
   /* Light theme sidebar items should read as dark text */
-  body[data-theme="light"] button.sbItem{ color: var(--text); }
-  body[data-theme="light"] .sbItem{ color: var(--text); }
+  body[data-theme="light"] button.sbItem,
+  body[data-theme="light"] .sbItem{
+    color: var(--text);
+  }
+  
   body[data-theme="light"] .sbItem:hover{ color: var(--accent2); }
 
   .sbNav{
@@ -1164,8 +1222,8 @@ BASE_HEAD = """
   }
 
   .field input:focus, .field select:focus, .field textarea:focus{
-    border-color: var( --BackgroundColor1);
-    box-shadow: 0 0 0 3px var( --BackgroundColor1);
+    border-color: var(--BackgroundColor1);
+    box-shadow: 0 0 0 3px var(--BackgroundColor1);
   }
 
   .checks{ display:flex; flex-direction: column; gap: 10px; margin-top: 4px; }
@@ -1183,6 +1241,34 @@ BASE_HEAD = """
   .check input:disabled{
     opacity: .45;
     cursor: not-allowed;
+  }
+
+  /* Radarr score filter row (match existing field/check styling) */
+  .scoreRow{
+    display:flex;
+    gap:10px;
+    align-items:center;
+    flex-wrap:wrap;
+  }
+  .scoreInline{
+    display:flex;
+    align-items:center;
+    gap:10px;
+    margin:0;
+    flex:1 1 auto;
+  }
+
+.scoreNumInput{
+  width:90px;
+  min-width:90px;
+}
+  .scoreRow .scoreCheck{
+    flex: 1 1 260px;
+    min-width: 240px;
+  }
+  .scoreRow .scoreNum{
+    width: 140px;
+    min-width: 140px;
   }
   .switch{ position: relative; width: var(--switch-w); height: var(--switch-h); display: inline-block; flex: 0 0 auto; }
   .switch input{ opacity: 0; width: 0; height: 0; }
@@ -1917,7 +2003,6 @@ BASE_HEAD = """
     const st = $("appTestStatus_r");
     if (st) st.textContent = "";
 
-    setVal("appModalTitle_r", "Add Application - Radarr");
     // (we cannot setVal on h3; do via textContent)
     const t = $("appModalTitle_r"); if (t) t.textContent = "Add Application - Radarr";
 
@@ -2157,10 +2242,10 @@ BASE_HEAD = """
   }
 
   function pickAppType(t){
-    t = (t || "radarr").toLowerCase();
-    hideModal("appPickBack");
-    if (t === "sonarr") openSonarrAdd();
-    else openRadarrAdd();
+  t = (t || "radarr").toLowerCase();
+  hideModal("appPickBack");
+  if (t === "sonarr") openSonarrAdd();
+  else openRadarrAdd();
   }
 
   function appMoreInfo(t){
@@ -2224,11 +2309,23 @@ BASE_HEAD = """
     if (fake && fake.__syncDisabled) fake.__syncDisabled();
   }
 
+   function updateRadarrScoreVisibility(appId){
+     const wrap = $("radarrScoreField");
+     const cb = $("job_score_enabled");
+     const num = $("job_score_min");
+     const t = (window.__APP_TYPES && window.__APP_TYPES[appId]) ? window.__APP_TYPES[appId] : "radarr";
+     const isRadarr = (t === "radarr");
+     if (wrap) wrap.style.display = isRadarr ? "" : "none";
+     if (cb) cb.disabled = !isRadarr;
+     if (num) num.disabled = !isRadarr;
+   }
+
   function onJobAppChanged(){
     const appSel = $("job_app");
     const appId = appSel ? (appSel.value || "") : "";
     rebuildTagOptions(appId, "");
     updateSonarrModeVisibility(appId);
+    updateRadarrScoreVisibility(appId);
     setTimeout(jobModalUpdateDirty, 0);
   }
 
@@ -2249,6 +2346,7 @@ BASE_HEAD = """
 
     rebuildTagOptions(actualApp, "");
     updateSonarrModeVisibility(actualApp);
+    updateRadarrScoreVisibility(actualApp);
 
     setVal("job_sonarr_mode", "episodes_only");
     setVal("job_days", "30");
@@ -2258,6 +2356,10 @@ BASE_HEAD = """
     setChecked("job_delete", true);
     setChecked("job_excl", false);
     setVal("job_enabled", "1");
+
+    // Radarr score filter defaults
+    setChecked("job_score_enabled", false);
+    setVal("job_score_min", "60");
 
     const t = $("jobTitle");
     if (t) t.textContent = "Add Job";
@@ -2279,6 +2381,7 @@ BASE_HEAD = """
     const tag = btn.getAttribute("data-tag") || "";
     rebuildTagOptions(appId, tag);
     updateSonarrModeVisibility(appId);
+    updateRadarrScoreVisibility(appId);
 
     const smode = btn.getAttribute("data-sonarr-mode") || "episodes_only";
     setVal("job_sonarr_mode", smode);
@@ -2290,6 +2393,10 @@ BASE_HEAD = """
     setChecked("job_delete", (btn.getAttribute("data-del") || "1") === "1");
     setChecked("job_excl", (btn.getAttribute("data-excl") || "0") === "1");
     setVal("job_enabled", (btn.getAttribute("data-enabled") || "1"));
+
+    // Radarr score filter
+    setChecked("job_score_enabled", (btn.getAttribute("data-score-en") || "0") === "1");
+    setVal("job_score_min", btn.getAttribute("data-score-min") || "60");
 
     const t = $("jobTitle");
     if (t) t.textContent = "Edit Job";
@@ -2597,52 +2704,6 @@ def save_settings():
 # ----------------------------
 # Apps page + modals
 # ----------------------------
-def app_selector_modal_html() -> str:
-    return """
-    <div class="modalBack" id="appPickBack">
-      <div class="modal" role="dialog" aria-modal="true" aria-labelledby="appPickTitle" style="width:min(520px,100%);">
-        <div class="mh">
-          <h3 id="appPickTitle">Add Application</h3>
-          <button class="modalCloseX" type="button" onclick="hideModal('appPickBack')" aria-label="Close">×</button>
-        </div>
-        <div class="mb">
-          <div class="pickGrid">
-            <div class="pickTile" role="button" tabindex="0"
-                 onclick="pickAppType('radarr')"
-                 onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();pickAppType('radarr');}">
-              <div class="pickTop">
-                <div class="pickTitle">Radarr</div>
-                <span class="pill good">Movies</span>
-              </div>
-              <div class="pickMeta">Movie library manager. Cleanup by <b>tag</b> + <b>age</b>.</div>
-              <div class="pickActions">
-                <button class="btn pickMini" type="button" onclick="event.stopPropagation(); appMoreInfo('radarr')">Info</button>
-                <span class="muted" style="font-size:11px;">Add →</span>
-              </div>
-            </div> 
-            <div class="pickTile" role="button" tabindex="0"
-                 onclick="pickAppType('sonarr')"
-                 onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();pickAppType('sonarr');}">
-              <div class="pickTop">
-                <div class="pickTitle">Sonarr</div>
-                <span class="pill good">Series</span>
-              </div>
-              <div class="pickMeta">Series library manager. Cleanup by <b>tag</b> + <b>age</b> + delete mode.</div>
-              <div class="pickActions">
-                <button class="btn pickMini" type="button" onclick="event.stopPropagation(); appMoreInfo('sonarr')">Info</button>
-                <span class="muted" style="font-size:11px;">Add →</span>
-              </div>
-            </div>
-          </div>                     
-        </div>
-        <div class="mf">
-          <button class="btn" type="button" onclick="hideModal('appPickBack')">Close</button>
-        </div>
-      </div>
-    </div>
-    """
-
-
 def app_modals_html(cfg: Dict[str, Any], usage: Dict[str, int]) -> str:
     cfg_js = {
         "APPS": [normalize_app(a) for a in (cfg.get("APPS") or [])],
@@ -2657,6 +2718,55 @@ def app_modals_html(cfg: Dict[str, Any], usage: Dict[str, int]) -> str:
     <form id="appDeleteForm" method="post" action="/apps/delete" style="display:none;">
       <input type="hidden" id="app_delete_id" name="APP_ID" value="">
     </form>
+
+    <!-- ADD APP PICKER (this was missing, so the + card had nothing to open) -->
+    <div class="modalBack" id="appPickBack">
+      <div class="modal" role="dialog" aria-modal="true" aria-labelledby="appPickTitle">
+        <div class="mh">
+          <h3 id="appPickTitle">Add Application</h3>
+          <button class="modalCloseX" type="button" onclick="hideModal('appPickBack')" aria-label="Close">×</button>
+        </div>
+        <div class="mb">
+          <div class="muted" style="margin-bottom:10px;">
+            Choose what you want to connect.
+          </div>
+
+          <div class="pickGrid">
+            <div class="pickTile" role="button" tabindex="0"
+                 onclick="pickAppType('radarr')"
+                 onkeydown="if(event.key==='Enter'||event.key===' '){{ event.preventDefault(); pickAppType('radarr'); }}">
+              <div class="pickTop">
+                <div class="pickTitle">Radarr</div>
+                <span class="pill good">Movies</span>
+              </div>
+              <div class="pickMeta">Manage movies. Clean up by tag + age.</div>
+              <div class="pickActions">
+                <button class="btn pickMini" type="button" onclick="event.stopPropagation(); appMoreInfo('radarr')">More info</button>
+                <button class="btn primary pickMini" type="button" onclick="event.stopPropagation(); pickAppType('radarr')">Add</button>
+              </div>
+            </div>
+
+            <div class="pickTile" role="button" tabindex="0"
+                 onclick="pickAppType('sonarr')"
+                 onkeydown="if(event.key==='Enter'||event.key===' '){{ event.preventDefault(); pickAppType('sonarr'); }}">
+              <div class="pickTop">
+                <div class="pickTitle">Sonarr</div>
+                <span class="pill good">TV</span>
+              </div>
+              <div class="pickMeta">Manage series. Clean up by tag + age + delete mode.</div>
+              <div class="pickActions">
+                <button class="btn pickMini" type="button" onclick="event.stopPropagation(); appMoreInfo('sonarr')">More info</button>
+                <button class="btn primary pickMini" type="button" onclick="event.stopPropagation(); pickAppType('sonarr')">Add</button>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="mf">
+          <button class="btn" type="button" onclick="hideModal('appPickBack')">Cancel</button>
+        </div>
+      </div>
+    </div>
+
 
     <!-- RADARR MODAL -->
     <div class="modalBack" id="appBackRadarr">
@@ -2834,14 +2944,13 @@ def apps():
           </div>
           <div class="bd">
             <div class="appsGrid">
-              {app_cards}
               {add_card}
+              {app_cards}
             </div>
           </div>
         </div>
       </div>
 
-      {app_selector_modal_html()}
       {app_modals_html(cfg, usage)}
     """
     return render_template_string(shell("mediareaparr • Apps", "apps", body))
@@ -3080,6 +3189,8 @@ def jobs_toggle_enabled():
 @app.get("/jobs")
 def jobs_page():
     cfg = load_config()
+    state = load_state()
+    last_runs = state.get("last_runs") if isinstance(state.get("last_runs"), dict) else {}
 
     apps_all = [normalize_app(a) for a in (cfg.get("APPS") or [])]
     ready_apps = [a for a in apps_all if is_app_ready(cfg, a["id"])]
@@ -3092,7 +3203,7 @@ def jobs_page():
 
     default_app_id = ready_apps[0]["id"] if ready_apps else ""
 
-    app_disabled_attr = "disabled" if len(ready_apps) <= 1 else ""
+    app_disabled_attr = "disabled" if len(ready_apps) <= 0 else ""
     app_options_html = ""
     for a in ready_apps:
         label = f"{'Radarr' if a['type'] == 'radarr' else 'Sonarr'} • {a.get('name', 'App')}"
@@ -3163,6 +3274,28 @@ def jobs_page():
               <input type="number" min="1" name="DAYS_OLD" id="job_days" value="30" required>
             </div>
 
+            <!-- Radarr-only: score filter (styled like existing fields/checks) -->
+             <div class="field" id="radarrScoreField" style="display:none; margin-bottom:12px;">
+               <label>Radarr score filter</label>
+               <div class="scoreRow">
+                 <label class="check scoreInline">
+                   <input type="checkbox" id="job_score_enabled" name="RADARR_SCORE_FILTER_ENABLED">
+                   <span><b>Delete if average score is below</b></span>
+                 </label>
+
+                 <input
+                   type="number"
+                   min="0"
+                   max="100"
+                   step="1"
+                   id="job_score_min"
+                   name="RADARR_MIN_AVG_SCORE"
+                   value="60"
+                   class="scoreNumInput"
+                 >
+               </div>
+             </div>
+             
             <div class="field" id="sonarrDeleteModeField" style="display:none; margin-bottom:12px;">
               <label>Sonarr Delete Mode</label>
                <select class="nativeSelect" name="SONARR_DELETE_MODE" id="job_sonarr_mode">
@@ -3276,6 +3409,33 @@ def jobs_page():
             app_kind = "radarr"
             app_label = "Missing app"
 
+        radarr_score_line = ""
+        if a and a.get("type") == "radarr":
+            if j.get("RADARR_SCORE_FILTER_ENABLED"):
+                radarr_score_line = f"""
+                  <div class="metaRow">
+                   <div class="metaLabel">Score filter:</div>
+                   <div class="metaVal"><b>ON</b> • delete if avg score &lt; <b>{int(j.get("RADARR_MIN_AVG_SCORE", 60))}</b></div>
+                  </div>
+                """
+            else:
+                radarr_score_line = """
+                  <div class="metaRow">
+                    <div class="metaLabel">Score filter:</div>
+                    <div class="metaVal"><b>OFF</b></div>
+                  </div>
+                """
+
+        lr = last_runs.get(j.get("id")) if isinstance(last_runs, dict) else None
+        lr_status = (str(lr.get("status")) if isinstance(lr, dict) else "").upper()
+        lr_avg = None
+        if isinstance(lr, dict):
+            for k in ("avg_score", "average_score", "avg_score_0_100", "average_score_0_100",
+                      "average_score_0_100_int"):
+                if k in lr and lr.get(k) is not None:
+                    lr_avg = lr.get(k)
+                    break
+
         sched = schedule_label(j["SCHED_DAY"], j["SCHED_HOUR"])
         tag_val = j.get("TAG_LABEL") or "—"
 
@@ -3302,6 +3462,8 @@ def jobs_page():
                   data-app-id="{safe_html(j.get("APP_ID", ""))}"
                   data-tag="{safe_html(j["TAG_LABEL"])}"
                   data-sonarr-mode="{safe_html(j.get('SONARR_DELETE_MODE', 'episodes_only'))}"
+                  data-score-en="{'1' if j.get('RADARR_SCORE_FILTER_ENABLED') else '0'}"
+                  data-score-min="{int(j.get('RADARR_MIN_AVG_SCORE', 60))}"
                   data-days="{j["DAYS_OLD"]}"
                   data-day="{safe_html(j["SCHED_DAY"])}"
                   data-hour="{j["SCHED_HOUR"]}"
@@ -3323,6 +3485,10 @@ def jobs_page():
             <div class="jobHeader">
               <div class="jobHeaderLeft">
                 <div class="jobName">{safe_html(j["name"])}</div>
+                <div class="muted" style="font-size:11px; margin-top:4px;">
+                  {"Last: <b>" + safe_html(lr_status) + "</b>" if lr_status else "Last: —"}
+                  {" • Avg score: <b>" + safe_html(lr_avg) + "</b>" if lr_avg is not None else ""}
+                </div>
               </div>
 
               <div class="jobHeaderCenter">
@@ -3361,6 +3527,7 @@ def jobs_page():
                 </div>
 
                 {sonarr_mode_line}
+                {radarr_score_line}
 
                 <div class="metaRow">
                   <div class="metaLabel">Schedule:</div>
@@ -3463,6 +3630,13 @@ def jobs_save():
         if app_obj.get("type") != "sonarr":
             sonarr_mode = "episodes_only"
 
+        # Radarr score filter (only meaningful for radarr jobs)
+        score_enabled = checkbox("RADARR_SCORE_FILTER_ENABLED")
+        score_min = clamp_int(request.form.get("RADARR_MIN_AVG_SCORE") or 60, 0, 100, 60)
+
+        if app_obj.get("type") != "radarr":
+            score_enabled = False
+
         job = {
             "id": job_id or make_job_id(),
             "name": name,
@@ -3471,6 +3645,8 @@ def jobs_save():
             "TAG_LABEL": tag_label,
             "DAYS_OLD": clamp_int(request.form.get("DAYS_OLD") or 30, 1, 36500, 30),
             "SONARR_DELETE_MODE": sonarr_mode,
+            "RADARR_SCORE_FILTER_ENABLED": score_enabled,
+            "RADARR_MIN_AVG_SCORE": score_min,
             "SCHED_DAY": (request.form.get("SCHED_DAY") or "daily").lower(),
             "SCHED_HOUR": clamp_int(request.form.get("SCHED_HOUR") or 3, 0, 23, 3),
             "DRY_RUN": checkbox("DRY_RUN"),
@@ -3605,6 +3781,7 @@ def preview():
     if not is_app_ready(cfg, app_obj["id"]):
         flash("Selected app is not connected/enabled. Fix it in Apps.", "error")
         return redirect("/apps")
+    is_sonarr = (app_obj.get("type") == "sonarr")
 
     try:
         result = preview_candidates_sonarr(cfg, app_obj, job) if app_obj.get(
@@ -3618,18 +3795,35 @@ def preview():
             flash(error, "error")
             return redirect("/jobs")
 
+        score_hdr = "" if is_sonarr else "<th>Score</th>"
         rows = ""
         for c in candidates[:500]:
-            rows += f"""
-              <tr>
-                <td>{c["age_days"]}</td>
-                <td>{safe_html(c.get("title", ""))}</td>
-                <td>{safe_html(str(c.get("year", "")))}</td>
-                <td><code>{safe_html(c.get("added", ""))}</code></td>
-                <td>{safe_html(str(c.get("id", "")))}</td>
-                <td class="muted">{safe_html(c.get("path", "") or "")}</td>
-              </tr>
-            """
+            if is_sonarr:
+                rows += f"""
+                  <tr>
+                    <td>{c["age_days"]}</td>
+                    <td>{safe_html(c.get("title", ""))}</td>
+                    <td>{safe_html(str(c.get("year", "")))}</td>
+                    <td><code>{safe_html(c.get("added", ""))}</code></td>
+                    <td>{safe_html(str(c.get("id", "")))}</td>
+                    <td class="muted">{safe_html(c.get("path", "") or "")}</td>
+                  </tr>
+                """
+            else:
+                score = c.get("score")
+                score_txt = safe_html(score) if score is not None else "—"
+                rows += f"""
+                  <tr>
+                    <td>{c["age_days"]}</td>
+                    <td>{score_txt}</td>
+                    <td>{safe_html(c.get("title", ""))}</td>
+                    <td>{safe_html(str(c.get("year", "")))}</td>
+                    <td><code>{safe_html(c.get("added", ""))}</code></td>
+                    <td>{safe_html(str(c.get("id", "")))}</td>
+                    <td class="muted">{safe_html(c.get("path", "") or "")}</td>
+                  </tr>
+                """
+
 
         app_label = f"{'Sonarr' if app_obj.get('type') == 'sonarr' else 'Radarr'} • {app_obj.get('name', 'App')}"
         sonarr_mode_line = ""
@@ -3658,6 +3852,7 @@ def preview():
                     <thead>
                       <tr>
                         <th>Age (days)</th>
+                        {score_hdr}
                         <th>Title</th>
                         <th>Year</th>
                         <th>Added</th>
@@ -3705,6 +3900,12 @@ def dashboard():
         return render_template_string(shell("mediareaparr • Dashboard", "dash", body))
 
     status_text = str(last_run.get("status") or "").upper()
+    avg_score = None
+    if isinstance(last_run, dict):
+        for k in ("avg_score", "average_score", "avg_score_0_100", "average_score_0_100", "average_score_0_100_int"):
+            if k in last_run and last_run.get(k) is not None:
+                avg_score = last_run.get(k)
+                break
     body = f"""
       <div class="grid">
         <div class="card">
@@ -3716,6 +3917,7 @@ def dashboard():
             <div class="muted" style="margin-top:6px;">Job: <b>{safe_html(str(last_run.get("job_name", "")))}</b> (<code>{safe_html(str(last_run.get("job_id", "")))}</code>)</div>
             <div class="muted" style="margin-top:6px;">Finished: <code>{safe_html(str(last_run.get("finished_at", "")))}</code></div>
             <div class="muted" style="margin-top:6px;">Candidates: <b>{safe_html(str(last_run.get("candidates_found", 0)))}</b></div>
+            {f'<div class="muted" style="margin-top:6px;">Average score: <b>{safe_html(avg_score)}</b></div>' if avg_score is not None else ''}
           </div>
         </div>
       </div>
