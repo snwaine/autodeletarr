@@ -8,20 +8,81 @@ from datetime import datetime, timezone, timedelta
 from typing import Optional, Dict, Any, List
 
 import requests
+import logging
+from logging.handlers import RotatingFileHandler
 from flask import (
     Flask, request, redirect, render_template_string,
-    flash, get_flashed_messages, send_from_directory
+    flash, get_flashed_messages, send_from_directory, Response
 )
 
 CONFIG_DIR = Path(os.environ.get("CONFIG_DIR", "/config"))
 CONFIG_PATH = CONFIG_DIR / "config.json"
 STATE_PATH = CONFIG_DIR / "state.json"
 
+LOG_PATH = Path(os.environ.get("LOG_PATH", str(CONFIG_DIR / "mediareaparr.log")))
+
 APP_DIR = Path(__file__).resolve().parent
 APP_LOGO_DIR = APP_DIR / "logo"
 
 app = Flask(__name__)
 app.secret_key = os.environ.get("FLASK_SECRET_KEY", "mediareaparr-secret")
+
+
+# ----------------------------
+# Logging
+# ----------------------------
+def _setup_logging() -> logging.Logger:
+    """Log to stdout + rotating log file at LOG_PATH (used by /logs + Status page)."""
+    logger = logging.getLogger("mediareaparr.webui")
+    if logger.handlers:
+        return logger  # already configured
+
+    logger.setLevel(logging.INFO)
+
+    try:
+        LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        pass
+
+    fmt = logging.Formatter("%(asctime)s %(levelname)s [%(name)s] %(message)s")
+    # File handler
+    try:
+        fh = RotatingFileHandler(str(LOG_PATH), maxBytes=2_000_000, backupCount=3, encoding="utf-8")
+        fh.setLevel(logging.INFO)
+        fh.setFormatter(fmt)
+        logger.addHandler(fh)
+    except Exception:
+        # If file isn't writable, we'll still have stdout logs
+        pass
+
+    sh = logging.StreamHandler()
+    sh.setLevel(logging.INFO)
+    sh.setFormatter(fmt)
+    logger.addHandler(sh)
+
+    logger.propagate = False
+    logger.info("WebUI logging initialised. LOG_PATH=%s", str(LOG_PATH))
+    return logger
+
+
+log = _setup_logging()
+
+@app.before_request
+def _log_request():
+    try:
+        log.info("HTTP %s %s from %s", request.method, request.path, request.remote_addr)
+    except Exception:
+        pass
+
+@app.after_request
+def _log_response(resp):
+    try:
+        log.info("HTTP %s %s -> %s", request.method, request.path, resp.status_code)
+    except Exception:
+        pass
+    return resp
+
+
 
 
 def env_default(name: str, default: str = "") -> str:
@@ -438,6 +499,7 @@ def get_tag_labels(cfg: Dict[str, Any], app_id: str) -> List[str]:
         # App is offline / timeout / bad gateway / etc.
         return []
 
+
 def _score_to_0_100(v) -> Optional[int]:
     try:
         if v is None:
@@ -478,6 +540,7 @@ def radarr_movie_score_0_100(movie: Dict[str, Any]) -> Optional[int]:
         return None
 
     return int(round(sum(values) / len(values)))
+
 
 # ----------------------------
 # Preview candidates (uses selected app instance)
@@ -966,7 +1029,7 @@ BASE_HEAD = """
   body[data-theme="light"] .sbItem{
     color: var(--text);
   }
-  
+
   body[data-theme="light"] .sbItem:hover{ color: var(--accent2); }
 
   .sbNav{
@@ -1127,12 +1190,12 @@ BASE_HEAD = """
     align-items: center;
     transition: box-shadow .18s ease, border-color .18s ease, transform .18s ease, filter .18s ease;
   }
-  
+
   /* Light theme: hover glow should be lighter (avoid dark heavy glow) */
   body[data-theme="light"] .btn:hover{
     box-shadow: 0 0 0 3px rgba(167,213,65,.16), 0 10px 18px rgba(2,6,23,.10);
   }
-  
+
   a.btn:hover{ text-decoration: none; }
 
   .btn:hover{
@@ -1562,7 +1625,7 @@ BASE_HEAD = """
   body.modalOpen .modalBack{
     pointer-events: auto;
   }
-  
+
   body.modalOpen .pageContent,
   body.modalOpen .card .bd{
     overflow: hidden !important;
@@ -1747,6 +1810,34 @@ BASE_HEAD = """
     justify-content: flex-end;
     gap: 10px;
   }
+
+  /* ----------------------------
+     Status log window
+     ---------------------------- */
+  .logTools{
+    display:flex;
+    gap:10px;
+    align-items:center;
+    flex-wrap:wrap;
+    margin-top:12px;
+  }
+  .logBox{
+    margin-top:10px;
+    border:1px solid var(--line);
+    background:rgba(0,0,0,.25);
+    padding:12px;
+    border-radius:12px;
+    height:360px;
+    overflow:auto;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+    font-size: 12px;
+    line-height: 1.35;
+    white-space: pre;
+  }
+  body[data-theme="light"] .logBox{
+    background: rgba(2,6,23,.03);
+  }
+
 </style>
 
 <script>
@@ -3295,7 +3386,7 @@ def jobs_page():
                  >
                </div>
              </div>
-             
+
             <div class="field" id="sonarrDeleteModeField" style="display:none; margin-bottom:12px;">
               <label>Sonarr Delete Mode</label>
                <select class="nativeSelect" name="SONARR_DELETE_MODE" id="job_sonarr_mode">
@@ -3730,7 +3821,7 @@ def apply_cron():
         flash("No enabled jobs to schedule.", "error")
         return redirect(request.referrer or "/jobs")
 
-    log_path = "/var/log/mediareaparr.log"
+    log_path = str(LOG_PATH)
     lines = []
     for j in enabled_jobs:
         cron = cron_from_day_hour(j.get("SCHED_DAY", "daily"), int(j.get("SCHED_HOUR", 3)))
@@ -3823,7 +3914,6 @@ def preview():
                     <td class="muted">{safe_html(c.get("path", "") or "")}</td>
                   </tr>
                 """
-
 
         app_label = f"{'Sonarr' if app_obj.get('type') == 'sonarr' else 'Radarr'} • {app_obj.get('name', 'App')}"
         sonarr_mode_line = ""
@@ -3923,6 +4013,36 @@ def dashboard():
       </div>
     """
     return render_template_string(shell("mediareaparr • Dashboard", "dash", body))
+
+
+# ----------------------------
+# Status logs
+# ----------------------------
+def tail_file(path: Path, max_lines: int = 500) -> str:
+    try:
+        from collections import deque
+        dq = deque(maxlen=max_lines)
+        with path.open("r", encoding="utf-8", errors="replace") as f:
+            for line in f:
+                dq.append(line.rstrip("\n"))
+        return "\n".join(dq)
+    except Exception as e:
+        return f"[mediareaparr] Failed to read log file: {e}\n"
+
+
+@app.get("/status/log")
+def status_log():
+    # Log file can be overridden with LOG_PATH env var
+    path = LOG_PATH
+    lines = clamp_int(request.args.get("lines", 500), 50, 5000, 500)
+    if not path.exists():
+        msg = (
+            f"No log file found at: {path}\n\n"
+            "Tip: set LOG_PATH to wherever your container writes logs, or pipe stdout to a file.\n"
+            "Example (Docker): docker logs mediareaparr > /config/mediareaparr.log\n"
+        )
+        return Response(msg, mimetype="text/plain; charset=utf-8")
+    return Response(tail_file(path, max_lines=lines), mimetype="text/plain; charset=utf-8")
 
 
 # ----------------------------
