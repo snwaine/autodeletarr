@@ -20,15 +20,14 @@ Still supports LEGACY env/global schema:
 import os
 import sys
 import json
-import time
 import argparse
-import logging
-from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 import requests
+import logging
+from logging.handlers import RotatingFileHandler
 
 
 # ----------------------------
@@ -38,43 +37,62 @@ CONFIG_DIR = Path(os.environ.get("CONFIG_DIR", "/config"))
 CONFIG_PATH = CONFIG_DIR / "config.json"
 STATE_PATH = CONFIG_DIR / "state.json"
 
-LOG_PATH = Path(os.environ.get("LOG_PATH", str(CONFIG_DIR / "mediareaparr.log")))
-
-
 # ----------------------------
 # Logging
 # ----------------------------
-def _setup_logging() -> logging.Logger:
-    logger = logging.getLogger("mediareaparr.app")
-    if logger.handlers:
-        return logger
-    logger.setLevel(logging.INFO)
+LOG_PATH = Path(os.environ.get("LOG_PATH", str(CONFIG_DIR / "mediareaparr.log")))
 
+def setup_logging() -> logging.Logger:
+    """Configure rotating file + console logging. Returns a logger."""
     try:
         LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
     except Exception:
         pass
 
-    fmt = logging.Formatter("%(asctime)s %(levelname)s [%(name)s] %(message)s")
+    logger = logging.getLogger("mediareaparr")
+    logger.setLevel(logging.INFO)
 
-    try:
-        fh = RotatingFileHandler(str(LOG_PATH), maxBytes=5_000_000, backupCount=5, encoding="utf-8")
-        fh.setLevel(logging.INFO)
+    fmt = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
+
+    # prevent duplicates
+    if not any(isinstance(h, RotatingFileHandler) for h in logger.handlers):
+        fh = RotatingFileHandler(str(LOG_PATH), maxBytes=2_000_000, backupCount=3, encoding="utf-8")
         fh.setFormatter(fmt)
         logger.addHandler(fh)
-    except Exception:
-        pass
 
-    sh = logging.StreamHandler()
-    sh.setLevel(logging.INFO)
-    sh.setFormatter(fmt)
-    logger.addHandler(sh)
+        sh = logging.StreamHandler()
+        sh.setFormatter(fmt)
+        logger.addHandler(sh)
 
-    logger.propagate = False
-    logger.info("App logging initialised. LOG_PATH=%s", str(LOG_PATH))
     return logger
 
-log = _setup_logging()
+log = setup_logging()
+
+class _Tee:
+    def __init__(self, *streams):
+        self.streams = streams
+    def write(self, s):
+        for st in self.streams:
+            try:
+                st.write(s)
+            except Exception:
+                pass
+        return len(s)
+    def flush(self):
+        for st in self.streams:
+            try:
+                st.flush()
+            except Exception:
+                pass
+
+def setup_stdio_tee() -> None:
+    """Mirror stdout/stderr into LOG_PATH so existing print() output is captured."""
+    try:
+        f = open(LOG_PATH, "a", encoding="utf-8", errors="replace")
+    except Exception:
+        return
+    sys.stdout = _Tee(sys.__stdout__, f)
+    sys.stderr = _Tee(sys.__stderr__, f)
 
 
 
@@ -299,44 +317,29 @@ def api_get(base_url: str, api_key: str, timeout_s: int, path: str):
     return r.json()
 
 
-def api_delete(base_url: str, api_key: str, timeout_s: int, path: str) -> requests.Response:
+def api_delete(base_url: str, api_key: str, timeout_s: int, path: str):
     url = (base_url or "").rstrip("/") + path
-    # IMPORTANT: do NOT follow redirects for DELETE.
-    # Some proxies/auth setups redirect and requests may change DELETE -> GET on 302/303.
-    r = requests.delete(
-        url,
-        headers={"X-Api-Key": api_key or ""},
-        timeout=timeout_s,
-        allow_redirects=False,
-    )
+    r = requests.delete(url, headers={"X-Api-Key": api_key or ""}, timeout=timeout_s)
     if r.status_code in (401, 403):
         raise PermissionError("Unauthorized (API key incorrect).")
-    # If we get redirected, surface it loudly (this is a very common cause of "didn't delete").
-    if r.status_code in (301, 302, 303, 307, 308):
-        loc = r.headers.get("Location", "")
-        raise RuntimeError(f"HTTP redirect on DELETE ({r.status_code}) to '{loc}'. Check reverse proxy/base URL.")
     # Radarr/Sonarr often returns 200/202/204
     if r.status_code not in (200, 202, 204):
         r.raise_for_status()
-    return r
+    return True
 
-def api_delete_json(base_url: str, api_key: str, timeout_s: int, path: str, payload: Dict[str, Any]) -> requests.Response:
+def api_delete_json(base_url: str, api_key: str, timeout_s: int, path: str, payload: Dict[str, Any]):
     url = (base_url or "").rstrip("/") + path
     r = requests.delete(
         url,
         headers={"X-Api-Key": api_key or "", "Content-Type": "application/json"},
         timeout=timeout_s,
         data=json.dumps(payload),
-        allow_redirects=False,
     )
     if r.status_code in (401, 403):
         raise PermissionError("Unauthorized (API key incorrect).")
-    if r.status_code in (301, 302, 303, 307, 308):
-        loc = r.headers.get("Location", "")
-        raise RuntimeError(f"HTTP redirect on DELETE JSON ({r.status_code}) to '{loc}'. Check reverse proxy/base URL.")
     if r.status_code not in (200, 202, 204):
         r.raise_for_status()
-    return r
+    return True
 
 def api_post(base_url: str, api_key: str, timeout_s: int, path: str, payload: Dict[str, Any]):
     url = (base_url or "").rstrip("/") + path
@@ -478,7 +481,7 @@ def radarr_delete_movie(base: str, key: str, timeout_s: int, movie_id: int,
                         delete_files: bool, add_import_excl: bool) -> None:
     df = "true" if delete_files else "false"
     ae = "true" if add_import_excl else "false"
-    return api_delete(base, key, timeout_s, f"/api/v3/movie/{movie_id}?deleteFiles={df}&addImportExclusion={ae}")
+    api_delete(base, key, timeout_s, f"/api/v3/movie/{movie_id}?deleteFiles={df}&addImportExclusion={ae}")
 
 
 def radarr_delete_movie_editor(base: str, key: str, timeout_s: int, movie_id: int,
@@ -489,53 +492,26 @@ def radarr_delete_movie_editor(base: str, key: str, timeout_s: int, movie_id: in
         "deleteFiles": bool(delete_files),
         "addImportExclusion": bool(add_import_excl),
     }
-    return api_delete_json(base, key, timeout_s, "/api/v3/movie/editor", payload)
+    api_delete_json(base, key, timeout_s, "/api/v3/movie/editor", payload)
 
 def radarr_delete_movie_strict(base: str, key: str, timeout_s: int, movie_id: int,
                                delete_files: bool, add_import_excl: bool) -> Tuple[bool, str]:
     """
     Returns (deleted_ok, method_used)
     """
-    def wait_until_gone(seconds: int = 30, step: float = 1.0) -> bool:
-        end = time.time() + max(1, seconds)
-        while time.time() < end:
-            if radarr_get_movie(base, key, timeout_s, movie_id) is None:
-                return True
-            time.sleep(step)
-        return radarr_get_movie(base, key, timeout_s, movie_id) is None
-
-    # Attempt 1: normal delete
-    r1 = radarr_delete_movie(base, key, timeout_s, movie_id, delete_files, add_import_excl)
-    if wait_until_gone():
+    # First try the normal delete
+    radarr_delete_movie(base, key, timeout_s, movie_id, delete_files, add_import_excl)
+    still_there = radarr_get_movie(base, key, timeout_s, movie_id) is not None
+    if not still_there:
         return True, "movie/{id}"
 
-    # If we asked to delete files and Radarr left the record behind, retry record-only
-    if delete_files:
-        r1b = radarr_delete_movie(base, key, timeout_s, movie_id, False, add_import_excl)
-        if wait_until_gone():
-            return True, "movie/{id} (record-only retry)"
-    else:
-        r1b = None
+    # Fallback to editor delete
+    radarr_delete_movie_editor(base, key, timeout_s, movie_id, delete_files, add_import_excl)
+    still_there = radarr_get_movie(base, key, timeout_s, movie_id) is not None
+    if not still_there:
+        return True, "movie/editor"
 
-    # Attempt 2: editor delete (record-only to avoid re-deleting files)
-    r2 = radarr_delete_movie_editor(base, key, timeout_s, movie_id, False, add_import_excl)
-    if wait_until_gone():
-        return True, "movie/editor (record-only)"
-
-    # Still present: surface HTTP details
-    def _summ(resp):
-        if resp is None:
-            return "None"
-        try:
-            body = (resp.text or "").strip().replace("\n", " ")
-        except Exception:
-            body = ""
-        return f"{getattr(resp,'status_code',None)} '{body[:200]}'"
-
-    raise RuntimeError(
-        "Radarr delete returned success/accepted but movie still exists. "
-        f"movie-delete={_summ(r1)} record-retry={_summ(r1b)} editor-delete={_summ(r2)}"
-    )
+    return False, "failed"
 
 # ----------------------------
 # Runner
@@ -621,11 +597,12 @@ def run_job(cfg: Dict[str, Any], state: Dict[str, Any], job: Dict[str, Any]) -> 
             if not api_key:
                 raise RuntimeError("RADARR_API_KEY is required (or configure an App in WebUI).")
 
-            log.info(f"[mediareaparr] Running Radarr job '{job.get('name')}' ({job_id})")
-            log.info(f"[mediareaparr] RADARR_URL={radarr_url}")
-            log.info(f"[mediareaparr] TAG_LABEL={tag_label} DAYS_OLD={days_old} CUTOFF={cutoff.isoformat()}")
-            log.info(f"[mediareaparr] DRY_RUN={dry_run} DELETE_FILES={delete_files} ADD_IMPORT_EXCLUSION={add_import_exclusion}")
-            log.info(f"[mediareaparr] SCORE_FILTER={radarr_score_enabled} MIN_AVG_SCORE={radarr_min_avg_score}")
+            print(f"[mediareaparr] Running Radarr job '{job.get('name')}' ({job_id})")
+            print(f"[mediareaparr] RADARR_URL={radarr_url}")
+            print(f"[mediareaparr] TAG_LABEL={tag_label} DAYS_OLD={days_old} CUTOFF={cutoff.isoformat()}")
+            print(f"[mediareaparr] DRY_RUN={dry_run} DELETE_FILES={delete_files} ADD_IMPORT_EXCLUSION={add_import_exclusion}")
+            print(f"[mediareaparr] SCORE_FILTER={radarr_score_enabled} MIN_AVG_SCORE={radarr_min_avg_score}")
+
             label_to_id, _ = radarr_tags_map(radarr_url, api_key, timeout)
             tag_id = label_to_id.get(tag_label)
             if not tag_id:
@@ -693,18 +670,11 @@ def run_job(cfg: Dict[str, Any], state: Dict[str, Any], job: Dict[str, Any]) -> 
                     continue
 
                 try:
-                    # Phase 1: remove movie from Radarr (NO file deletion yet)
                     ok, method = radarr_delete_movie_strict(
-                        radarr_url, api_key, timeout,
-                        movie_id,
-                        delete_files=delete_files,
-                        add_import_excl=add_import_exclusion
+                        radarr_url, api_key, timeout, movie_id, delete_files, add_import_exclusion
                     )
                     if not ok:
-                        raise RuntimeError("Movie removed files but still exists in Radarr")
-
-                    if radarr_get_movie(radarr_url, api_key, timeout, movie_id):
-                        raise RuntimeError("Post-delete verification failed: movie still exists")
+                        raise RuntimeError("Radarr delete call returned but movie still exists in Radarr")
 
                     print(f"[mediareaparr] Deleted movie id={movie_id} '{title}' ({year}) "
                           f"age={age_days} score={avg_score} via={method}")
@@ -722,7 +692,7 @@ def run_job(cfg: Dict[str, Any], state: Dict[str, Any], job: Dict[str, Any]) -> 
                     _persist_run(state, job_id, run_state)
                 except Exception as e:
                     err = f"ERROR Radarr deleting id={movie_id} title='{title}': {e}"
-                    log.error(f"[mediareaparr] {err}")
+                    print(f"[mediareaparr] {err}", file=sys.stderr)
                     run_state["errors"].append(err)
                     _persist_run(state, job_id, run_state)
 
@@ -745,11 +715,12 @@ def run_job(cfg: Dict[str, Any], state: Dict[str, Any], job: Dict[str, Any]) -> 
             if not api_key:
                 raise RuntimeError("SONARR_API_KEY is required (or configure an App in WebUI).")
 
-            log.info(f"[mediareaparr] Running Sonarr job '{job.get('name')}' ({job_id})")
-            log.info(f"[mediareaparr] SONARR_URL={sonarr_url}")
-            log.info(f"[mediareaparr] TAG_LABEL={tag_label} DAYS_OLD={days_old} CUTOFF={cutoff.isoformat()}")
-            log.info(f"[mediareaparr] DRY_RUN={dry_run} DELETE_FILES={delete_files} ADD_IMPORT_EXCLUSION={add_import_exclusion}")
-            log.info(f"[mediareaparr] SONARR_DELETE_MODE={sonarr_mode}")
+            print(f"[mediareaparr] Running Sonarr job '{job.get('name')}' ({job_id})")
+            print(f"[mediareaparr] SONARR_URL={sonarr_url}")
+            print(f"[mediareaparr] TAG_LABEL={tag_label} DAYS_OLD={days_old} CUTOFF={cutoff.isoformat()}")
+            print(f"[mediareaparr] DRY_RUN={dry_run} DELETE_FILES={delete_files} ADD_IMPORT_EXCLUSION={add_import_exclusion}")
+            print(f"[mediareaparr] SONARR_DELETE_MODE={sonarr_mode}")
+
             label_to_id, _ = sonarr_tags_map(sonarr_url, api_key, timeout)
             tag_id = label_to_id.get(tag_label)
             if not tag_id:
@@ -779,7 +750,7 @@ def run_job(cfg: Dict[str, Any], state: Dict[str, Any], job: Dict[str, Any]) -> 
                 path = s.get("path")
 
                 if dry_run:
-                    log.info(f"[mediareaparr] DRY-RUN candidate series id={series_id} '{title}' ({year}) age={age_days} path={path} mode={sonarr_mode}")
+                    print(f"[mediareaparr] DRY-RUN candidate series id={series_id} '{title}' ({year}) age={age_days} path={path} mode={sonarr_mode}")
                     run_state["deleted"].append({
                         "kind": "series_candidate",
                         "id": series_id,
@@ -797,7 +768,7 @@ def run_job(cfg: Dict[str, Any], state: Dict[str, Any], job: Dict[str, Any]) -> 
                 try:
                     if sonarr_mode == "series_whole":
                         sonarr_delete_series(sonarr_url, api_key, timeout, series_id, delete_files, add_import_exclusion)
-                        log.info(f"[mediareaparr] Deleted series (whole) id={series_id} '{title}' ({year}) age={age_days}")
+                        print(f"[mediareaparr] Deleted series (whole) id={series_id} '{title}' ({year}) age={age_days}")
                         run_state["deleted"].append({
                             "kind": "series",
                             "id": series_id,
@@ -813,7 +784,7 @@ def run_job(cfg: Dict[str, Any], state: Dict[str, Any], job: Dict[str, Any]) -> 
                         # Delete episode files for the series (if delete_files true),
                         # else do nothing (we won't unmonitor etc. here).
                         if not delete_files:
-                            log.info(f"[mediareaparr] SKIP episode deletion (DELETE_FILES=OFF) series id={series_id} '{title}'")
+                            print(f"[mediareaparr] SKIP episode deletion (DELETE_FILES=OFF) series id={series_id} '{title}'")
                         else:
                             eps = sonarr_list_episode_files(sonarr_url, api_key, timeout, series_id)
                             ep_ids = []
@@ -826,13 +797,14 @@ def run_job(cfg: Dict[str, Any], state: Dict[str, Any], job: Dict[str, Any]) -> 
                             for ef_id in ep_ids:
                                 sonarr_delete_episode_file(sonarr_url, api_key, timeout, ef_id)
 
-                            log.info(f"[mediareaparr] Deleted {len(ep_ids)} episode file(s) for series id={series_id} '{title}'")
+                            print(f"[mediareaparr] Deleted {len(ep_ids)} episode file(s) for series id={series_id} '{title}'")
+
                         if sonarr_mode == "episodes_then_series_if_empty":
                             # Re-check whether any episode files remain
                             remaining = sonarr_list_episode_files(sonarr_url, api_key, timeout, series_id)
                             if not remaining:
                                 sonarr_delete_series(sonarr_url, api_key, timeout, series_id, delete_files=False, add_import_excl=add_import_exclusion)
-                                log.info(f"[mediareaparr] Deleted empty series container id={series_id} '{title}' (after episode delete)")
+                                print(f"[mediareaparr] Deleted empty series container id={series_id} '{title}' (after episode delete)")
                                 run_state["deleted"].append({
                                     "kind": "series_empty_removed",
                                     "id": series_id,
@@ -869,13 +841,14 @@ def run_job(cfg: Dict[str, Any], state: Dict[str, Any], job: Dict[str, Any]) -> 
 
                     else:
                         # Shouldn't happen due to normalization
-                        log.info(f"[mediareaparr] Unknown Sonarr mode '{sonarr_mode}', skipping series id={series_id} '{title}'")
+                        print(f"[mediareaparr] Unknown Sonarr mode '{sonarr_mode}', skipping series id={series_id} '{title}'")
+
                     run_state["deleted_count"] = len(run_state["deleted"])
                     _persist_run(state, job_id, run_state)
 
                 except Exception as e:
                     err = f"ERROR Sonarr processing id={series_id} title='{title}': {e}"
-                    log.error(f"[mediareaparr] {err}")
+                    print(f"[mediareaparr] {err}", file=sys.stderr)
                     run_state["errors"].append(err)
                     _persist_run(state, job_id, run_state)
 
@@ -885,10 +858,6 @@ def run_job(cfg: Dict[str, Any], state: Dict[str, Any], job: Dict[str, Any]) -> 
     except Exception as e:
         run_state["status"] = "error"
         run_state["errors"].append(str(e))
-        try:
-            log.exception("Job failed: %s (%s)", job.get("name"), job_id)
-        except Exception:
-            pass
         return run_state
 
     finally:
@@ -912,16 +881,16 @@ def main() -> int:
     job_id = (args.job_id or "").strip()
 
     if not job_id:
-        log.error("[mediareaparr] ERROR: --job-id is required (cron uses it).")
+        print("[mediareaparr] ERROR: --job-id is required (cron uses it).", file=sys.stderr)
         return 2
 
     job = find_job_by_id(cfg, job_id)
     if not job:
-        log.error(f"[mediareaparr] ERROR: Job not found: {job_id}")
+        print(f"[mediareaparr] ERROR: Job not found: {job_id}", file=sys.stderr)
         return 2
 
     if not job.get("enabled", False):
-        log.info(f"[mediareaparr] Job is disabled: {job_id} ({job.get('name')})")
+        print(f"[mediareaparr] Job is disabled: {job_id} ({job.get('name')})")
         # still record a run so dashboard shows something useful
         run_state = {
             "job_id": job_id,
