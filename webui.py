@@ -12,12 +12,51 @@ from typing import Optional, Dict, Any, List
 import requests
 from flask import (
     Flask, request, redirect, render_template_string,
-    flash, get_flashed_messages, send_from_directory
+    flash, get_flashed_messages, send_from_directory, Response
 )
 
 CONFIG_DIR = Path(os.environ.get("CONFIG_DIR", "/config"))
 CONFIG_PATH = CONFIG_DIR / "config.json"
 STATE_PATH = CONFIG_DIR / "state.json"
+
+# ----------------------------
+# Logging (WebUI log viewer)
+# ----------------------------
+DEFAULT_LOG_PATH = Path(os.environ.get("LOG_PATH", str(CONFIG_DIR / "mediareaparr.log")))
+
+def get_log_path(cfg: Optional[Dict[str, Any]] = None) -> Path:
+    try:
+        if isinstance(cfg, dict):
+            p = str(cfg.get("LOG_PATH") or cfg.get("log_path") or "").strip()
+            if p:
+                return Path(p)
+    except Exception:
+        pass
+    return DEFAULT_LOG_PATH
+
+def tail_file(path: Path, max_lines: int = 500, max_bytes: int = 1024 * 1024) -> str:
+    """Return the last N lines of a text file (best-effort, safe for large files)."""
+    try:
+        p = Path(path)
+        if not p.exists() or not p.is_file():
+            return f"(log file not found) {p}"
+        # Read at most max_bytes from the end
+        with p.open("rb") as f:
+            try:
+                f.seek(0, 2)
+                size = f.tell()
+                f.seek(max(0, size - max_bytes), 0)
+            except Exception:
+                pass
+            data = f.read()
+        txt = data.decode("utf-8", errors="replace")
+        lines = txt.splitlines()
+        if max_lines and len(lines) > max_lines:
+            lines = lines[-max_lines:]
+        return "\n".join(lines)
+    except Exception as e:
+        return f"(failed to read log) {e}"
+
 
 
 # ----------------------------
@@ -1770,6 +1809,25 @@ BASE_HEAD = """
     justify-content: flex-end;
     gap: 10px;
   }
+
+  /* Log window */
+  .logWrap{ margin-top:14px; }
+  .logToolbar{ display:flex; gap:10px; align-items:center; justify-content:space-between; margin-bottom:10px; }
+  .logBox{
+    border: 1px solid var(--line);
+    background: rgba(0,0,0,.25);
+    border-radius: 14px;
+    padding: 12px;
+    height: 420px;
+    overflow: auto;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+    font-size: 12px;
+    line-height: 1.4;
+    white-space: pre;
+  }
+  .logMeta{ display:flex; gap:10px; align-items:center; }
+  .checkRow{ display:flex; gap:8px; align-items:center; }
+
 </style>
 
 <script>
@@ -3974,6 +4032,15 @@ def dashboard():
 
 # ----------------------------
 # Status
+
+@app.get("/status/log")
+def status_log():
+    cfg = load_config()
+    lines = clamp_int(request.args.get("lines", 500), 10, 5000, 500)
+    log_path = get_log_path()
+    txt = tail_file(log_path, max_lines=lines)
+    return Response(txt, mimetype="text/plain; charset=utf-8")
+
 # ----------------------------
 @app.get("/status")
 def status():
@@ -4040,6 +4107,62 @@ def status():
                 <tbody>{render_kv(state)}</tbody>
               </table>
             </div>
+            <div class="logWrap">
+              <div class="logToolbar">
+                <div class="logMeta">
+                  <div><b>Logs</b> <span class="muted">(tail)</span></div>
+                  <div class="muted">Path: <code>{safe_html(str(get_log_path()))}</code></div>
+                </div>
+                <div style="display:flex; gap:10px; align-items:center;">
+                  <button class="btn" type="button" onclick="loadStatusLog(true)">Refresh</button>
+                  <label class="checkRow muted" title="Auto-refresh every 3s">
+                    <input type="checkbox" id="logAuto" onchange="toggleLogAuto()"> Auto
+                  </label>
+                  <label class="checkRow muted" title="Stick to bottom when new logs arrive">
+                    <input type="checkbox" id="logFollow" checked> Follow
+                  </label>
+                </div>
+              </div>
+              <div class="logBox" id="logBox"><span class="muted" id="logText">Loading…</span></div>
+            </div>
+
+            <script>
+              let __logTimer = null;
+
+              function loadStatusLog(forceScroll){{
+                const lines = 800;
+                fetch("/status/log?lines=" + lines, {{cache: "no-store"}})
+                  .then(r => r.text())
+                  .then(t => {{
+                    const box = document.getElementById("logBox");
+                    const follow = document.getElementById("logFollow");
+                    const atBottom = (box.scrollTop + box.clientHeight) >= (box.scrollHeight - 10);
+                    box.textContent = t || "(no log output)";
+                    if (forceScroll || (follow && follow.checked && atBottom)){{
+                      box.scrollTop = box.scrollHeight;
+                    }}
+                  }})
+                  .catch(err => {{
+                    const box = document.getElementById("logBox");
+                    box.textContent = "Failed to load logs: " + err;
+                  }});
+              }}
+
+              function toggleLogAuto(){{
+                const cb = document.getElementById("logAuto");
+                if (cb && cb.checked){{
+                  loadStatusLog(true);
+                  __logTimer = setInterval(() => loadStatusLog(false), 3000);
+                }}else{{
+                  if (__logTimer) clearInterval(__logTimer);
+                  __logTimer = null;
+                }}
+              }}
+
+              // initial load
+              loadStatusLog(true);
+            </script>
+
           </div>
         </div>
       </div>
