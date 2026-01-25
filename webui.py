@@ -2689,7 +2689,6 @@ def shell(page_title: str, active: str, body: str):
         <div class="sbNav">
           {sb_item("Dashboard", "/dashboard", "dash")}
           {sb_item("Jobs", "/jobs", "jobs")}
-          {sb_item("Apps", "/apps", "apps")}
           {sb_item("Settings", "/settings", "settings")}
           {sb_item("Status", "/status", "status")}
           <div style="height:6px;"></div>
