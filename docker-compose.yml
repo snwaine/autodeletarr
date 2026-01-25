@@ -1,21 +1,21 @@
+version: "3.8"
+
 services:
   mediareaparr:
-    build: .
+    image: snwaine/mediareaparr:latest
     container_name: mediareaparr
-    environment:
-      - RADARR_URL=http://radarr:7878
-      - RADARR_API_KEY=PUT_YOUR_KEY_HERE
-      - TAG_LABEL=autodelete30
-      - DAYS_OLD=30
-
-      # Safety first
-      - DRY_RUN=true
-
-      # Deletion behavior
-      - DELETE_FILES=true
-      - ADD_IMPORT_EXCLUSION=false
-
-      # Cron schedule (03:15 daily)
-      - CRON_SCHEDULE=15 3 * * *
-      - RUN_ON_STARTUP=false
     restart: unless-stopped
+
+    environment:
+      TZ: Europe/London
+      CONFIG_DIR: /config
+      LOG_PATH: /config/mediareaparr.log
+      HTTP_TIMEOUT_SECONDS: 30
+
+    volumes:
+      - /mnt/user/appdata/mediareaparr:/config
+
+    ports:
+      - "7676:7676"
+
+    command: ["python3", "/app/webui.py"]
