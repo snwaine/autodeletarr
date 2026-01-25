@@ -1050,10 +1050,10 @@ BASE_HEAD = """
     align-items:center;
     justify-content: space-between;
     gap: 10px;
-    padding: 16px 30px;
+    padding: 20px 30px;
     border: none;
     background: none;
-    font-size: 14px;
+    font-size: 20px;
     text-decoration: none;
     cursor:pointer;
   }
@@ -1450,9 +1450,9 @@ BASE_HEAD = """
 
   .appCard{
     width: 300px;
-    height: 128px;
-    border: 3px solid var(--line);
-    background: var(--panel2);
+    height: 150px;
+    border: 3px solid var(--BackgroundColor1);
+    background: var(--BackgroundColor1);
     box-shadow: var(--shadow);
     display: flex;
     flex-direction: column;
@@ -1809,6 +1809,35 @@ BASE_HEAD = """
     justify-content: flex-end;
     gap: 10px;
   }
+
+
+  /* ---------------------------
+     Settings: header tabs
+     --------------------------- */
+  .settingsTabs{
+    display:flex;
+    align-items:flex-end;
+    gap: 14px;
+    height: 100%;
+  }
+  .settingsTab{
+    background: none;
+    border: none;
+    padding: 10px 4px;
+    font-size: 13px;
+    font-weight: 700;
+    color: var(--muted);
+    cursor: pointer;
+    border-bottom: 2px solid transparent;
+    letter-spacing: .2px;
+  }
+  .settingsTab:hover{ color: var(--text); }
+  .settingsTab.active{
+    color: var(--accent);
+    border-bottom-color: var(--accent);
+  }
+  .settingsPanel{ display:none; }
+  .settingsPanel.active{ display:block; }
 
   /* Log window */
   .logWrap{ margin-top:14px; }
@@ -2599,7 +2628,37 @@ BASE_HEAD = """
       });
     }
 
-    const host = $("toastHost");
+
+    // Settings tabs (General / Apps)
+    (function(){
+      const tabs = document.querySelectorAll(".settingsTab");
+      if (!tabs || !tabs.length) return;
+      function activate(key){
+        tabs.forEach(t => {
+          const on = (t.getAttribute("data-tab")||"") === key;
+          t.classList.toggle("active", on);
+          t.setAttribute("aria-selected", on ? "true" : "false");
+        });
+        document.querySelectorAll(".settingsPanel").forEach(p => {
+          p.classList.toggle("active", p.id === ("settings_tab_" + key));
+        });
+      }
+      tabs.forEach(t => {
+        t.addEventListener("click", () => {
+          const key = (t.getAttribute("data-tab")||"general");
+          activate(key);
+        });
+      });
+      // default
+      const qp = new URLSearchParams(location.search || "");
+      const presetQ = (qp.get("tab") || "").trim().toLowerCase();
+      const presetH = (location.hash || "").replace("#","").trim().toLowerCase();
+      const preset = presetQ || presetH;
+      if (preset === "apps") activate("apps");
+      else activate("general");
+    })();
+
+        const host = $("toastHost");
     if (host) setTimeout(() => { try { host.remove(); } catch(e){} }, 6000);
   });
 </script>
@@ -2715,14 +2774,73 @@ def toggle_theme():
 def settings():
     cfg = load_config()
 
+    # apps list + usage map (so we can reuse Apps UI inside Settings)
+    apps_list = [normalize_app(a) for a in (cfg.get("APPS") or [])]
+    total_apps = len(apps_list)
+    connected_apps = sum(1 for a in apps_list if a.get("ok") and a.get("url") and a.get("api_key"))
+
+    jobs = [normalize_job(j) for j in (cfg.get("JOBS") or [])]
+    usage: Dict[str, int] = {}
+    for j in jobs:
+        aid = str(j.get("APP_ID") or "").strip()
+        if not aid:
+            continue
+        usage[aid] = usage.get(aid, 0) + 1
+
+    def app_card(a: Dict[str, Any]) -> str:
+        a = normalize_app(a)
+        kind = a.get("type", "radarr")
+        title = a.get("name", "App")
+        ok = bool(a.get("ok", False))
+        url = str(a.get("url") or "")
+        app_id = safe_html(a.get("id"))
+
+        href = (url or "").strip()
+        if href:
+            ext = f"""<a class="appCardLinkBtn" href="{safe_html(href)}" target="_blank" rel="noreferrer" title="Open {safe_html(title)}">
+              ↗
+            </a>"""
+        else:
+            ext = """<div class="appCardLinkBtn" title="No URL set" style="opacity:.4; cursor:default;">↗</div>"""
+
+        pill = '<span class="pill good">Connected</span>' if ok else '<span class="pill bad">Not Connected</span>'
+        type_label = "Radarr" if kind == "radarr" else "Sonarr"
+
+        return f"""
+        <div class="appCard" role="button" tabindex="0"
+             onclick="openEditApp('{app_id}')"
+             onkeydown="if(event.key==='Enter'||event.key===' '){{
+                event.preventDefault(); openEditApp('{app_id}');
+             }}"
+             title="Configure {safe_html(title)}">
+          <div class="appCardTop">
+            <div style="min-width:0;">
+              <div class="appTitle">{safe_html(title)}</div>
+              <div class="appSub">{safe_html(type_label)} • {safe_html(url or 'No URL')}</div>
+            </div>
+            {ext}
+          </div>
+          <div>{pill}</div>
+        </div>
+        """
+
+    app_cards = "".join(app_card(a) for a in apps_list)
+
+    add_card = """
+      <div class="appCard addAppCard" id="addAppCard" role="button" tabindex="0" title="Add an app">
+        <div class="addAppCardInner">+</div>
+      </div>
+    """
+
     body = f"""
       <div class="grid">
         <div class="card">
           <div class="hd">
-            <h2>Settings</h2>
+            <div class="settingsTabs" role="tablist" aria-label="Settings tabs">
+              <button class="settingsTab active" type="button" data-tab="general" role="tab" aria-selected="true">General</button>
+              <button class="settingsTab" type="button" data-tab="apps" role="tab" aria-selected="false">Apps</button>
+            </div>
             <div class="btnrow">
-              <a class="btn" href="/apps">Manage Apps</a>
-              <a class="btn" href="/jobs">Manage Jobs</a>
               <form method="post" action="/apply-cron" style="margin:0;">
                 <button class="btn warn" type="submit">Apply Cron</button>
               </form>
@@ -2730,44 +2848,61 @@ def settings():
           </div>
 
           <div class="bd">
-            <form method="post" action="/save-settings" style="margin:0;">
-              <div class="field" style="margin-bottom:12px;">
-                <label>HTTP Timeout Seconds</label>
-                <input type="number" min="5" name="HTTP_TIMEOUT_SECONDS" value="{cfg["HTTP_TIMEOUT_SECONDS"]}">
-              </div>
+            <div class="settingsPanel active" id="settings_tab_general" role="tabpanel">
+              <form method="post" action="/save-settings" style="margin:0;">
+                <div class="field" style="margin-bottom:12px;">
+                  <label>HTTP Timeout Seconds</label>
+                  <input type="number" min="5" name="HTTP_TIMEOUT_SECONDS" value="{cfg["HTTP_TIMEOUT_SECONDS"]}">
+                </div>
 
-              <div class="field" style="margin-bottom:12px;">
-                <label>UI Theme</label>
-                 <select class="nativeSelect" id="settings_theme" name="UI_THEME">
-                   <option value="dark" {"selected" if cfg.get("UI_THEME", "dark") == "dark" else ""}>Dark</option>
-                   <option value="light" {"selected" if cfg.get("UI_THEME", "dark") == "light" else ""}>Light</option>
-                 </select>
+                <div class="field" style="margin-bottom:12px;">
+                  <label>UI Theme</label>
+                   <select class="nativeSelect" id="settings_theme" name="UI_THEME">
+                     <option value="dark" {"selected" if cfg.get("UI_THEME", "dark") == "dark" else ""}>Dark</option>
+                     <option value="light" {"selected" if cfg.get("UI_THEME", "dark") == "light" else ""}>Light</option>
+                   </select>
 
-                 <div class="fakeSelect" data-for="settings_theme" id="fake_settings_theme">
-                   <button type="button" class="fakeSelectBtn" aria-haspopup="listbox" aria-expanded="false">
-                     <span class="fakeSelectValue">Theme</span>
-                     <span class="fakeSelectChevron" aria-hidden="true"></span>
-                   </button>
-                   <div class="fakeSelectMenu" role="listbox" tabindex="-1"></div>
+                   <div class="fakeSelect" data-for="settings_theme" id="fake_settings_theme">
+                     <button type="button" class="fakeSelectBtn" aria-haspopup="listbox" aria-expanded="false">
+                       <span class="fakeSelectValue">Theme</span>
+                       <span class="fakeSelectChevron" aria-hidden="true"></span>
+                     </button>
+                     <div class="fakeSelectMenu" role="listbox" tabindex="-1"></div>
+                   </div>
                  </div>
-               </div>
 
-              <div class="btnrow" style="margin-top:14px;">
-                <button class="btn primary" type="submit">Save Settings</button>
+                <div class="btnrow" style="margin-top:14px;">
+                  <button class="btn primary" type="submit">Save Settings</button>
+                </div>
+
+                <div class="muted" style="margin-top:14px;">
+                  App connections are managed in <b>Settings → Apps</b>.
+                </div>
+              </form>
+            </div>
+
+            <div class="settingsPanel" id="settings_tab_apps" role="tabpanel">
+              <div class="muted" style="margin-bottom:10px;">
+                Connected apps: <b>{connected_apps}</b> / <b>{total_apps}</b>
               </div>
 
-              <div class="muted" style="margin-top:14px;">
-                App connections are managed in <a href="/apps"><b>Apps</b></a>.
+              <div class="appsGrid" style="margin-top:10px;">
+                {add_card}
+                {app_cards}
               </div>
-            </form>
+            </div>
           </div>
         </div>
       </div>
+
+
+      {app_modals_html(cfg, usage)}
     """
     return render_template_string(shell("mediareaparr • Settings", "settings", body))
 
 
 @app.post("/save-settings")
+
 def save_settings():
     cfg = load_config()
 
@@ -2957,84 +3092,8 @@ def app_modals_html(cfg: Dict[str, Any], usage: Dict[str, int]) -> str:
 
 @app.get("/apps")
 def apps():
-    cfg = load_config()
-    apps_list = [normalize_app(a) for a in (cfg.get("APPS") or [])]
-
-    # usage map: app_id -> number of jobs referencing it
-    jobs = [normalize_job(j) for j in (cfg.get("JOBS") or [])]
-    usage: Dict[str, int] = {}
-    for j in jobs:
-        aid = str(j.get("APP_ID") or "").strip()
-        if not aid:
-            continue
-        usage[aid] = usage.get(aid, 0) + 1
-
-    def card(a: Dict[str, Any]) -> str:
-        a = normalize_app(a)
-        kind = a.get("type", "radarr")
-        title = a.get("name", "App")
-        ok = bool(a.get("ok", False))
-        url = str(a.get("url") or "")
-        app_id = safe_html(a.get("id"))
-
-        href = (url or "").strip()
-        ext = ""
-        if href:
-            ext = f"""<a class="appCardLinkBtn" href="{safe_html(href)}" target="_blank" rel="noreferrer" title="Open {safe_html(title)}">
-              ↗
-            </a>"""
-        else:
-            ext = """<div class="appCardLinkBtn" title="No URL set" style="opacity:.4; cursor:default;">↗</div>"""
-
-        pill = '<span class="pill good">Connected</span>' if ok else '<span class="pill bad">Not Connected</span>'
-
-        type_label = "Radarr" if kind == "radarr" else "Sonarr"
-
-        return f"""
-        <div class="appCard" role="button" tabindex="0"
-             onclick="openEditApp('{app_id}')"
-             onkeydown="if(event.key==='Enter'||event.key===' '){{
-                event.preventDefault(); openEditApp('{app_id}');
-             }}"
-             title="Configure {safe_html(title)}">
-          <div class="appCardTop">
-            <div style="min-width:0;">
-              <div class="appTitle">{safe_html(title)}</div>
-              <div class="appSub">{safe_html(type_label)} • {safe_html(url or 'No URL')}</div>
-            </div>
-            {ext}
-          </div>
-          <div>{pill}</div>
-        </div>
-        """
-
-    app_cards = "".join(card(a) for a in apps_list)
-
-    add_card = """
-      <div class="appCard addAppCard" id="addAppCard" role="button" tabindex="0" title="Add an app">
-        <div class="addAppCardInner">+</div>
-      </div>
-    """
-
-    body = f"""
-      <div class="grid">
-        <div class="card">
-          <div class="hd">
-            <h2>Apps</h2>
-            <div class="muted">Application integrations</div>
-          </div>
-          <div class="bd">
-            <div class="appsGrid">
-              {add_card}
-              {app_cards}
-            </div>
-          </div>
-        </div>
-      </div>
-
-      {app_modals_html(cfg, usage)}
-    """
-    return render_template_string(shell("mediareaparr • Apps", "apps", body))
+    # Apps are now managed under Settings → Apps
+    return redirect("/settings?tab=apps")
 
 
 def _system_status(url: str, api_key: str, timeout_s: int) -> Dict[str, Any]:
