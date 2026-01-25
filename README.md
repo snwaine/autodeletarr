@@ -2,6 +2,7 @@
 ![Docker Version](https://img.shields.io/docker/v/snwaine/mediareaparr/latest)
 ![Build Status](https://img.shields.io/github/actions/workflow/status/snwaine/mediareaparr/docker.yml)
 ![License](https://img.shields.io/github/license/snwaine/mediareaparr)
+# THIS IS VERY EARLY ALPHA NOT FOR PUBLIC USE
 # 🪦 MediaReaparr
 **Schedule the inevitable.**
 
