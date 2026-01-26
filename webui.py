@@ -24,6 +24,7 @@ STATE_PATH = CONFIG_DIR / "state.json"
 # ----------------------------
 DEFAULT_LOG_PATH = Path(os.environ.get("LOG_PATH", str(CONFIG_DIR / "mediareaparr.log")))
 
+
 def get_log_path(cfg: Optional[Dict[str, Any]] = None) -> Path:
     try:
         if isinstance(cfg, dict):
@@ -33,6 +34,7 @@ def get_log_path(cfg: Optional[Dict[str, Any]] = None) -> Path:
     except Exception:
         pass
     return DEFAULT_LOG_PATH
+
 
 def tail_file(path: Path, max_lines: int = 500, max_bytes: int = 1024 * 1024) -> str:
     """Return the last N lines of a text file (best-effort, safe for large files)."""
@@ -56,7 +58,6 @@ def tail_file(path: Path, max_lines: int = 500, max_bytes: int = 1024 * 1024) ->
         return "\n".join(lines)
     except Exception as e:
         return f"(failed to read log) {e}"
-
 
 
 # ----------------------------
@@ -671,6 +672,7 @@ BASE_HEAD = """
     --panel:#1f2937;
     --panel2:#1b2431;
     --muted:#9ca3af;
+    --rule:#555555;
     --text:#f1f5f9;
     --line:#334155;
     --line2:#475569;
@@ -707,6 +709,7 @@ BASE_HEAD = """
     --toolbarBackgroundColor:#262626;
     --pageBackgroundColor:#202020;
     --muted:#9ca3af;
+    --rule:#555555;
     --text:#f1f5f9;
     --line:#212d3d;
     --line2:#212d3d;
@@ -1041,10 +1044,6 @@ BASE_HEAD = """
     min-height: 0;
   }
 
-  .sbItem,.sbItem:hover,.sbItem:focus,.sbItem:active{
-    text-decoration: none;
-  }
-
   .sbItem{
     display:flex;
     align-items:center;
@@ -1058,16 +1057,25 @@ BASE_HEAD = """
     cursor:pointer;
   }
 
-  .sbItem:active, .sbItem:active span, .sbItem:focus, .sbItem:focus span{
-    color: inherit;
+  .sbItem,.sbItem:visited,.sbItem:focus,.sbItem:active{
+    color: var(--text);
+    text-decoration: none;
+    -webkit-tap-highlight-color: transparent;
   }
 
   .sbItem:hover{
-    color: #97c13d;
+    color: var(--accent);
+    text-decoration: none;
   }
 
-  .sbItem.active{
-    box-shadow: none;
+  /* Keep active/selected state stable even during mousedown */
+  .sbItem.active,.sbItem.active:visited,.sbItem.active:focus,.sbItem.active:active{
+    color: var(--accent);
+    text-decoration: none;
+  }
+
+  .sbItem:active span,.sbItem:focus span{
+    color: inherit;
   }
 
   body[data-theme="light"] .sbItem.active{
@@ -1382,6 +1390,23 @@ BASE_HEAD = """
   @media (min-width: 700px){ .jobsGrid{ grid-template-columns: repeat(2, minmax(300px, 1fr)); } }
   @media (min-width: 1200px){ .jobsGrid{ grid-template-columns: repeat(3, minmax(300px, 1fr)); gap: 16px; } }
   @media (min-width: 1800px){ .jobsGrid{ grid-template-columns: repeat(4, minmax(300px, 1fr)); gap: 20px; } }
+
+  /* Jobs sections (Sonarr/Radarr) */
+
+  .jobsSections{ display:block; width:100%; }
+  .jobsSection{ display:block; width:100%; margin-top: 18px; clear: both; }
+  .jobsSectionHeader{
+    display:flex; align-items:center; gap: 14px;
+    margin: 12px 0 14px;
+  }
+  .jobsSectionHeader .title{
+    font-size: 18px; font-weight: 700; color: var(--text);
+  }
+  .jobsSectionHeader .rule{
+    flex:1; height: 2px; background: var(--line);
+    opacity: .75;
+  }
+
 
   .jobHeader{
     padding: 12px 12px;
@@ -2901,7 +2926,6 @@ def settings():
 
 
 @app.post("/save-settings")
-
 def save_settings():
     cfg = load_config()
 
@@ -3537,7 +3561,9 @@ def jobs_page():
     </div>
     """
 
-    job_cards = []
+    sonarr_cards = []
+    radarr_cards = []
+    other_cards = []
     for j0 in cfg["JOBS"]:
         j = normalize_job(j0)
         a = find_app(cfg, j.get("APP_ID"))
@@ -3619,7 +3645,7 @@ def jobs_page():
           </form>
         """
 
-        job_cards.append(f"""
+        card_html = f"""
           <div class="jobCard">
             <div class="jobHeader">
               <div class="jobHeaderLeft">
@@ -3696,7 +3722,14 @@ def jobs_page():
               </div>
             </div>
           </div>
-        """)
+        """
+
+        if app_kind == "sonarr":
+            sonarr_cards.append(card_html)
+        elif app_kind == "radarr":
+            radarr_cards.append(card_html)
+        else:
+            other_cards.append(card_html)
 
     can_add_job = len(ready_apps) > 0
     add_job_disabled_attr = "" if can_add_job else "disabled"
@@ -3712,9 +3745,57 @@ def jobs_page():
         hint_html = """
           <div class="muted" style="margin-top:12px;">
             Add Job is disabled because no connected apps exist.
-            Go to <a href="/apps"><b>Apps</b></a>, add an app, run <b>Test</b>, then <b>Save</b>.
+            Go to <a href="/settings?tab=apps"><b>Apps</b></a>, add an app, run <b>Test</b>, then <b>Save</b>.
           </div>
         """
+
+    sonarr_section_html = ""
+    radarr_section_html = ""
+    other_section_html = ""
+
+    if sonarr_cards:
+        sonarr_section_html = f'''
+          <div class="jobsSection">
+            <div class="jobsSectionHeader"><div class="title">Sonarr Jobs</div><div class="rule"></div></div>
+            <div class="jobsGrid">
+              {''.join(sonarr_cards)}
+            </div>
+          </div>
+        '''
+    else:
+        sonarr_section_html = '''
+          <div class="jobsSection">
+            <div class="jobsSectionHeader"><div class="title">Sonarr Jobs</div><div class="rule"></div></div>
+            <div class="muted">No Sonarr jobs yet.</div>
+          </div>
+        '''
+
+    if radarr_cards:
+        radarr_section_html = f'''
+          <div class="jobsSection">
+            <div class="jobsSectionHeader"><div class="title">Radarr Jobs</div><div class="rule"></div></div>
+            <div class="jobsGrid">
+              {''.join(radarr_cards)}
+            </div>
+          </div>
+        '''
+    else:
+        radarr_section_html = '''
+          <div class="jobsSection">
+            <div class="jobsSectionHeader"><div class="title">Radarr Jobs</div><div class="rule"></div></div>
+            <div class="muted">No Radarr jobs yet.</div>
+          </div>
+        '''
+
+    if other_cards:
+        other_section_html = f'''
+          <div class="jobsSection">
+            <div class="jobsSectionHeader"><div class="title">Other Jobs</div><div class="rule"></div></div>
+            <div class="jobsGrid">
+              {''.join(other_cards)}
+            </div>
+          </div>
+        '''
 
     body = f"""
       {tags_js}
@@ -3732,8 +3813,8 @@ def jobs_page():
           </div>
 
           <div class="bd">
-            <div class="jobsGrid">
-              {''.join(job_cards)}
+            <div class="jobsSections">
+              {sonarr_section_html}{radarr_section_html}{other_section_html}
             </div>
             {hint_html}
           </div>
@@ -4098,6 +4179,7 @@ def status_log():
     log_path = get_log_path()
     txt = tail_file(log_path, max_lines=lines)
     return Response(txt, mimetype="text/plain; charset=utf-8")
+
 
 # ----------------------------
 @app.get("/status")
