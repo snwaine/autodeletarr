@@ -370,7 +370,8 @@ def run_now_button_html(job: Dict[str, Any], app_label: str = "App") -> str:
         return '<button class="btn" type="button" disabled title="Enable this job to run">Run Now</button>'
 
     jid = safe_html(job["id"])
-    enabled = str(bool(job.get("enabled", True))).lower()
+    enabled = "true" if bool(job.get("enabled", True)) else "false"
+    delete_files = "true" if bool(job.get("DELETE_FILES", True)) else "false"
     app_lbl = safe_html(app_label)
 
     # 🔹 DRY RUN → Preview-only (no execution)
@@ -383,15 +384,19 @@ def run_now_button_html(job: Dict[str, Any], app_label: str = "App") -> str:
           </a>
         '''
 
-    # REAL RUN (confirmation modal)
+    # REAL RUN (confirmation via JS listener; no inline JS)
     return f'''
       <button class="btn bad" type="button"
-        onclick="openRunNowConfirm('{jid}', {{
-          appLabel: '{app_lbl}',
-          dryRun: false,
-          enabled: {enabled}
-        }})">Run Now</button>
+        data-action="run-now"
+        data-job-id="{jid}"
+        data-app-label="{app_lbl}"
+        data-dry-run="0"
+        data-delete-files="{delete_files}"
+        data-enabled="{enabled}">
+        Run Now
+      </button>
     '''
+
 
 
 def load_config() -> Dict[str, Any]:
@@ -706,6 +711,7 @@ BASE_HEAD = """
     --toolbarBackgroundColor:#262626;
     --pageBackgroundColor:#202020;
     --muted:#9ca3af;
+    --addjobcardhover:#029bf3;
     --rule:#555555;
     --text:#f1f5f9;
     --line:#212d3d;
@@ -730,6 +736,7 @@ BASE_HEAD = """
     --pageBackgroundColor:#f5f7fa;
     --text:#0f172a;
     --muted:#475569;
+    --addjobcardhover:#029bf3;
     --line:#e2e8f0;
     --line2:#cbd5e1;
     --accent:#a7d541;
@@ -1146,7 +1153,22 @@ BASE_HEAD = """
     border: 1px solid var(--line);
   }
 
-  .card .hd{
+
+
+  .jobCard.addJobCard{
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    cursor:pointer;
+    user-select:none;
+    border:4px dashed rgba(255,255,255,.18);
+    background: rgba(255,255,255,.03);
+    min-height: 120px;
+  }
+  .jobCard.addJobCard:hover{
+    border:4px dashed var(--addjobcardhover);
+  }
+.card .hd{
     padding: 14px 16px;
     display:flex;
     align-items:center;
@@ -1399,7 +1421,7 @@ BASE_HEAD = """
   }
 
   .jobName:hover{
-    cursor: default;
+    cursor: pointer;
   }
 
   /* Only fade the end when the text actually overflows the box */
@@ -1415,6 +1437,8 @@ BASE_HEAD = """
       rgba(0,0,0,0) 100%
     );
   }
+.jobName:hover{
+  cursor: pointer;
 }
 
 @media (min-width: 700px){ .jobsGrid{ grid-template-columns: repeat(2, minmax(300px, 1fr)); } }
@@ -2583,7 +2607,15 @@ function initFakeSelect(fake){
     setTimeout(jobModalUpdateDirty, 0);
   }
 
-  function openNewJob(){
+
+  function openAddJobCard(appType){
+    // appType should be "radarr" or "sonarr"
+    openNewJob(appType);
+    // keep fake select label in sync when opening
+    if (typeof syncFakeSelect === "function") syncFakeSelect("job_app");
+  }
+
+function openNewJob(preferredType){
     const form = $("jobForm");
     if (!form) return;
 
@@ -2593,9 +2625,25 @@ function initFakeSelect(fake){
 
     const appSel = $("job_app");
     const defApp = appSel?.getAttribute("data-default-app") || "";
-    if (defApp) setVal("job_app", defApp);
 
-    if (appSel && appSel.selectedIndex < 0 && appSel.options.length > 0) appSel.selectedIndex = 0;
+    // Prefer first app matching preferredType ("radarr"|"sonarr") if provided
+    if (appSel) {
+      let picked = "";
+      if (preferredType && window.__APP_TYPES) {
+        if (defApp && window.__APP_TYPES[defApp] === preferredType) {
+          picked = defApp;
+        } else {
+          for (let i = 0; i < appSel.options.length; i++) {
+            const v = appSel.options[i].value;
+            if (window.__APP_TYPES[v] === preferredType) { picked = v; break; }
+          }
+        }
+      }
+      if (!picked && defApp) picked = defApp;
+      if (picked) appSel.value = picked;
+      if (appSel.selectedIndex < 0 && appSel.options.length > 0) appSel.selectedIndex = 0;
+    }
+
     const actualApp = appSel ? (appSel.value || defApp) : defApp;
     syncFakeSelect("job_app");
 
@@ -2728,6 +2776,61 @@ setChecked("job_excl", (btn.getAttribute("data-excl") || "0") === "1");
   });
 
   document.addEventListener("DOMContentLoaded", () => {
+    // Jobs page: avoid inline JS by using data-action handlers
+    document.addEventListener("click", (e) => {
+      const el = e.target.closest("[data-action]");
+      if (!el) return;
+      const act = el.getAttribute("data-action");
+      if (act === "job-new") {
+        e.preventDefault();
+        openNewJob();
+      } else if (act === "job-add-card") {
+        e.preventDefault();
+        const t = el.getAttribute("data-app-type") || "";
+        openNewJob(t);
+      } else if (act === "job-edit") {
+        e.preventDefault();
+        openEditJob(el);
+      } else if (act === "run-now") {
+        e.preventDefault();
+        const jid = el.getAttribute("data-job-id") || "";
+        const appLabel = el.getAttribute("data-app-label") || "App";
+        const enabled = (el.getAttribute("data-enabled") === "true" || el.getAttribute("data-enabled") === "1");
+        const delFiles = (el.getAttribute("data-delete-files") === "true" || el.getAttribute("data-delete-files") === "1");
+        openRunNowConfirm(jid, { appLabel: appLabel, dryRun: false, deleteFiles: delFiles, enabled: enabled });
+      }
+    });
+
+    // Keyboard activation for the add-job cards
+    document.addEventListener("keydown", (e) => {
+      if (e.key !== "Enter" && e.key !== " ") return;
+      const el = e.target.closest('[data-action="job-add-card"]');
+      if (!el) return;
+      e.preventDefault();
+      const t = el.getAttribute("data-app-type") || "";
+      openNewJob(t);
+    });
+
+    // Confirm before deleting a job
+    document.addEventListener("submit", (e) => {
+      const form = e.target;
+      if (!(form instanceof HTMLFormElement)) return;
+      if (!form.classList.contains("jobDeleteForm")) return;
+      if (!confirm("Delete this job?")) {
+        e.preventDefault();
+        return;
+      }
+    });
+
+    // Auto-submit enable toggle
+    document.addEventListener("change", (e) => {
+      const cb = e.target;
+      if (!(cb instanceof HTMLInputElement)) return;
+      if (cb.getAttribute("data-action") !== "job-enable") return;
+      const form = cb.closest("form");
+      if (form) form.submit();
+    });
+
     // Job name overflow fade (only when overflowing)
     function updateJobNameFades(){
       document.querySelectorAll(".jobName").forEach(el => {
@@ -3924,10 +4027,10 @@ def jobs_page():
             """
 
         edit_btn = f"""
-          <button class="btn"
+          <button class="btn jobEditBtn"
                   type="button"
-                  onclick="openEditJob(this)"
-                  data-id="{safe_html(j["id"])}"
+                  data-action="job-edit"
+                                    data-id="{safe_html(j["id"])}"
                   data-name="{safe_html(j["name"])}"
                   data-enabled="{'1' if j["enabled"] else '0'}"
                   data-app-id="{safe_html(j.get("APP_ID", ""))}"
@@ -3943,8 +4046,7 @@ def jobs_page():
         """
 
         delete_btn = f"""
-          <form method="post" action="/jobs/delete" style="margin:0;"
-                onsubmit="return confirm('Are you sure you want to delete this job?');">
+          <form method="post" action="/jobs/delete" style="margin:0;" class="jobDeleteForm" data-action="job-delete">
             <input type="hidden" name="job_id" value="{safe_html(j["id"])}">
             <button class="btn bad" type="submit">Delete</button>
           </form>
@@ -3963,7 +4065,7 @@ def jobs_page():
                   <div class="enableWrap">
                     <div class="enableLbl">Enable</div>
                     <label class="switch" title="Enable/Disable Job">
-                      <input type="checkbox" name="enabled" {"checked" if j["enabled"] else ""} onchange="this.form.submit()">
+                      <input type="checkbox" name="enabled" {"checked" if j["enabled"] else ""} data-action="job-enable">
                       <span class="slider"></span>
                     </label>
                   </div>
@@ -4023,7 +4125,8 @@ def jobs_page():
     add_job_title = "Add Job" if can_add_job else "Connect an app in Apps (Test + Save) to add a job."
 
     add_job_button = f"""
-      <button class="btn primary" type="button" onclick="openNewJob()" {add_job_disabled_attr}
+      <button class="btn primary" type="button" id="addJobBtn"
+              data-action="job-new" {add_job_disabled_attr}
               title="{safe_html(add_job_title)}">Add Job</button>
     """
 
@@ -4045,6 +4148,14 @@ def jobs_page():
           <div class="jobsSection">
             <div class="jobsSectionHeader"><div class="title">Sonarr Jobs</div><div class="rule"></div></div>
             <div class="jobsGrid">
+              <div class="jobCard addJobCard" role="button" tabindex="0"
+                   data-action="job-add-card" data-app-type="sonarr"
+                   title="Add Sonarr job">
+                <div style="text-align:center;">
+                  <div style="font-size:42px; line-height:1; color:var(--muted);">+</div>
+                  <div class="muted" style="margin-top:6px; font-weight:700;">Add Sonarr Job</div>
+                </div>
+              </div>
               {''.join(sonarr_cards)}
             </div>
           </div>
@@ -4062,6 +4173,14 @@ def jobs_page():
           <div class="jobsSection">
             <div class="jobsSectionHeader"><div class="title">Radarr Jobs</div><div class="rule"></div></div>
             <div class="jobsGrid">
+              <div class="jobCard addJobCard" role="button" tabindex="0"
+                   data-action="job-add-card" data-app-type="radarr"
+                   title="Add Radarr job">
+                <div style="text-align:center;">
+                  <div style="font-size:42px; line-height:1; color:var(--muted);">+</div>
+                  <div class="muted" style="margin-top:6px; font-weight:700;">Add Radarr Job</div>
+                </div>
+              </div>
               {''.join(radarr_cards)}
             </div>
           </div>
