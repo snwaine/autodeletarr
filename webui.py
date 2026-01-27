@@ -711,7 +711,6 @@ BASE_HEAD = """
     --toolbarBackgroundColor:#262626;
     --pageBackgroundColor:#202020;
     --muted:#9ca3af;
-    --addjobcardhover:#029bf3;
     --rule:#555555;
     --text:#f1f5f9;
     --line:#212d3d;
@@ -736,7 +735,6 @@ BASE_HEAD = """
     --pageBackgroundColor:#f5f7fa;
     --text:#0f172a;
     --muted:#475569;
-    --addjobcardhover:#029bf3;
     --line:#e2e8f0;
     --line2:#cbd5e1;
     --accent:#a7d541;
@@ -1166,8 +1164,33 @@ BASE_HEAD = """
     min-height: 120px;
   }
   .jobCard.addJobCard:hover{
-    border:4px dashed var(--addjobcardhover);
+    border-color: rgba(167,213,65,.45);
+    background: rgba(167,213,65,.06);
   }
+
+  /* --------------------------------
+     Add Job cards: per-app hover colour
+     (avoid inline JS; use data-app-type)
+     -------------------------------- */
+  .jobCard.addJobCard{
+    transition: background .18s ease, border-color .18s ease, box-shadow .18s ease;
+  }
+
+  /* Sonarr — blue/teal accent */
+  .jobCard.addJobCard[data-app-type="sonarr"]:hover{
+    border-color: #38bdf8;
+    background: rgba(56,189,248,.10);
+    box-shadow: 0 0 0 3px rgba(56,189,248,.18), var(--shadow);
+  }
+
+  /* Radarr — yellow accent (theme) */
+  .jobCard.addJobCard[data-app-type="radarr"]:hover{
+    border-color: #eeb530;
+    background: rgba(167,213,65,.12);
+    box-shadow: 0 0 0 3px rgba(167,213,65,.20), var(--shadow);
+  }
+
+
 .card .hd{
     padding: 14px 16px;
     display:flex;
@@ -1457,7 +1480,7 @@ BASE_HEAD = """
     font-size: 18px; font-weight: 700; color: var(--text);
   }
   .jobsSectionHeader .rule{
-    flex:1; height: 2px; background: var(--line);
+    flex:1; height: 2px; background: var(--muted);
     opacity: .75;
   }
 
