@@ -1385,11 +1385,39 @@ BASE_HEAD = """
     width: 100%;
   }
 
-  .jobCard:has(input[type="checkbox"]:not(:checked)) .jobName{
-    color: var(--muted);
+  .jobCard:has(input[type="checkbox"]:not(:checked)) 
+  .jobName{
+    color: var(--text);
+    font-size: 18px;
+    font-weight: 800;
+    letter-spacing: .3px;
+
+    max-width: 18ch;
+    white-space: nowrap;
+    overflow: hidden;
+    position: relative;
   }
 
-  @media (min-width: 700px){ .jobsGrid{ grid-template-columns: repeat(2, minmax(300px, 1fr)); } }
+  .jobName:hover{
+    cursor: default;
+  }
+
+  /* Only fade the end when the text actually overflows the box */
+  .jobName.is-overflowing{
+    -webkit-mask-image: linear-gradient(
+      to right,
+      rgba(0,0,0,1) 80%,
+      rgba(0,0,0,0) 100%
+    );
+    mask-image: linear-gradient(
+      to right,
+      rgba(0,0,0,1) 80%,
+      rgba(0,0,0,0) 100%
+    );
+  }
+}
+
+@media (min-width: 700px){ .jobsGrid{ grid-template-columns: repeat(2, minmax(300px, 1fr)); } }
   @media (min-width: 1200px){ .jobsGrid{ grid-template-columns: repeat(3, minmax(300px, 1fr)); gap: 16px; } }
   @media (min-width: 1800px){ .jobsGrid{ grid-template-columns: repeat(4, minmax(300px, 1fr)); gap: 20px; } }
 
@@ -1429,15 +1457,10 @@ BASE_HEAD = """
     font-size: 18px;
     font-weight: 800;
     letter-spacing: .3px;
-
     max-width: 18ch;
     white-space: nowrap;
     overflow: hidden;
-    position: relative;
-
-    /* subtle fade-out at end instead of "..." */
-    -webkit-mask-image: linear-gradient(to right, rgba(0,0,0,1) 70%, rgba(0,0,0,0) 100%);
-    mask-image: linear-gradient(to right, rgba(0,0,0,1) 70%, rgba(0,0,0,0) 100%);
+    text-overflow: ellipsis;
   }
 
   .jobTitleRow{
@@ -1967,7 +1990,28 @@ BASE_HEAD = """
    // -----------------------
    // FakeSelect (custom dropdown) - keeps native <select> hidden for form submit
    // -----------------------
-   function initFakeSelect(fake){
+
+  function syncFakeSelect(selectId){
+    const native = document.getElementById(selectId);
+    const fake = document.querySelector('.fakeSelect[data-for="' + selectId + '"]');
+    if (!native || !fake) return;
+
+    const val = fake.querySelector(".fakeSelectValue");
+    const cur = native.options[native.selectedIndex];
+    if (val) val.textContent = cur ? cur.textContent : "-- Select --";
+
+    const menu = fake.querySelector(".fakeSelectMenu");
+    if (menu){
+      menu.querySelectorAll(".fakeOpt").forEach(item => {
+        const v = item.getAttribute("data-value") || "";
+        const sel = (v === (native.value || ""));
+        item.classList.toggle("active", sel);
+        item.setAttribute("aria-selected", sel ? "true" : "false");
+      });
+    }
+  }
+
+function initFakeSelect(fake){
      if (!fake) return;
      const selectId = fake.getAttribute("data-for");
      const native = document.getElementById(selectId);
@@ -2553,6 +2597,7 @@ BASE_HEAD = """
 
     if (appSel && appSel.selectedIndex < 0 && appSel.options.length > 0) appSel.selectedIndex = 0;
     const actualApp = appSel ? (appSel.value || defApp) : defApp;
+    syncFakeSelect("job_app");
 
     rebuildTagOptions(actualApp, "");
     updateSonarrModeVisibility(actualApp);
@@ -2586,6 +2631,7 @@ setChecked("job_excl", false);
 
     const appId = btn.getAttribute("data-app-id") || "";
     setVal("job_app", appId);
+    syncFakeSelect("job_app");
 
     const tag = btn.getAttribute("data-tag") || "";
     rebuildTagOptions(appId, tag);
@@ -2682,6 +2728,16 @@ setChecked("job_excl", (btn.getAttribute("data-excl") || "0") === "1");
   });
 
   document.addEventListener("DOMContentLoaded", () => {
+    // Job name overflow fade (only when overflowing)
+    function updateJobNameFades(){
+      document.querySelectorAll(".jobName").forEach(el => {
+        const isOverflowing = el.scrollWidth > el.clientWidth + 1;
+        el.classList.toggle("is-overflowing", isOverflowing);
+      });
+    }
+    updateJobNameFades();
+    window.addEventListener("resize", updateJobNameFades);
+
     try {
       const v = localStorage.getItem("sbCollapsed");
       if (v === "1") document.body.classList.add("sbCollapsed");
@@ -3695,7 +3751,7 @@ def jobs_page():
              </div>
 
             <div class="field" id="sonarrDeleteModeField" style="display:none; margin-bottom:12px;">
-              <label>Sonarr Delete Mode</label>
+              <label>Removal Type</label>
                <select class="nativeSelect" name="SONARR_DELETE_MODE" id="job_sonarr_mode">
                  {sonarr_mode_opts}
                </select>
@@ -3761,18 +3817,9 @@ def jobs_page():
             </div>
 
             <div class="checks" style="margin-top:12px;">
-              <label class="check">
-                <input type="checkbox" id="job_dry" name="DRY_RUN" checked>
-                <div>
-                  <div style="font-weight:700;">Dry Run</div>
-                  <div class="muted">Log only; no deletes.</div>
-                </div>
-              </label>
 
 
-              <div class="muted" style="margin:2px 12px 6px 12px;">
-                <b>Real runs always delete files.</b> Keep <b>Dry Run</b> enabled to preview safely.
-              </div>
+
               <label class="check">
                 <input type="checkbox" id="job_excl" name="ADD_IMPORT_EXCLUSION">
                 <div>
@@ -3780,14 +3827,29 @@ def jobs_page():
                   <div class="muted">Prevents re-import.</div>
                 </div>
               </label>
-            </div>
+
+<label class="check">
+                <input type="checkbox" id="job_dry" name="DRY_RUN" checked>
+                <div>
+                  <div style="font-weight:700;">Dry Run</div>
+                  <div class="muted">Log only; no deletes.</div>
+                </div>
+              </label>
+
+<div class="muted" style="margin:2px 12px 6px 12px;">
+                <b>Real runs always delete files.</b> Keep <b>Dry Run</b> enabled to preview safely.
+              </div>
+</div>
           </div>
 
           <div class="mf">
             <button class="btn" type="button" onclick="maybeCloseJobModal()">Cancel</button>
             <button class="btn primary" type="submit">Save Job</button>
           </div>
-        </form>
+
+
+
+</form>
       </div>
     </div>
     """
@@ -3856,7 +3918,7 @@ def jobs_page():
         if a and a.get("type") == "sonarr":
             sonarr_mode_line = f"""
               <div class="metaRow">
-                <div class="metaLabel">Sonarr mode:</div>
+                <div class="metaLabel">Removal Type:</div>
                 <div class="metaVal"><b>{safe_html(sonarr_delete_mode_label(j.get("SONARR_DELETE_MODE")))}</b></div>
               </div>
             """
