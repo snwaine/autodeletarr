@@ -86,6 +86,7 @@ APP_LOGO_DIR = APP_IMAGES_DIR
 app = Flask(__name__)
 app.secret_key = os.environ.get("FLASK_SECRET_KEY", "mediareaparr-secret")
 
+
 def env_default(name: str, default: str = "") -> str:
     return os.environ.get(name, default)
 
@@ -305,7 +306,7 @@ def normalize_job(j: Dict[str, Any]) -> Dict[str, Any]:
     d["SCHED_HOUR"] = clamp_int(d.get("SCHED_HOUR", 3), 0, 23, 3)
 
     d["DRY_RUN"] = bool(d.get("DRY_RUN", True))
-    d["DELETE_FILES"] = bool(d.get("DELETE_FILES", True))
+    d["DELETE_FILES"] = True
     d["ADD_IMPORT_EXCLUSION"] = bool(d.get("ADD_IMPORT_EXCLUSION", False))
 
     mode = str(d.get("SONARR_DELETE_MODE") or "episodes_only").strip()
@@ -343,20 +344,11 @@ def run_now_modal_html() -> str:
         <div class="mb">
           <div style="margin-bottom:10px;">
             <div class="muted">App: <b><span id="rn_app">App</span></b></div>
-            <div class="muted">Dry Run: <b><span id="rn_dry">OFF</span></b> • Delete Files: <b><span id="rn_del">ON</span></b> • Job: <b><span id="rn_enabled">Enabled</span></b></div>
+            <div class="muted">Dry Run: <b><span id="rn_dry">OFF</span></b> • Job: <b><span id="rn_enabled">Enabled</span></b></div>
           </div>
 
           <p><b id="rn_msg">Dry Run is OFF — this will perform real actions.</b></p>
-
-          <p id="rn_hint_delete" class="muted">
-            With <b>Delete Files</b> enabled, it may delete files from disk via the app.
-          </p>
-
-          <p id="rn_hint_no_delete" class="muted" style="display:none;">
-            With <b>Delete Files</b> disabled, it should avoid deleting from disk.
-          </p>
-
-          <p class="muted">If you’re not sure, edit the job and enable <b>Dry Run</b> first.</p>
+<p class="muted">If you’re not sure, edit the job and enable <b>Dry Run</b> first.</p>
         </div>
         <div class="mf">
           <button class="btn" type="button" onclick="hideModal('runNowBack')">Cancel</button>
@@ -378,7 +370,6 @@ def run_now_button_html(job: Dict[str, Any], app_label: str = "App") -> str:
         return '<button class="btn" type="button" disabled title="Enable this job to run">Run Now</button>'
 
     jid = safe_html(job["id"])
-    delete_files = str(bool(job.get("DELETE_FILES", True))).lower()
     enabled = str(bool(job.get("enabled", True))).lower()
     app_lbl = safe_html(app_label)
 
@@ -392,17 +383,16 @@ def run_now_button_html(job: Dict[str, Any], app_label: str = "App") -> str:
           </a>
         '''
 
-
-# REAL RUN (confirmation modal)
+    # REAL RUN (confirmation modal)
     return f'''
       <button class="btn bad" type="button"
         onclick="openRunNowConfirm('{jid}', {{
           appLabel: '{app_lbl}',
           dryRun: false,
-          deleteFiles: {delete_files},
           enabled: {enabled}
         }})">Run Now</button>
     '''
+
 
 def load_config() -> Dict[str, Any]:
     cfg = {
@@ -1180,7 +1170,7 @@ BASE_HEAD = """
   }
 
   .card .bd{
-    padding: 14px 16px;
+    padding: 6px 30px;
     background: var(--pageBackgroundColor);
     min-height: 0;
     overflow: auto;
@@ -1394,6 +1384,11 @@ BASE_HEAD = """
     max-width: none;
     width: 100%;
   }
+
+  .jobCard:has(input[type="checkbox"]:not(:checked)) .jobName{
+    color: var(--muted);
+  }
+
   @media (min-width: 700px){ .jobsGrid{ grid-template-columns: repeat(2, minmax(300px, 1fr)); } }
   @media (min-width: 1200px){ .jobsGrid{ grid-template-columns: repeat(3, minmax(300px, 1fr)); gap: 16px; } }
   @media (min-width: 1800px){ .jobsGrid{ grid-template-columns: repeat(4, minmax(300px, 1fr)); gap: 20px; } }
@@ -1430,17 +1425,25 @@ BASE_HEAD = """
   .jobHeaderRight{ justify-self: end; display:flex; align-items:center; gap:10px; }
 
   .jobName{
-    font-weight: 900;
-    letter-spacing: .2px;
+    color: var(--text);
+    font-size: 18px;
+    font-weight: 800;
+    letter-spacing: .3px;
+
+    max-width: 18ch;
     white-space: nowrap;
     overflow: hidden;
-    text-overflow: ellipsis;
+    position: relative;
+
+    /* subtle fade-out at end instead of "..." */
+    -webkit-mask-image: linear-gradient(to right, rgba(0,0,0,1) 70%, rgba(0,0,0,0) 100%);
+    mask-image: linear-gradient(to right, rgba(0,0,0,1) 70%, rgba(0,0,0,0) 100%);
   }
 
   .jobTitleRow{
     display:flex;
     align-items:center;
-    gap:10px;
+    gap:12px;
     min-width:0;
   }
 
@@ -1494,7 +1497,7 @@ BASE_HEAD = """
   }
 
 
-  .enableWrap{ display:flex; align-items:center; gap:10px; }
+  .enableWrap{ display:flex; align-items:center; gap:8px; }
   .enableLbl{ font-size: 12px; color: var(--muted); white-space: nowrap; }
 
   .jobBody{
@@ -1503,7 +1506,15 @@ BASE_HEAD = """
     display: grid;
     grid-template-columns: 1fr 70px;
     gap: 12px;
-    align-items: start;
+    align-items: center;
+  }
+
+  .jobBody .metaStack{
+    justify-content: center;
+  }
+
+  .jobBody .metaStack .metaRow:first-child{
+    display: none;
   }
 
   .jobRail{
@@ -1519,7 +1530,7 @@ BASE_HEAD = """
     padding: 10px 8px;
   }
 
-  .metaStack{ display:flex; flex-direction: column; gap: 6px; font-size: 11px; }
+  .metaStack{ display:flex; flex-direction: column; gap: 8px; font-size: 11px; }
   .metaRow{ display:flex; align-items: baseline; gap: 8px; line-height: 1.35; }
   .metaLabel{ width: 110px; color: var(--muted); flex: 0 0 auto; }
   .metaVal{ color: var(--text); flex: 1 1 auto; min-width: 0; word-break: break-word; }
@@ -2552,8 +2563,7 @@ BASE_HEAD = """
     setVal("job_day", "daily");
     setVal("job_hour", "3");
     setChecked("job_dry", true);
-    setChecked("job_delete", true);
-    setChecked("job_excl", false);
+setChecked("job_excl", false);
     setVal("job_enabled", "1");
 
     // Radarr score filter defaults
@@ -2589,8 +2599,7 @@ BASE_HEAD = """
     setVal("job_day", btn.getAttribute("data-day") || "daily");
     setVal("job_hour", btn.getAttribute("data-hour") || "3");
     setChecked("job_dry", (btn.getAttribute("data-dry") || "1") === "1");
-    setChecked("job_delete", (btn.getAttribute("data-del") || "1") === "1");
-    setChecked("job_excl", (btn.getAttribute("data-excl") || "0") === "1");
+setChecked("job_excl", (btn.getAttribute("data-excl") || "0") === "1");
     setVal("job_enabled", (btn.getAttribute("data-enabled") || "1"));
 
     // Radarr score filter
@@ -2607,7 +2616,6 @@ BASE_HEAD = """
     opts = opts || {};
     const appLabel = (opts.appLabel || "App");
     const dryRun = !!opts.dryRun;
-    const deleteFiles = !!opts.deleteFiles;
     const enabled = (opts.enabled === undefined) ? true : !!opts.enabled;
 
     const hid = $("runNowJobId");
@@ -2615,27 +2623,18 @@ BASE_HEAD = """
 
     const elApp = $("rn_app");
     const elDry = $("rn_dry");
-    const elDel = $("rn_del");
     const elEnabled = $("rn_enabled");
 
     if (elApp) elApp.textContent = appLabel;
     if (elDry) elDry.textContent = dryRun ? "ON" : "OFF";
-    if (elDel) elDel.textContent = deleteFiles ? "ON" : "OFF";
     if (elEnabled) elEnabled.textContent = enabled ? "Enabled" : "Disabled";
 
     const msg = $("rn_msg");
     if (msg){
-      const parts = [];
-      if (!dryRun) parts.push("Dry Run is OFF — this will perform real actions.");
-      parts.push(deleteFiles ? "Delete Files is ON — files may be removed from disk." : "Delete Files is OFF — it should avoid disk deletes.");
-      msg.textContent = parts.join(" ");
+      msg.textContent = dryRun
+        ? "Dry Run is ON — preview only (no deletions)."
+        : "Dry Run is OFF — this will delete files and items in the app.";
     }
-
-    const hintDelete = $("rn_hint_delete");
-    const hintNoDelete = $("rn_hint_no_delete");
-    if (hintDelete) hintDelete.style.display = deleteFiles ? "" : "none";
-    if (hintNoDelete) hintNoDelete.style.display = deleteFiles ? "none" : "";
-
     showModal("runNowBack");
   }
 
@@ -3536,8 +3535,6 @@ def apps_ping():
     return jsonify({"status": status})
 
 
-
-
 @app.post("/apps/delete")
 def apps_delete():
     cfg = load_config()
@@ -3772,14 +3769,10 @@ def jobs_page():
                 </div>
               </label>
 
-              <label class="check">
-                <input type="checkbox" id="job_delete" name="DELETE_FILES" checked>
-                <div>
-                  <div style="font-weight:700;">Delete Files</div>
-                  <div class="muted">Remove files from disk.</div>
-                </div>
-              </label>
 
+              <div class="muted" style="margin:2px 12px 6px 12px;">
+                <b>Real runs always delete files.</b> Keep <b>Dry Run</b> enabled to preview safely.
+              </div>
               <label class="check">
                 <input type="checkbox" id="job_excl" name="ADD_IMPORT_EXCLUSION">
                 <div>
@@ -3857,7 +3850,6 @@ def jobs_page():
         tag_val = j.get("TAG_LABEL") or "—"
 
         dry_val = "ON" if j.get("DRY_RUN") else "OFF"
-        del_val = "ON" if j.get("DELETE_FILES") else "OFF"
         excl_val = "ON" if j.get("ADD_IMPORT_EXCLUSION") else "OFF"
 
         sonarr_mode_line = ""
@@ -3885,7 +3877,6 @@ def jobs_page():
                   data-day="{safe_html(j["SCHED_DAY"])}"
                   data-hour="{j["SCHED_HOUR"]}"
                   data-dry="{'1' if j["DRY_RUN"] else '0'}"
-                  data-del="{'1' if j["DELETE_FILES"] else '0'}"
                   data-excl="{'1' if j["ADD_IMPORT_EXCLUSION"] else '0'}">Edit</button>
         """
 
@@ -3901,7 +3892,7 @@ def jobs_page():
           <div class="jobCard">
             <div class="jobHeader">
               <div class="jobHeaderLeft">
-                <div class="jobTitleRow">{icon_html}<div class="jobName muted">{safe_html(j["name"])}</div></div>
+                <div class="jobTitleRow">{icon_html}<div class="jobName muted" title="{safe_html(j["name"])}">{safe_html(j["name"])}</div></div>
               </div>
 
               <div class="jobHeaderRight">
@@ -4104,7 +4095,7 @@ def jobs_save():
             "SCHED_DAY": (request.form.get("SCHED_DAY") or "daily").lower(),
             "SCHED_HOUR": clamp_int(request.form.get("SCHED_HOUR") or 3, 0, 23, 3),
             "DRY_RUN": checkbox("DRY_RUN"),
-            "DELETE_FILES": checkbox("DELETE_FILES"),
+            "DELETE_FILES": True,
             "ADD_IMPORT_EXCLUSION": checkbox("ADD_IMPORT_EXCLUSION"),
         }
         job = normalize_job(job)
