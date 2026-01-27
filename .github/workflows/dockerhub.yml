@@ -41,9 +41,6 @@ jobs:
 
             # Optional: push version tags when you git tag v1.0.0
             type=ref,event=tag
-
-            # Optional: always push sha tag too
-            type=sha,prefix=sha-
         # Generates tags/labels from git refs/events :contentReference[oaicite:4]{index=4}
 
       - name: Build and push
