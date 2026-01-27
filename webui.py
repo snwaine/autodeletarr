@@ -12,7 +12,7 @@ from typing import Optional, Dict, Any, List
 import requests
 from flask import (
     Flask, request, redirect, render_template_string,
-    flash, get_flashed_messages, send_from_directory, Response
+    flash, get_flashed_messages, send_from_directory, Response, jsonify
 )
 
 CONFIG_DIR = Path(os.environ.get("CONFIG_DIR", "/config"))
@@ -79,11 +79,12 @@ def append_log_line(msg: str) -> None:
 
 
 APP_DIR = Path(__file__).resolve().parent
-APP_LOGO_DIR = APP_DIR / "logo"
-
+APP_IMAGES_DIR = APP_DIR / "images"
+CONFIG_IMAGES_DIR = CONFIG_DIR / "images"
+# Back-compat alias (older code may still reference APP_LOGO_DIR)
+APP_LOGO_DIR = APP_IMAGES_DIR
 app = Flask(__name__)
 app.secret_key = os.environ.get("FLASK_SECRET_KEY", "mediareaparr-secret")
-
 
 def env_default(name: str, default: str = "") -> str:
     return os.environ.get(name, default)
@@ -141,13 +142,13 @@ def schedule_label(day_key: str, hour: int) -> str:
     day_key = (day_key or "daily").lower()
     names = {
         "daily": "Daily",
-        "mon": "Monday",
-        "tue": "Tuesday",
-        "wed": "Wednesday",
-        "thu": "Thursday",
-        "fri": "Friday",
-        "sat": "Saturday",
-        "sun": "Sunday",
+        "mon": "Mon",
+        "tue": "Tue",
+        "wed": "Wed",
+        "thu": "Thu",
+        "fri": "Fri",
+        "sat": "Sat",
+        "sun": "Sun",
     }
     day_txt = names.get(day_key, "Daily")
     h = clamp_int(hour, 0, 23, 3)
@@ -355,7 +356,7 @@ def run_now_modal_html() -> str:
             With <b>Delete Files</b> disabled, it should avoid deleting from disk.
           </p>
 
-          <p class="muted">If you’re not sure, edit the job and enable <b>Dry Run</b>, then use Preview.</p>
+          <p class="muted">If you’re not sure, edit the job and enable <b>Dry Run</b> first.</p>
         </div>
         <div class="mf">
           <button class="btn" type="button" onclick="hideModal('runNowBack')">Cancel</button>
@@ -371,23 +372,29 @@ def run_now_modal_html() -> str:
 
 def run_now_button_html(job: Dict[str, Any], app_label: str = "App") -> str:
     job = normalize_job(job)
+
+    # Disabled job
     if not job["enabled"]:
-        return '<button class="btn" type="button" disabled title="Enable this job to run now">Run Now</button>'
+        return '<button class="btn" type="button" disabled title="Enable this job to run">Run Now</button>'
 
     jid = safe_html(job["id"])
     delete_files = str(bool(job.get("DELETE_FILES", True))).lower()
     enabled = str(bool(job.get("enabled", True))).lower()
     app_lbl = safe_html(app_label)
 
+    # 🔹 DRY RUN → Preview-only (no execution)
     if job.get("DRY_RUN", True):
-        return f"""
-          <form method="post" action="/jobs/run-now" style="margin:0;">
-            <input type="hidden" name="job_id" value="{jid}">
-            <button class="btn good" type="submit">Run Now</button>
-          </form>
-        """
+        return f'''
+          <a class="btn good"
+            href="/preview?job_id={jid}"
+              title="Dry Run enabled — no changes will be made">
+              Dry Run
+          </a>
+        '''
 
-    return f"""
+
+# REAL RUN (confirmation modal)
+    return f'''
       <button class="btn bad" type="button"
         onclick="openRunNowConfirm('{jid}', {{
           appLabel: '{app_lbl}',
@@ -395,12 +402,8 @@ def run_now_button_html(job: Dict[str, Any], app_label: str = "App") -> str:
           deleteFiles: {delete_files},
           enabled: {enabled}
         }})">Run Now</button>
-    """
+    '''
 
-
-# ----------------------------
-# Config/state
-# ----------------------------
 def load_config() -> Dict[str, Any]:
     cfg = {
         # Dynamic apps list (NO migration, NO defaults)
@@ -539,7 +542,7 @@ def radarr_movie_score_0_100(movie: Dict[str, Any]) -> Optional[int]:
     if not values:
         return None
 
-    return int(round(sum(values) / len(values)))
+    return int(sum(values) / len(values))
 
 
 # ----------------------------
@@ -666,6 +669,10 @@ def render_toasts() -> str:
 BASE_HEAD = """
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+    <!-- Favicon -->
+    <link rel="icon" href="/images/favicon.ico" sizes="any">
+    <link rel="shortcut icon" href="/images/favicon.ico">
+
 <style>
   :root{
     --bg:#111827;
@@ -1413,7 +1420,7 @@ BASE_HEAD = """
     border-bottom: 1px solid var(--line);
     background: var(--HeaderBackgroundColor);
     display: grid;
-    grid-template-columns: 1fr auto 1fr;
+    grid-template-columns: 1fr auto;
     align-items: center;
     gap: 10px;
   }
@@ -1429,6 +1436,63 @@ BASE_HEAD = """
     overflow: hidden;
     text-overflow: ellipsis;
   }
+
+  .jobTitleRow{
+    display:flex;
+    align-items:center;
+    gap:10px;
+    min-width:0;
+  }
+
+  .appIcon{
+    width:18px;
+    height:18px;
+    flex:0 0 18px;
+    display:inline-flex;
+    align-items:center;
+    justify-content:center;
+    opacity:.95;
+  }
+  .appIcon img{
+    width:30px;
+    height:30px;
+    display:block;
+  }
+
+  /* Apps cards: left stack + icon */
+  .appCardLeft{
+    display:flex;
+    align-items:flex-start;
+    gap:12px;
+    min-width:0;
+  }
+  .appCardIcon img{
+    width:40px;
+    height:40px;
+    display:block;
+    transition: filter .18s ease, opacity .18s ease, transform .18s ease;
+  }
+
+  /* Apps cards: connection state visuals */
+  @keyframes reaparrPulse {
+    0%   { transform: scale(1);    opacity: .65; }
+    50%  { transform: scale(1.04); opacity: 1; }
+    100% { transform: scale(1);    opacity: .65; }
+  }
+
+  .appCard.is-disconnected .appCardIcon img{
+    filter: grayscale(1);
+    opacity: .45;
+  }
+  .appCard.is-checking .appCardIcon img{
+    animation: reaparrPulse 1.0s ease-in-out infinite;
+    opacity: .85;
+  }
+  .appCard.is-connected .appCardIcon img{
+    filter:none;
+    opacity: 1;
+  }
+
 
   .enableWrap{ display:flex; align-items:center; gap:10px; }
   .enableLbl{ font-size: 12px; color: var(--muted); white-space: nowrap; }
@@ -2683,6 +2747,97 @@ BASE_HEAD = """
       else activate("general");
     })();
 
+    // -----------------------
+    // Apps cards: live connection check (Settings → Apps)
+    // - Greyed icon when disconnected
+    // - Pulse while checking
+    // -----------------------
+    let __appsPingTimer = null;
+
+    function isSettingsAppsTabActive(){
+      const panel = document.getElementById("settings_tab_apps");
+      return !!(panel && panel.classList.contains("active"));
+    }
+
+    function setAppCardState(card, state){
+      if (!card) return;
+      card.classList.remove("is-connected","is-disconnected","is-checking");
+      card.classList.add(state);
+    }
+
+    async function refreshAppsConnectivity(){
+      if (!isSettingsAppsTabActive()) return;
+
+      const cards = Array.from(document.querySelectorAll(".appCard[data-app-id]"));
+      if (!cards.length) return;
+
+      // set checking state immediately
+      cards.forEach(c => setAppCardState(c, "is-checking"));
+      cards.forEach(c => {
+        const pill = c.querySelector("[data-pill]");
+        if (pill){
+          pill.classList.remove("good","bad");
+          pill.textContent = "Checking connection…";
+        }
+      });
+
+      try{
+        const resp = await fetch("/apps/ping", { cache: "no-store" });
+        const data = await resp.json();
+        const st = (data && data.status) ? data.status : {};
+        let connectedN = 0;
+
+        cards.forEach(c => {
+          const id = c.getAttribute("data-app-id") || "";
+          const ok = !!st[id];
+          setAppCardState(c, ok ? "is-connected" : "is-disconnected");
+
+          const pill = c.querySelector("[data-pill]");
+          if (pill){
+            pill.classList.toggle("good", ok);
+            pill.classList.toggle("bad", !ok);
+            pill.textContent = ok ? "Connected" : "Not Connected";
+          }
+          if (ok) connectedN += 1;
+        });
+
+        const cnt = document.getElementById("appsConnectedCount");
+        if (cnt) cnt.textContent = String(connectedN);
+      } catch(e){
+        // On error, revert to disconnected
+        cards.forEach(c => {
+          setAppCardState(c, "is-disconnected");
+          const pill = c.querySelector("[data-pill]");
+          if (pill){
+            pill.classList.remove("good");
+            pill.classList.add("bad");
+            pill.textContent = "Not Connected";
+          }
+        });
+      }
+    }
+
+    function startAppsPing(){
+      if (__appsPingTimer) return;
+      refreshAppsConnectivity();
+      __appsPingTimer = setInterval(() => refreshAppsConnectivity(), 30000);
+    }
+
+    function stopAppsPing(){
+      if (__appsPingTimer) clearInterval(__appsPingTimer);
+      __appsPingTimer = null;
+    }
+
+    // refresh immediately when user switches to Apps tab
+    document.querySelectorAll('.settingsTabs [data-tab="apps"]').forEach(btn => {
+      btn.addEventListener("click", () => refreshAppsConnectivity());
+    });
+
+    // start background timer (refresh is no-op unless Apps tab is active)
+    startAppsPing();
+
+
+
         const host = $("toastHost");
     if (host) setTimeout(() => { try { host.remove(); } catch(e){} }, 6000);
   });
@@ -2726,7 +2881,7 @@ def shell(page_title: str, active: str, body: str):
       <div class="pageHeader">
         <div class="ptIn">
           <div class="pageTopLogo">
-            <img src="/logo/logo-full.png" alt="MediaReaparr">
+            <img src="/images/logo-full.png" alt="MediaReaparr">
           </div>
 
           <div class="ptSpacer"></div>
@@ -2771,13 +2926,54 @@ def home():
     return redirect("/dashboard")
 
 
+@app.get("/images/<path:filename>")
+def serve_images(filename: str):
+    """
+    Serve static images from:
+      1) /config/images (user overrides)
+      2) ./images (bundled defaults)
+    """
+    filename = (filename or "").strip()
+    if not filename or ".." in filename.replace("\\", "/"):
+        return ("", 404)
+
+    def _cache_static(resp):
+        # Cache for 1 hour; browsers will revalidate using ETag/Last-Modified.
+        try:
+            resp.cache_control.public = True
+            resp.cache_control.max_age = 3600
+            resp.cache_control.must_revalidate = True
+        except Exception:
+            resp.headers["Cache-Control"] = "public, max-age=3600, must-revalidate"
+        return resp
+
+    # Prefer user-provided overrides in /config/images
+    if CONFIG_IMAGES_DIR.exists():
+        p = (CONFIG_IMAGES_DIR / filename)
+        if p.exists() and p.is_file():
+            return _cache_static(send_from_directory(str(CONFIG_IMAGES_DIR), filename))
+
+    # Fall back to bundled images
+    if APP_IMAGES_DIR.exists():
+        p = (APP_IMAGES_DIR / filename)
+        if p.exists() and p.is_file():
+            return _cache_static(send_from_directory(str(APP_IMAGES_DIR), filename))
+
+    return ("", 404)
+
+
+@app.get("/favicon.ico")
+def favicon_redirect():
+    # Browsers often request /favicon.ico automatically
+    return redirect("/images/favicon.ico", code=302)
+
+
 @app.get("/logo/<path:filename>")
 def serve_logo_assets(filename):
-    if filename != "logo-full.png":
-        return ("", 404)
-    if not APP_LOGO_DIR.exists():
-        return ("", 404)
-    return send_from_directory(str(APP_LOGO_DIR), "logo-full.png")
+    # Back-compat: old URL → new images route
+    if filename == "logo-full.png":
+        return redirect("/images/logo-full.png", code=302)
+    return ("", 404)
 
 
 @app.post("/toggle-theme")
@@ -2818,6 +3014,7 @@ def settings():
         ok = bool(a.get("ok", False))
         url = str(a.get("url") or "")
         app_id = safe_html(a.get("id"))
+        card_state = "is-connected" if ok else "is-disconnected"
 
         href = (url or "").strip()
         if href:
@@ -2827,20 +3024,26 @@ def settings():
         else:
             ext = """<div class="appCardLinkBtn" title="No URL set" style="opacity:.4; cursor:default;">↗</div>"""
 
-        pill = '<span class="pill good">Connected</span>' if ok else '<span class="pill bad">Not Connected</span>'
+        pill = '<span class="pill good" data-pill>Connected</span>' if ok else '<span class="pill bad" data-pill>Not Connected</span>'
         type_label = "Radarr" if kind == "radarr" else "Sonarr"
+        icon_src = "/images/radarr_icon.svg" if kind == "radarr" else "/images/sonarr_icon.svg"
 
         return f"""
-        <div class="appCard" role="button" tabindex="0"
+        <div class="appCard {card_state}" data-app-id="{app_id}" data-app-type="{safe_html(kind)}" role="button" tabindex="0"
              onclick="openEditApp('{app_id}')"
              onkeydown="if(event.key==='Enter'||event.key===' '){{
                 event.preventDefault(); openEditApp('{app_id}');
              }}"
              title="Configure {safe_html(title)}">
           <div class="appCardTop">
-            <div style="min-width:0;">
-              <div class="appTitle">{safe_html(title)}</div>
-              <div class="appSub">{safe_html(type_label)} • {safe_html(url or 'No URL')}</div>
+            <div class="appCardLeft">
+              <div class="appCardIcon" aria-hidden="true">
+                <img src="{safe_html(icon_src)}" alt="">
+              </div>
+              <div style="min-width:0;">
+                <div class="appTitle">{safe_html(title)}</div>
+                <div class="appSub">{safe_html(type_label)} • {safe_html(url or 'No URL')}</div>
+              </div>
             </div>
             {ext}
           </div>
@@ -2907,7 +3110,7 @@ def settings():
 
             <div class="settingsPanel" id="settings_tab_apps" role="tabpanel">
               <div class="muted" style="margin-bottom:10px;">
-                Connected apps: <b>{connected_apps}</b> / <b>{total_apps}</b>
+                Connected apps: <b id="appsConnectedCount">{connected_apps}</b> / <b>{total_apps}</b>
               </div>
 
               <div class="appsGrid" style="margin-top:10px;">
@@ -3300,6 +3503,41 @@ def apps_test():
     return redirect("/apps")
 
 
+@app.get("/apps/ping")
+def apps_ping():
+    """Lightweight connectivity check for Settings → Apps tab.
+
+    Returns: {"status": {"<app_id>": true/false, ...}}
+    """
+    cfg = load_config()
+    apps = cfg.get("APPS") or []
+    status: Dict[str, bool] = {}
+
+    # Keep this quick to avoid UI hangs
+    timeout = clamp_int(cfg.get("HTTP_TIMEOUT_SECONDS", 5), 1, 60, 5)
+
+    for a in apps:
+        a = normalize_app(a or {})
+        app_id = str(a.get("id") or "")
+        url = str(a.get("url") or "").strip().rstrip("/")
+        api_key = str(a.get("api_key") or "").strip()
+        if not app_id:
+            continue
+        if not url or not api_key:
+            status[app_id] = False
+            continue
+        try:
+            r = _system_status(url, api_key, timeout_s=timeout)
+            # If we got a JSON back, the request succeeded; treat as connected
+            status[app_id] = True if isinstance(r, dict) else True
+        except Exception:
+            status[app_id] = False
+
+    return jsonify({"status": status})
+
+
+
+
 @app.post("/apps/delete")
 def apps_delete():
     cfg = load_config()
@@ -3574,13 +3812,27 @@ def jobs_page():
             app_kind = "radarr"
             app_label = "Missing app"
 
+        icon_html = ""
+        if app_kind == "radarr":
+            icon_html = """
+              <span class="appIcon" title="Radarr" aria-hidden="true">
+                <img src="/images/radarr_icon.svg" alt="">
+              </span>
+            """
+        elif app_kind == "sonarr":
+            icon_html = """
+              <span class="appIcon" title="Sonarr" aria-hidden="true">
+                <img src="/images/sonarr_icon.svg" alt="">
+              </span>
+            """
+
         radarr_score_line = ""
         if a and a.get("type") == "radarr":
             if j.get("RADARR_SCORE_FILTER_ENABLED"):
                 radarr_score_line = f"""
                   <div class="metaRow">
                    <div class="metaLabel">Score filter:</div>
-                   <div class="metaVal"><b>ON</b> • delete if avg score &lt; <b>{int(j.get("RADARR_MIN_AVG_SCORE", 60))}</b></div>
+                   <div class="metaVal"><b>ON</b> • delete if &lt; <b>{int(j.get("RADARR_MIN_AVG_SCORE", 60))}</b></div>
                   </div>
                 """
             else:
@@ -3649,15 +3901,7 @@ def jobs_page():
           <div class="jobCard">
             <div class="jobHeader">
               <div class="jobHeaderLeft">
-                <div class="jobName">{safe_html(j["name"])}</div>
-                <div class="muted" style="font-size:11px; margin-top:4px;">
-                  {"Last: <b>" + safe_html(lr_status) + "</b>" if lr_status else "Last: —"}
-                  {" • Avg score: <b>" + safe_html(lr_avg) + "</b>" if lr_avg is not None else ""}
-                </div>
-              </div>
-
-              <div class="jobHeaderCenter">
-                <a class="btn" href="/preview?job_id={safe_html(j["id"])}">Preview</a>
+                <div class="jobTitleRow">{icon_html}<div class="jobName muted">{safe_html(j["name"])}</div></div>
               </div>
 
               <div class="jobHeaderRight">
@@ -3700,18 +3944,8 @@ def jobs_page():
                 </div>
 
                 <div class="metaRow">
-                  <div class="metaLabel">Delete files:</div>
-                  <div class="metaVal"><b>{del_val}</b></div>
-                </div>
-
-                <div class="metaRow">
                   <div class="metaLabel">Import Exclusion:</div>
                   <div class="metaVal"><b>{excl_val}</b></div>
-                </div>
-
-                <div class="metaRow">
-                  <div class="metaLabel">Dry-run:</div>
-                  <div class="metaVal"><b>{dry_val}</b></div>
                 </div>
               </div>
 
