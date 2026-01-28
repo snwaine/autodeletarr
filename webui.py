@@ -398,7 +398,6 @@ def run_now_button_html(job: Dict[str, Any], app_label: str = "App") -> str:
     '''
 
 
-
 def load_config() -> Dict[str, Any]:
     cfg = {
         # Dynamic apps list (NO migration, NO defaults)
@@ -2232,6 +2231,12 @@ function initFakeSelect(fake){
       .replaceAll("'","&#39;");
   }
 
+  function unescHtml(s){
+    const ta = document.createElement("textarea");
+    ta.innerHTML = (s ?? "").toString();
+    return ta.value;
+  }
+
   function setSidebarCollapsed(collapsed){
     if (collapsed) document.body.classList.add("sbCollapsed");
     else document.body.classList.remove("sbCollapsed");
@@ -2575,7 +2580,52 @@ function initFakeSelect(fake){
     sel.insertBefore(opt, sel.firstChild);
   }
 
-  function rebuildTagOptions(appId, selectedValue){
+
+  function filterJobAppOptions(preferredType, keepValue){
+    // preferredType: "radarr" | "sonarr" | "" (no filter)
+    const sel = $("job_app");
+    if (!sel) return;
+
+    const keep = (keepValue ?? sel.value ?? "").toString();
+
+    // Unhide/enable everything first
+    for (const opt of Array.from(sel.options || [])){
+      opt.hidden = false;
+      opt.disabled = false;
+    }
+
+    const want = (preferredType || "").toLowerCase().trim();
+    if (want === "radarr" || want === "sonarr"){
+      for (const opt of Array.from(sel.options || [])){
+        const v = (opt.value || "").toString();
+        if (!v) continue;
+        const t = (window.__APP_TYPES && window.__APP_TYPES[v]) ? window.__APP_TYPES[v] : "";
+        if (t && t !== want){
+          // hide + disable in native; FakeSelect rebuild will omit because native option is disabled/hidden
+          opt.hidden = true;
+          opt.disabled = true;
+        }
+      }
+    }
+
+    // If current selection got filtered out, try to pick first visible option
+    const curOpt = Array.from(sel.options || []).find(o => o.value === keep);
+    const curOk = curOpt && !curOpt.hidden && !curOpt.disabled;
+
+    if (curOk){
+      sel.value = keep;
+    } else {
+      const firstOk = Array.from(sel.options || []).find(o => !o.hidden && !o.disabled && (o.value || "") !== "");
+      if (firstOk) sel.value = firstOk.value;
+    }
+
+    // Rebuild FakeSelect UI for app selector
+    const fake = $("fake_job_app");
+    if (fake && fake.__rebuild) fake.__rebuild();
+    syncFakeSelect("job_app");
+  }
+
+function rebuildTagOptions(appId, selectedValue){
     const sel = $("job_tag");
     if (!sel) return;
 
@@ -2624,6 +2674,8 @@ function initFakeSelect(fake){
   function onJobAppChanged(){
     const appSel = $("job_app");
     const appId = appSel ? (appSel.value || "") : "";
+    const t = (window.__APP_TYPES && window.__APP_TYPES[appId]) ? window.__APP_TYPES[appId] : "";
+    if (t) filterJobAppOptions(t, appId);
     rebuildTagOptions(appId, "");
     updateSonarrModeVisibility(appId);
     updateRadarrScoreVisibility(appId);
@@ -2648,6 +2700,9 @@ function openNewJob(preferredType){
 
     const appSel = $("job_app");
     const defApp = appSel?.getAttribute("data-default-app") || "";
+
+    // Filter app list to the section type (Sonarr card shows Sonarr apps, etc.)
+    filterJobAppOptions(preferredType, defApp);
 
     // Prefer first app matching preferredType ("radarr"|"sonarr") if provided
     if (appSel) {
@@ -2702,22 +2757,36 @@ setChecked("job_excl", false);
 
     const appId = btn.getAttribute("data-app-id") || "";
     setVal("job_app", appId);
+    // Limit the App dropdown to the correct type for this job
+    const jobType = (window.__APP_TYPES && window.__APP_TYPES[appId]) ? window.__APP_TYPES[appId] : "";
+    filterJobAppOptions(jobType, appId);
     syncFakeSelect("job_app");
 
-    const tag = btn.getAttribute("data-tag") || "";
+    // Tag value may be HTML-escaped in attributes (e.g. "&amp;")
+    const tag = unescHtml(btn.getAttribute("data-tag") || "");
     rebuildTagOptions(appId, tag);
+    syncFakeSelect("job_tag");
+
     updateSonarrModeVisibility(appId);
     updateRadarrScoreVisibility(appId);
 
     const smode = btn.getAttribute("data-sonarr-mode") || "episodes_only";
     setVal("job_sonarr_mode", smode);
+    syncFakeSelect("job_sonarr_mode");
 
     setVal("job_days", btn.getAttribute("data-days") || "30");
+
     setVal("job_day", btn.getAttribute("data-day") || "daily");
+    syncFakeSelect("job_day");
+
     setVal("job_hour", btn.getAttribute("data-hour") || "3");
+    syncFakeSelect("job_hour");
+
     setChecked("job_dry", (btn.getAttribute("data-dry") || "1") === "1");
-setChecked("job_excl", (btn.getAttribute("data-excl") || "0") === "1");
+    setChecked("job_excl", (btn.getAttribute("data-excl") || "0") === "1");
+
     setVal("job_enabled", (btn.getAttribute("data-enabled") || "1"));
+    syncFakeSelect("job_enabled");
 
     // Radarr score filter
     setChecked("job_score_enabled", (btn.getAttribute("data-score-en") || "0") === "1");
@@ -4146,7 +4215,6 @@ def jobs_page():
     can_add_job = len(ready_apps) > 0
     add_job_disabled_attr = "" if can_add_job else "disabled"
     add_job_title = "Add Job" if can_add_job else "Connect an app in Apps (Test + Save) to add a job."
-
 
     hint_html = ""
     if not can_add_job:
