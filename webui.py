@@ -672,7 +672,8 @@ BASE_HEAD = """
     --bg:#111827;
     --panel:#1f2937;
     --panel2:#1b2431;
-    --muted:#9ca3af;
+    --muted:#9ca3af;    
+    --edgehighlight:#9ca3af;
     --rule:#555555;
     --text:#f1f5f9;
     --line:#334155;
@@ -709,7 +710,8 @@ BASE_HEAD = """
     --sidebarActiveBackgroundColor:#333333;
     --toolbarBackgroundColor:#262626;
     --pageBackgroundColor:#202020;
-    --muted:#9ca3af;
+    --muted:#9ca3af;    
+    --edgehighlight:#9ca3af;
     --rule:#555555;
     --text:#f1f5f9;
     --line:#212d3d;
@@ -1463,9 +1465,9 @@ BASE_HEAD = """
   cursor: pointer;
 }
 
-@media (min-width: 700px){ .jobsGrid{ grid-template-columns: repeat(2, minmax(300px, 1fr)); } }
-  @media (min-width: 1200px){ .jobsGrid{ grid-template-columns: repeat(3, minmax(300px, 1fr)); gap: 16px; } }
-  @media (min-width: 1800px){ .jobsGrid{ grid-template-columns: repeat(4, minmax(300px, 1fr)); gap: 20px; } }
+@media (min-width: 700px){ .jobsGrid{ grid-template-columns: repeat(3, minmax(300px, 1fr)); } }
+  @media (min-width: 1200px){ .jobsGrid{ grid-template-columns: repeat(4, minmax(300px, 1fr)); gap: 16px; } }
+  @media (min-width: 1800px){ .jobsGrid{ grid-template-columns: repeat(5, minmax(300px, 1fr)); gap: 20px; } }
 
   /* Jobs sections (Sonarr/Radarr) */
 
@@ -1808,12 +1810,12 @@ BASE_HEAD = """
   }
 
   .modal{
-    width: min(475px, 100%);
+    width: min(540px, 100%);
     border: 3px solid var(--BackgroundColor1);
     background: var(--BackgroundColor1);
     box-shadow: var(--shadow);
     overflow:hidden;
-    max-height: calc(100vh - 315px);
+    max-height: calc(100vh - 50px);
     display:flex;
     flex-direction: column;
     min-height: 0;
@@ -1826,6 +1828,7 @@ BASE_HEAD = """
     justify-content: space-between;
     gap: 12px;
     background: var(--HeaderBackgroundColor);
+    border-bottom: 1px solid var(--edgehighlight);
     overflow: auto;
     flex: 0 0 auto;
   }
@@ -1854,6 +1857,7 @@ BASE_HEAD = """
     gap: 10px;
     background: var(--BackgroundColor1);
     flex: 0 0 auto;
+    border-top: 1px solid var(--edgehighlight);
   }
 
   table{ width:100%; border-collapse: collapse; overflow:hidden; border: 1px solid var(--line); }
@@ -2025,6 +2029,20 @@ BASE_HEAD = """
   }
   .logMeta{ display:flex; gap:10px; align-items:center; }
   .checkRow{ display:flex; gap:8px; align-items:center; }
+
+
+  /* --- Job modal: sit BELOW fixed header (no overlap) --- */
+  #jobBack{
+    align-items: flex-start;
+    /* keep the modal below the fixed top header */
+    padding-top: calc(var(--top-h) + 18px) !important;
+    padding-bottom: 18px !important;
+  }
+  #jobBack .modal{
+    /* fill remaining viewport below header */
+    height: calc(100vh - var(--top-h) - 36px);
+    max-height: calc(100vh - var(--top-h) - 36px);
+  }
 
 </style>
 
@@ -2565,7 +2583,58 @@ function initFakeSelect(fake){
     alert(msg);
   }
 
-  function ensureSelectOption(selectId, value, labelSuffix){
+
+  function setJobAppLabel(appType){
+    const el = $("job_app_label");
+    const t = (appType || "").toLowerCase();
+    if (!el) return;
+    if (t === "sonarr") el.textContent = "Sonarr Instances";
+    else if (t === "radarr") el.textContent = "Radarr Instances";
+    else el.textContent = "App";
+  }
+
+  function updateJobAppEmptyState(appType){
+    const want = (appType || "").toLowerCase();
+    const sel = $("job_app");
+    const empty = $("job_app_empty");
+    const title = $("job_app_empty_title");
+    const msg = $("job_app_empty_msg");
+    const saveBtn = $("jobSaveBtn");
+
+    if (!sel || !empty) return;
+
+    const realOpts = Array.from(sel.options || []).filter(o => (o.value || "").toString().trim() !== "");
+    const none = (realOpts.length === 0);
+
+    if (none){
+      empty.style.display = "";
+      if (want === "sonarr"){
+        if (title) title.textContent = "Sonarr not configured";
+        if (msg) msg.textContent = "No Sonarr instances are configured yet. Add a Sonarr instance in Settings → Apps.";
+      } else if (want === "radarr"){
+        if (title) title.textContent = "Radarr not configured";
+        if (msg) msg.textContent = "No Radarr instances are configured yet. Add a Radarr instance in Settings → Apps.";
+      } else {
+        if (title) title.textContent = "App not configured";
+        if (msg) msg.textContent = "No connected instances are available. Add an instance in Settings → Apps.";
+      }
+
+      // disable select & fake
+      sel.disabled = true;
+      const fake = $("fake_job_app");
+      if (fake && fake.__syncDisabled) fake.__syncDisabled();
+
+      // disable save
+      if (saveBtn) saveBtn.disabled = true;
+    } else {
+      empty.style.display = "none";
+      sel.disabled = false;
+      const fake = $("fake_job_app");
+      if (fake && fake.__syncDisabled) fake.__syncDisabled();
+      if (saveBtn) saveBtn.disabled = false;
+    }
+  }
+function ensureSelectOption(selectId, value, labelSuffix){
     const sel = $(selectId);
     if (!sel) return;
     const v = (value ?? "").toString();
@@ -2586,44 +2655,46 @@ function initFakeSelect(fake){
     const sel = $("job_app");
     if (!sel) return;
 
+    const want = (preferredType || "").toLowerCase().trim();
     const keep = (keepValue ?? sel.value ?? "").toString();
 
-    // Unhide/enable everything first
-    for (const opt of Array.from(sel.options || [])){
-      opt.hidden = false;
-      opt.disabled = false;
+    // Cache original options once
+    if (!sel.__allOptions){
+      sel.__allOptions = Array.from(sel.options).map(o => o.cloneNode(true));
     }
 
-    const want = (preferredType || "").toLowerCase().trim();
-    if (want === "radarr" || want === "sonarr"){
-      for (const opt of Array.from(sel.options || [])){
-        const v = (opt.value || "").toString();
-        if (!v) continue;
-        const t = (window.__APP_TYPES && window.__APP_TYPES[v]) ? window.__APP_TYPES[v] : "";
-        if (t && t !== want){
-          // hide + disable in native; FakeSelect rebuild will omit because native option is disabled/hidden
-          opt.hidden = true;
-          opt.disabled = true;
-        }
+    // Rebuild options list from cache
+    sel.innerHTML = "";
+    for (const opt of sel.__allOptions){
+      const v = (opt.value || "").toString();
+      if (!v){
+        sel.appendChild(opt.cloneNode(true));
+        continue;
       }
+      if (want === "radarr" || want === "sonarr"){
+        const t = (window.__APP_TYPES && window.__APP_TYPES[v]) ? window.__APP_TYPES[v] : "";
+        if (t && t !== want) continue; // completely omit
+      }
+      sel.appendChild(opt.cloneNode(true));
     }
 
-    // If current selection got filtered out, try to pick first visible option
-    const curOpt = Array.from(sel.options || []).find(o => o.value === keep);
-    const curOk = curOpt && !curOpt.hidden && !curOpt.disabled;
-
-    if (curOk){
+    // Restore selection if possible
+    const hasKeep = Array.from(sel.options).some(o => o.value === keep);
+    if (hasKeep){
       sel.value = keep;
-    } else {
-      const firstOk = Array.from(sel.options || []).find(o => !o.hidden && !o.disabled && (o.value || "") !== "");
-      if (firstOk) sel.value = firstOk.value;
+    } else if (sel.options.length){
+      sel.value = sel.options[0].value;
     }
 
-    // Rebuild FakeSelect UI for app selector
+    // Rebuild FakeSelect UI
     const fake = $("fake_job_app");
     if (fake && fake.__rebuild) fake.__rebuild();
     syncFakeSelect("job_app");
+
+    setJobAppLabel(want);
+    updateJobAppEmptyState(want);
   }
+
 
 function rebuildTagOptions(appId, selectedValue){
     const sel = $("job_tag");
@@ -3890,7 +3961,7 @@ def jobs_page():
             </div>
 
             <div class="field" style="margin-bottom:12px;">
-              <label>App</label>
+              <label id="job_app_label">App</label>
                <select class="nativeSelect" name="APP_ID" id="job_app" onchange="onJobAppChanged()"
                        data-default-app="{safe_html(default_app_id)}" {app_disabled_attr} required>
                  {app_options_html}
@@ -3901,6 +3972,13 @@ def jobs_page():
                    <span class="fakeSelectChevron" aria-hidden="true"></span>
                  </button>
                  <div class="fakeSelectMenu" role="listbox" tabindex="-1"></div>
+               </div>
+               <div class="muted" id="job_app_empty" style="margin-top:8px; display:none;">
+                 <b id="job_app_empty_title">App not configured</b><br>
+                 <span id="job_app_empty_msg">No instances configured.</span>
+                 <div style="margin-top:8px;">
+                   <a class="btn" href="/settings?tab=apps" onclick="hideModal('jobBack');">Add instance</a>
+                 </div>
                </div>
             </div>
 
@@ -4039,7 +4117,7 @@ def jobs_page():
 
           <div class="mf">
             <button class="btn" type="button" onclick="maybeCloseJobModal()">Cancel</button>
-            <button class="btn primary" type="submit">Save Job</button>
+            <button class="btn primary" id="jobSaveBtn" type="submit">Save Job</button>
           </div>
 
 
