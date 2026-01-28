@@ -4147,11 +4147,6 @@ def jobs_page():
     add_job_disabled_attr = "" if can_add_job else "disabled"
     add_job_title = "Add Job" if can_add_job else "Connect an app in Apps (Test + Save) to add a job."
 
-    add_job_button = f"""
-      <button class="btn primary" type="button" id="addJobBtn"
-              data-action="job-new" {add_job_disabled_attr}
-              title="{safe_html(add_job_title)}">Add Job</button>
-    """
 
     hint_html = ""
     if not can_add_job:
@@ -4234,7 +4229,6 @@ def jobs_page():
           <div class="hd">
             <h2>Jobs</h2>
             <div class="btnrow">
-              {add_job_button}
               <form method="post" action="/apply-cron" style="margin:0;">
                 <button class="btn warn" type="submit">Apply Cron</button>
               </form>
