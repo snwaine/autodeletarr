@@ -705,6 +705,7 @@ BASE_HEAD = """
     --panel2:#1b2431;
     --HeaderBackgroundColor:#2a2a2a;
     --sidebarBackgroundColor:#2a2a2a;
+    --scrollbarbackgroundcolor:#595959;
     --BackgroundColor1:#333333;
     --FieldinptuColor:#595959;
     --sidebarActiveBackgroundColor:#333333;
@@ -731,6 +732,7 @@ BASE_HEAD = """
     --panel2:#f1f5f9;
     --HeaderBackgroundColor:#ffffff;
     --sidebarBackgroundColor:#ffffff;
+    --scrollbarbackgroundcolor:#595959;
     --sidebarActiveBackgroundColor:#e5e7eb;
     --toolbarBackgroundColor:#ffffff;
     --pageBackgroundColor:#f5f7fa;
@@ -834,7 +836,7 @@ BASE_HEAD = """
    .fakeOpt + .fakeOpt{ margin-top:4px; }
    .fakeOpt[data-disabled="1"]{ opacity:.6; cursor:not-allowed; }
 
-   /* per-theme highlight colours */
+   /* per-theme highlight colors */
    body[data-theme="dark"] .fakeOpt:hover,
    body[data-theme="dark"] .fakeOpt[aria-selected="true"],
    body[data-theme="dark"] .fakeOpt.active{
@@ -855,47 +857,43 @@ BASE_HEAD = """
   html, body{ height: 100%; }
 
   /* ===========================
-     Themed scrollbars
+     Themed scrollbars (force)
+     - Thin by default
+     - Green glow on hover
+     - Avoids UA/extension hover turning thumb near-black
      =========================== */
 
-  /* ---------- Firefox ---------- */
-  body[data-theme="dark"] *,
-  body[data-theme="light"] *{
+  /* Firefox */
+  *{
     scrollbar-width: thin;
-    scrollbar-color: var(--accent) var(--panel2);
+    scrollbar-color: rgba(167,213,65,.55) transparent;
   }
 
-  /* ---------- WebKit (Chrome / Edge / Safari) ---------- */
-
+  /* WebKit / Chromium (global, no body scoping so it applies everywhere incl. modals/nested scrollers) */
   ::-webkit-scrollbar{
-    width: 10px;
-    height: 10px;
+    width: 8px;
+    height: 8px;
   }
-
   ::-webkit-scrollbar-track{
-    background: var(--panel2);
+    background: transparent !important;
   }
-
-  /* DARK THEME — green thumb */
-  body[data-theme="dark"] ::-webkit-scrollbar-thumb{
-    background: rgba(167,213,65,.45);
-     border-radius: 8px;
-    border: 2px solid var(--panel2);
+  ::-webkit-scrollbar-thumb{
+    background-color: rgba(167,213,65,.40) !important;
+    border-radius: 999px !important;
+    border: 2px solid transparent !important;
+    background-clip: padding-box !important;
+    box-shadow: none !important;
   }
-
-  body[data-theme="dark"] ::-webkit-scrollbar-thumb:hover{
-    background: rgba(167,213,65,.65);
+  ::-webkit-scrollbar-thumb:hover{
+    background-color: rgba(167,213,65,.90) !important;
+    box-shadow: 0 0 10px rgba(167,213,65,.65) !important;
   }
-
-  /* LIGHT THEME — neutral thumb */
-  body[data-theme="light"] ::-webkit-scrollbar-thumb{
-   background: var(--FieldinptuColor);
-   border-radius: 8px;
-   border: 2px solid var(--BackgroundColor1);
+  ::-webkit-scrollbar-thumb:active{
+    background-color: rgba(167,213,65,1) !important;
+    box-shadow: 0 0 12px rgba(167,213,65,.85) !important;
   }
-
-  body[data-theme="light"] ::-webkit-scrollbar-thumb:hover{
-    background: rgba(148,163,184,.85);
+  ::-webkit-scrollbar-corner{
+    background: transparent !important;
   }
 
   body{
@@ -1170,7 +1168,7 @@ BASE_HEAD = """
   }
 
   /* --------------------------------
-     Add Job cards: per-app hover colour
+     Add Job cards: per-app hover color
      (avoid inline JS; use data-app-type)
      -------------------------------- */
   .jobCard.addJobCard{
@@ -1207,6 +1205,7 @@ BASE_HEAD = """
     top: 0;
     z-index: 2;
     flex: 0 0 auto;
+    box-shadow: 0 0px 28px rgba(0, 0, 0, .55);
   }
 
   .card .hd h2{
@@ -1363,12 +1362,18 @@ BASE_HEAD = """
     align-items:center;
     flex-wrap:wrap;
   }
+  /* Keep checkbox + number aligned on one line when there is space */
+  @media (min-width: 520px){
+    .scoreRow{ flex-wrap:nowrap; }
+  }
   .scoreInline{
     display:flex;
     align-items:center;
     gap:10px;
     margin:0;
     flex:1 1 auto;
+    padding: 0;          /* override .check padding */
+    background: transparent;
   }
 
 .scoreNumInput{
@@ -1423,10 +1428,11 @@ BASE_HEAD = """
     justify-content: center;
   }
   .jobCard{
+    border-radius: 12px !important;
+    overflow:hidden;
     border: 3px solid var(--BackgroundColor1);
     background: var(--BackgroundColor1);
     box-shadow: var(--shadow);
-    overflow:hidden;
     max-width: none;
     width: 100%;
   }
@@ -1500,12 +1506,23 @@ BASE_HEAD = """
   .jobHeaderCenter{ justify-self: center; }
   .jobHeaderRight{ justify-self: end; display:flex; align-items:center; gap:10px; }
 
+  .jobModalIcon {
+    width: 1em;
+    height: 1em;
+    max-width: 1em;
+    max-height: 1em;
+    flex: 0 0 auto;
+    display: inline-block;
+    vertical-align: -0.125em;
+    object-fit: contain;
+  }
+
   .jobName{
     color: var(--text);
     font-size: 18px;
     font-weight: 800;
     letter-spacing: .3px;
-    max-width: 18ch;
+    max-width: 16ch;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -1815,7 +1832,6 @@ BASE_HEAD = """
     background: var(--BackgroundColor1);
     box-shadow: var(--shadow);
     overflow:hidden;
-    max-height: calc(100vh - 50px);
     display:flex;
     flex-direction: column;
     min-height: 0;
@@ -1895,7 +1911,6 @@ BASE_HEAD = """
   @keyframes toastIn { to { opacity: 1; transform: translateY(0); } }
   @keyframes toastOut { to { opacity: 0; transform: translateY(10px); } }
 
-  .card, .jobCard{ border-radius: 0 !important; }
   .card .hd, .card .bd{ border-radius: 0 !important; }
 
   /* ---------------------------
@@ -2243,9 +2258,44 @@ function initFakeSelect(fake){
     document.body.classList.toggle("modalOpen", anyOpen);
   }
 
+  function resetModalScroll(modalEl){
+    if (!modalEl) return;
+    try { modalEl.scrollTop = 0; modalEl.scrollLeft = 0; } catch(e) {}
+
+    // Common modal body container
+    try {
+      const mb = modalEl.querySelector(".mb");
+      if (mb) { mb.scrollTop = 0; mb.scrollLeft = 0; }
+    } catch(e) {}
+
+    // Reset *any* scrollable descendants (nested panels, code blocks, etc.)
+    try {
+      const all = modalEl.querySelectorAll("*");
+      all.forEach((n) => {
+        try {
+          const cs = getComputedStyle(n);
+          const oy = cs.overflowY;
+          const ox = cs.overflowX;
+          const canY = (oy === "auto" || oy === "scroll") && (n.scrollHeight > n.clientHeight + 1);
+          const canX = (ox === "auto" || ox === "scroll") && (n.scrollWidth  > n.clientWidth  + 1);
+          if (canY) n.scrollTop = 0;
+          if (canX) n.scrollLeft = 0;
+        } catch(e) {}
+      });
+    } catch(e) {}
+  }
+
   function showModal(id){
     const el = $(id);
-    if (el) el.style.display = "flex";
+    if (el) {
+      el.style.display = "flex";
+
+      // Reset scroll after it becomes visible (and again next frame for late layout)
+      requestAnimationFrame(() => {
+        resetModalScroll(el);
+        requestAnimationFrame(() => resetModalScroll(el));
+      });
+    }
     updateModalState();
   }
 
@@ -2791,7 +2841,27 @@ function updateSonarrModeVisibility(appId){
   }
 
 
-  function openAddJobCard(appType){
+
+  function setJobModalTitle(appTypeOrId, isEdit){
+    let t = (appTypeOrId || "").toString();
+    // appTypeOrId may be an app id; map via __APP_TYPES if available
+    if (window.__APP_TYPES && window.__APP_TYPES[t]) t = window.__APP_TYPES[t];
+    t = (t || "radarr").toLowerCase();
+    const isSonarr = (t === "sonarr");
+
+    const iconEl = $("jobTitleIcon");
+    const textEl = $("jobTitleText");
+
+    if (iconEl){
+      iconEl.src = isSonarr ? "/images/sonarr_icon.svg" : "/images/radarr_icon.svg";
+      iconEl.alt = isSonarr ? "Sonarr" : "Radarr";
+    }
+    if (textEl){
+      textEl.textContent = (isEdit ? "Edit " : "Add ") + (isSonarr ? "Sonarr Job" : "Radarr Job");
+    }
+  }
+
+function openAddJobCard(appType){
     // appType should be "radarr" or "sonarr"
     openNewJob(appType);
     // keep fake select label in sync when opening
@@ -2849,8 +2919,7 @@ setChecked("job_excl", false);
     setChecked("job_score_enabled", false);
     setVal("job_score_min", "60");
 
-    const t = $("jobTitle");
-    if (t) t.textContent = "Add Job";
+    setJobModalTitle(actualApp || preferredType, false);
     showModal("jobBack");
     setTimeout(jobModalMarkClean, 0);
   }
@@ -2900,8 +2969,7 @@ setChecked("job_excl", false);
     setChecked("job_score_enabled", (btn.getAttribute("data-score-en") || "0") === "1");
     setVal("job_score_min", btn.getAttribute("data-score-min") || "60");
 
-    const t = $("jobTitle");
-    if (t) t.textContent = "Edit Job";
+    setJobModalTitle(jobType || appId, true);
     showModal("jobBack");
     setTimeout(jobModalMarkClean, 0);
   }
@@ -3982,9 +4050,12 @@ def jobs_page():
 
     job_modal = f"""
     <div class="modalBack jobsModal" id="jobBack">
-      <div class="modal" role="dialog" aria-modal="true" aria-labelledby="jobTitle">
+      <div class="modal" role="dialog" aria-modal="true" aria-labelledby="jobTitleText">
         <div class="mh">
-          <h3 id="jobTitle">Add Job</h3>
+          <div id="jobTitle" class="jobModalTitle">
+            <img id="jobTitleIcon" class="jobModalIcon" src="/images/radarr_icon.svg" alt="" />
+            <span id="jobTitleText">Add Job</span>
+          </div>
           <button class="modalCloseX" type="button" onclick="maybeCloseJobModal()" aria-label="Close">×</button>
         </div>
 
@@ -4046,7 +4117,7 @@ def jobs_page():
                <div class="scoreRow">
                  <label class="check scoreInline">
                    <input type="checkbox" id="job_score_enabled" name="RADARR_SCORE_FILTER_ENABLED">
-                   <span><b>Delete if average score is below</b></span>
+                   <span><b>Delete if score is below</b></span>
                  </label>
 
                  <input
@@ -4129,7 +4200,7 @@ def jobs_page():
             <div class="fieldDesc">Disabled jobs won’t run on schedule and can’t be run manually.</div></div>
 
             <div class="checks" style="margin-top:12px;">
-              <div class="sectionDesc" style="margin:0 0 8px 0;">Run behaviour options.</div>
+
 
 
 
