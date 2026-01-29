@@ -2044,6 +2044,21 @@ BASE_HEAD = """
     max-height: calc(100vh - var(--top-h) - 36px);
   }
 
+
+  /* Job modal section descriptions */
+  .fieldDesc{
+    margin-top: 6px;
+    font-size: 12px;
+    color: var(--muted);
+    line-height: 1.35;
+  }
+  .sectionDesc{
+    margin: 2px 0 10px;
+    font-size: 12px;
+    color: var(--muted);
+    line-height: 1.35;
+  }
+
 </style>
 
 <script>
@@ -2693,7 +2708,8 @@ function ensureSelectOption(selectId, value, labelSuffix){
 
     setJobAppLabel(want);
     updateJobAppEmptyState(want);
-  }
+      updateJobDaysDesc(want);
+}
 
 
 function rebuildTagOptions(appId, selectedValue){
@@ -2718,7 +2734,27 @@ function rebuildTagOptions(appId, selectedValue){
       if (fake && fake.__rebuild) fake.__rebuild();
   }
 
-  function updateSonarrModeVisibility(appId){
+
+  function updateJobDaysDesc(appIdOrType){
+    const el = $("job_days_desc");
+    if (!el) return;
+
+    let tpe = (appIdOrType || "").toString().toLowerCase();
+    // If an app id was passed, resolve to type
+    if (window.__APP_TYPES && window.__APP_TYPES[appIdOrType]){
+      tpe = window.__APP_TYPES[appIdOrType];
+    }
+
+    if (tpe === "sonarr"){
+      el.textContent = "Items must be older than this many days (based on the Added date in Sonarr).";
+    } else if (tpe === "radarr"){
+      el.textContent = "Items must be older than this many days (based on the Added date in Radarr).";
+    } else {
+      el.textContent = "Items must be older than this many days (based on the Added date in the selected app).";
+    }
+  }
+
+function updateSonarrModeVisibility(appId){
     const wrap = $("sonarrDeleteModeField");
     const sel = $("job_sonarr_mode");
     const fakeWrap = $("fakeWrap_job_sonarr_mode");
@@ -2750,6 +2786,7 @@ function rebuildTagOptions(appId, selectedValue){
     rebuildTagOptions(appId, "");
     updateSonarrModeVisibility(appId);
     updateRadarrScoreVisibility(appId);
+    updateJobDaysDesc(appId);
     setTimeout(jobModalUpdateDirty, 0);
   }
 
@@ -3958,7 +3995,7 @@ def jobs_page():
             <div class="field" style="margin-bottom:12px;">
               <label>Job Name</label>
               <input type="text" name="name" id="job_name" value="New Job" required>
-            </div>
+            <div class="fieldDesc">Friendly name shown on the Jobs page (e.g. <b>Weekly Cleanup</b>).</div></div>
 
             <div class="field" style="margin-bottom:12px;">
               <label id="job_app_label">App</label>
@@ -3973,6 +4010,7 @@ def jobs_page():
                  </button>
                  <div class="fakeSelectMenu" role="listbox" tabindex="-1"></div>
                </div>
+               <div class="fieldDesc">Choose which instance this job will run against. Only connected instances are listed.</div>
                <div class="muted" id="job_app_empty" style="margin-top:8px; display:none;">
                  <b id="job_app_empty_title">App not configured</b><br>
                  <span id="job_app_empty_msg">No instances configured.</span>
@@ -3994,16 +4032,17 @@ def jobs_page():
                  </button>
                  <div class="fakeSelectMenu" role="listbox" tabindex="-1"></div>
                </div>
-            </div>
+            <div class="fieldDesc">Only items with this tag will be considered for cleanup.</div></div>
 
             <div class="field" style="margin-bottom:12px;">
               <label>Days Old</label>
               <input type="number" min="1" name="DAYS_OLD" id="job_days" value="30" required>
-            </div>
+            <div class="fieldDesc" id="job_days_desc">Items must be older than this many days.</div></div>
 
             <!-- Radarr-only: score filter (styled like existing fields/checks) -->
              <div class="field" id="radarrScoreField" style="display:none; margin-bottom:12px;">
                <label>Radarr score filter</label>
+               <div class="sectionDesc">Optional safety gate for Radarr jobs. When enabled, only movies scoring below your threshold are eligible.</div>
                <div class="scoreRow">
                  <label class="check scoreInline">
                    <input type="checkbox" id="job_score_enabled" name="RADARR_SCORE_FILTER_ENABLED">
@@ -4036,7 +4075,7 @@ def jobs_page():
                    </button>
                    <div class="fakeSelectMenu" role="listbox" tabindex="-1"></div>
                  </div>
-               </div>
+               <div class="fieldDesc">Controls how Sonarr removes content when a match is found.</div></div>
             </div>
 
             <div class="field" style="margin-bottom:12px;">
@@ -4058,7 +4097,7 @@ def jobs_page():
                  </button>
                  <div class="fakeSelectMenu" role="listbox" tabindex="-1"></div>
                </div>
-            </div>
+            <div class="fieldDesc">When this job runs automatically.</div></div>
 
             <div class="field" style="margin-bottom:12px;">
               <label>Scheduler Time</label>
@@ -4072,7 +4111,7 @@ def jobs_page():
                  </button>
                  <div class="fakeSelectMenu" role="listbox" tabindex="-1"></div>
                </div>
-            </div>
+            <div class="fieldDesc">Hour of day (24h clock) for the scheduled run.</div></div>
 
             <div class="field" style="margin-bottom:12px;">
               <label>Enabled</label>
@@ -4087,9 +4126,10 @@ def jobs_page():
                  </button>
                  <div class="fakeSelectMenu" role="listbox" tabindex="-1"></div>
                </div>
-            </div>
+            <div class="fieldDesc">Disabled jobs won’t run on schedule and can’t be run manually.</div></div>
 
             <div class="checks" style="margin-top:12px;">
+              <div class="sectionDesc" style="margin:0 0 8px 0;">Run behaviour options.</div>
 
 
 
