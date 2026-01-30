@@ -2,8 +2,9 @@ import os
 import sys
 import subprocess
 import json
-import signal
 import uuid
+import threading
+import time
 from html import escape as html_escape
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
@@ -14,6 +15,20 @@ from flask import (
     Flask, request, redirect, render_template_string,
     flash, get_flashed_messages, send_from_directory, Response, jsonify
 )
+
+"""MediaReaparr WebUI (single-file Flask app)
+
+Organized sections:
+  - Imports & constants
+  - Logging helpers
+  - Config/state IO
+  - Schema normalization (Apps/Jobs)
+  - Internal scheduler + "Run now"
+  - API helpers + preview
+  - HTML/CSS template helpers
+  - Flask routes
+  - Main entrypoint
+"""
 
 CONFIG_DIR = Path(os.environ.get("CONFIG_DIR", "/config"))
 CONFIG_PATH = CONFIG_DIR / "config.json"
@@ -60,14 +75,6 @@ def tail_file(path: Path, max_lines: int = 500, max_bytes: int = 1024 * 1024) ->
         return f"(failed to read log) {e}"
 
 
-# ----------------------------
-# Logging (shared file for Status log window + subprocess output)
-# ----------------------------
-def get_log_path() -> Path:
-    # Default to /config/mediareaparr.log, override with LOG_PATH env var
-    return Path(os.environ.get("LOG_PATH", str(CONFIG_DIR / "mediareaparr.log")))
-
-
 def append_log_line(msg: str) -> None:
     try:
         lp = get_log_path()
@@ -81,8 +88,6 @@ def append_log_line(msg: str) -> None:
 APP_DIR = Path(__file__).resolve().parent
 APP_IMAGES_DIR = APP_DIR / "images"
 CONFIG_IMAGES_DIR = CONFIG_DIR / "images"
-# Back-compat alias (older code may still reference APP_LOGO_DIR)
-APP_LOGO_DIR = APP_IMAGES_DIR
 app = Flask(__name__)
 app.secret_key = os.environ.get("FLASK_SECRET_KEY", "mediareaparr-secret")
 
@@ -121,22 +126,6 @@ def make_app_id() -> str:
 
 def checkbox(name: str) -> bool:
     return request.form.get(name) == "on"
-
-
-def cron_from_day_hour(day_key: str, hour: int) -> str:
-    hour = clamp_int(hour, 0, 23, 3)
-    dow_map = {
-        "daily": "*",
-        "sun": "0",
-        "mon": "1",
-        "tue": "2",
-        "wed": "3",
-        "thu": "4",
-        "fri": "5",
-        "sat": "6",
-    }
-    dow = dow_map.get((day_key or "daily").lower(), "*")
-    return f"15 {hour} * * {dow}"
 
 
 def schedule_label(day_key: str, hour: int) -> str:
@@ -458,6 +447,134 @@ def load_state() -> Dict[str, Any]:
     return {}
 
 
+def save_state(state: Dict[str, Any]) -> None:
+    """Persist state.json (used by internal scheduler + UI status)."""
+    try:
+        CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+        STATE_PATH.write_text(json.dumps(state, indent=2), encoding="utf-8")
+    except Exception as e:
+        try:
+            append_log_line(f"save_state failed: {e}")
+        except Exception:
+            pass
+
+
+# ----------------------------
+# Internal scheduler (optional)
+# ----------------------------
+# Runs jobs inside the WebUI container (no host cron needed).
+# Enable/disable via env:
+#   INTERNAL_SCHEDULER=1|0  (default: 1)
+#   SCHEDULER_TICK_SECONDS=30
+# Prevents double-runs using state.json window markers.
+INTERNAL_SCHEDULER_ENABLED = env_default("INTERNAL_SCHEDULER", "1").strip() != "0"
+SCHEDULER_TICK_SECONDS = clamp_int(env_default("SCHEDULER_TICK_SECONDS", "30"), 5, 3600, 30)
+_SCHED_LOCK_PATH = CONFIG_DIR / ".scheduler.lock"
+
+def _weekday_key(dt: datetime) -> str:
+    return ["mon", "tue", "wed", "thu", "fri", "sat", "sun"][dt.weekday()]
+
+def _job_due(job: Dict[str, Any], now: datetime) -> bool:
+    if not job.get("enabled", False):
+        return False
+    day = str(job.get("SCHED_DAY") or "daily").strip().lower()
+    try:
+        hour = int(job.get("SCHED_HOUR", 3))
+    except Exception:
+        hour = 3
+    if now.hour != hour:
+        return False
+    if day != "daily" and day != _weekday_key(now):
+        return False
+    return True
+
+def _acquire_scheduler_lock() -> bool:
+    """Best-effort single-runner guard (helps if you ever run multiple workers)."""
+    try:
+        fd = os.open(str(_SCHED_LOCK_PATH), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(f"{os.getpid()}\n")
+        return True
+    except FileExistsError:
+        return False
+    except Exception:
+        return True
+
+def _scheduler_spawn_job(job_id: str) -> None:
+    """Spawn app.py --job-id <id> and stream output into the shared log."""
+    try:
+        app_py = str((Path(__file__).resolve().parent / "app.py"))
+        lp = get_log_path()
+        lp.parent.mkdir(parents=True, exist_ok=True)
+        f = lp.open("a", encoding="utf-8")
+        subprocess.Popen(
+            [sys.executable, app_py, "--job-id", str(job_id)],
+            stdout=f,
+            stderr=f,
+            close_fds=True,
+        )
+    except Exception as e:
+        try:
+            append_log_line(f"scheduler: failed to spawn job {job_id}: {e}")
+        except Exception:
+            pass
+
+def _scheduler_loop() -> None:
+    append_log_line(f"scheduler: starting (tick={SCHEDULER_TICK_SECONDS}s)")
+    while True:
+        try:
+            cfg = load_config()
+            state = load_state()
+
+            now = datetime.now()  # container-local time (honors TZ env var)
+            window = now.strftime("%Y-%m-%d %H")
+
+            last = state.get("scheduler_last") or {}
+            if not isinstance(last, dict):
+                last = {}
+
+            jobs = cfg.get("JOBS") or []
+            if not isinstance(jobs, list):
+                jobs = []
+
+            for j in jobs:
+                try:
+                    jn = normalize_job(j)
+                except Exception:
+                    jn = j if isinstance(j, dict) else {}
+                jid = str(jn.get("id") or "").strip()
+                if not jid:
+                    continue
+                if not _job_due(jn, now):
+                    continue
+                if last.get(jid) == window:
+                    continue
+
+                last[jid] = window
+                state["scheduler_last"] = last
+                save_state(state)
+
+                append_log_line(f"scheduler: running job {jid} ({jn.get('name','Job')}) window={window}")
+                _scheduler_spawn_job(jid)
+
+        except Exception as e:
+            try:
+                append_log_line(f"scheduler: loop error: {e}")
+            except Exception:
+                pass
+
+        time.sleep(int(SCHEDULER_TICK_SECONDS))
+
+def start_internal_scheduler() -> None:
+    if not INTERNAL_SCHEDULER_ENABLED:
+        append_log_line("scheduler: disabled via INTERNAL_SCHEDULER=0")
+        return
+    if not _acquire_scheduler_lock():
+        append_log_line("scheduler: lock exists, not starting (another worker owns it)")
+        return
+    t = threading.Thread(target=_scheduler_loop, daemon=True, name="mediareaparr-scheduler")
+    t.start()
+
 # ----------------------------
 # API helpers
 # ----------------------------
@@ -495,22 +612,6 @@ def get_tag_labels(cfg: Dict[str, Any], app_id: str) -> List[str]:
     except Exception:
         # App is offline / timeout / bad gateway / etc.
         return []
-
-
-def _score_to_0_100(v) -> Optional[int]:
-    try:
-        if v is None:
-            return None
-        f = float(v)
-        # If it's a 0–10 style rating, convert to 0–100
-        if 0 <= f <= 10:
-            return int(round(f * 10))
-        # If it's already 0–100
-        if 0 <= f <= 100:
-            return int(round(f))
-    except Exception:
-        return None
-    return None
 
 
 def radarr_movie_score_0_100(movie: Dict[str, Any]) -> Optional[int]:
@@ -672,7 +773,7 @@ BASE_HEAD = """
     --bg:#111827;
     --panel:#1f2937;
     --panel2:#1b2431;
-    --muted:#9ca3af;    
+    --muted:#9ca3af;
     --edgehighlight:#9ca3af;
     --rule:#555555;
     --text:#f1f5f9;
@@ -711,7 +812,7 @@ BASE_HEAD = """
     --sidebarActiveBackgroundColor:#333333;
     --toolbarBackgroundColor:#262626;
     --pageBackgroundColor:#202020;
-    --muted:#9ca3af;    
+    --muted:#9ca3af;
     --edgehighlight:#9ca3af;
     --rule:#555555;
     --text:#f1f5f9;
@@ -857,43 +958,55 @@ BASE_HEAD = """
   html, body{ height: 100%; }
 
   /* ===========================
-     Themed scrollbars (force)
-     - Thin by default
-     - Green glow on hover
-     - Avoids UA/extension hover turning thumb near-black
+     Themed scrollbars
      =========================== */
 
-  /* Firefox */
-  *{
+  /* ---------- Firefox ---------- */
+  body[data-theme="dark"] *,
+  body[data-theme="light"] *{
     scrollbar-width: thin;
-    scrollbar-color: rgba(167,213,65,.55) transparent;
+    scrollbar-color: var(--accent) var(--scrollbarbackgroundcolor);
   }
 
-  /* WebKit / Chromium (global, no body scoping so it applies everywhere incl. modals/nested scrollers) */
+  /* ---------- WebKit (Chrome / Edge / Safari) ---------- */
+
+  /* Thin scrollbars */
   ::-webkit-scrollbar{
-    width: 8px;
-    height: 8px;
+    width: 6px;
+    height: 6px;
   }
+
   ::-webkit-scrollbar-track{
-    background: transparent !important;
+    background: var(--scrollbarbackgroundcolor);
   }
+
+  /* Base thumb (use transparent border + background-clip so it never "turns black" on hover) */
   ::-webkit-scrollbar-thumb{
-    background-color: rgba(167,213,65,.40) !important;
-    border-radius: 999px !important;
-    border: 2px solid transparent !important;
-    background-clip: padding-box !important;
-    box-shadow: none !important;
+    border-radius: 999px;
+    border: 2px solid transparent;
+    background-clip: padding-box;
   }
-  ::-webkit-scrollbar-thumb:hover{
-    background-color: rgba(167,213,65,.90) !important;
-    box-shadow: 0 0 10px rgba(167,213,65,.65) !important;
+
+  /* DARK THEME — subtle thumb, glow green on hover */
+  body[data-theme="dark"] ::-webkit-scrollbar-thumb{
+    background-color: rgba(167,213,65,.35);
   }
-  ::-webkit-scrollbar-thumb:active{
-    background-color: rgba(167,213,65,1) !important;
-    box-shadow: 0 0 12px rgba(167,213,65,.85) !important;
+
+  body[data-theme="dark"] ::-webkit-scrollbar-thumb:hover,
+  body[data-theme="dark"] ::-webkit-scrollbar-thumb:active{
+    background-color: rgba(167,213,65,.88) !important;
+    box-shadow: 0 0 0 2px rgba(167,213,65,.22), 0 0 12px rgba(167,213,65,.55);
   }
-  ::-webkit-scrollbar-corner{
-    background: transparent !important;
+
+  /* LIGHT THEME — neutral thumb, glow green on hover */
+  body[data-theme="light"] ::-webkit-scrollbar-thumb{
+    background-color: rgba(100,116,139,.45);
+  }
+
+  body[data-theme="light"] ::-webkit-scrollbar-thumb:hover,
+  body[data-theme="light"] ::-webkit-scrollbar-thumb:active{
+    background-color: rgba(167,213,65,.75) !important;
+    box-shadow: 0 0 0 2px rgba(167,213,65,.18), 0 0 10px rgba(167,213,65,.45);
   }
 
   body{
@@ -1149,7 +1262,6 @@ BASE_HEAD = """
   body[data-theme="light"] .jobCard{
     border: 1px solid var(--line);
   }
-
 
 
   .jobCard.addJobCard{
@@ -1437,7 +1549,7 @@ BASE_HEAD = """
     width: 100%;
   }
 
-  .jobCard:has(input[type="checkbox"]:not(:checked)) 
+  .jobCard:has(input[type="checkbox"]:not(:checked))
   .jobName{
     color: var(--text);
     font-size: 18px;
@@ -1636,27 +1748,47 @@ BASE_HEAD = """
   @media (max-width: 1100px){ .appsGrid{ grid-template-columns: repeat(2, 300px); } }
   @media (max-width: 760px){ .appsGrid{ grid-template-columns: 1fr; } }
 
-  .appCard{
-    width: 300px;
-    height: 150px;
-    border: 3px solid var(--BackgroundColor1);
-    background: var(--BackgroundColor1);
-    box-shadow: var(--shadow);
-    display: flex;
-    flex-direction: column;
-    justify-content: space-between;
-    padding: 14px 14px;
-    position: relative;
-    user-select: none;
-  }
+.appCard{
+  width: 300px;
+  height: 150px;
+  border-radius: 12px !important;
+  overflow: hidden;
+  border: 3px solid var(--BackgroundColor1);
+  background: var(--BackgroundColor1);
+  box-shadow: var(--shadow);
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  padding: 0; /* Job cards use section padding (header/body) */
+  position: relative;
+  user-select: none;
+}
 
   .appCardTop{
-    display:flex;
-    align-items:flex-start;
-    justify-content: space-between;
-    gap: 12px;
-    min-width: 0;
-  }
+  padding: 12px 12px;
+  border-bottom: 1px solid var(--line);
+  background: var(--HeaderBackgroundColor);
+  display:flex;
+  align-items:flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+}
+/* App cards: match Job card body padding + footer */
+.appCard:not(.addAppCard) > div:last-child{
+  padding: 10px 12px 12px 12px;
+}
+.appCard:not(.addAppCard) .appCardLeft{
+  padding: 0; /* header already padded */
+}
+.appCard:not(.addAppCard) .appTitle{
+  font-size: 16px;
+  font-weight: 700;
+}
+.appCard:not(.addAppCard) .appSub{
+  font-size: 12px;
+  opacity: .85;
+}
   .appTitle{
     font-size: 18px;
     font-weight: 600;
@@ -1696,22 +1828,44 @@ BASE_HEAD = """
   .pill.good{ border-color: rgba(34,197,94,.45); }
   .pill.bad{ border-color: rgba(239,68,68,.55); background: rgba(239,68,68,.10); }
 
-  .addAppCard{
-    align-items: center;
-    justify-content: center;
-    padding: 0;
-    cursor: pointer;
-  }
-  .addAppCardInner{
-    width: 86px;
-    height: 54px;
-    border: 2px solid #8ba3af;
+  /* Add App card (match Add Job card styling) */
+  .appCard.addAppCard{
     display:flex;
+    align-items:center;
     justify-content:center;
+    cursor:pointer;
+    user-select:none;
+    border:4px dashed rgba(255,255,255,.18);
+    background: rgba(255,255,255,.03);
+    transition: background .18s ease, border-color .18s ease, box-shadow .18s ease, transform .18s ease;
+  }
+  body[data-theme="light"] .appCard.addAppCard{
+    border-color: rgba(0,0,0,.14);
+    background: rgba(0,0,0,.02);
+  }
+  .appCard.addAppCard:hover{
+    border-color: rgba(167,213,65,.45);
+    background: rgba(167,213,65,.06);
+    box-shadow: 0 0 0 3px rgba(167,213,65,.18), var(--shadow);
+    transform: translateY(-1px);
+  }
+  .appCard.addAppCard:active{ transform: translateY(0px); }
+
+  .appCard.addAppCard .addAppCardInner{
+    border: none;
+    width: auto;
+    height: auto;
+    display:block;
+    text-align:center;
     font-size: 42px;
     color: var(--muted);
     line-height: 1;
   }
+  .appCard.addAppCard .addAppCardLabel{
+    margin-top: 6px;
+    font-weight: 700;
+  }
+
 
   /* ---------------------------
      Add App picker (tile grid)
@@ -1816,7 +1970,7 @@ BASE_HEAD = """
   body.modalOpen .pageContent,
   body.modalOpen .card .bd{
     overflow: hidden !important;
-  }  
+  }
 
   .modalBack.jobsModal{
     z-index: 1010;
@@ -2841,7 +2995,6 @@ function updateSonarrModeVisibility(appId){
   }
 
 
-
   function setJobModalTitle(appTypeOrId, isEdit){
     let t = (appTypeOrId || "").toString();
     // appTypeOrId may be an app id; map via __APP_TYPES if available
@@ -3263,7 +3416,6 @@ setChecked("job_excl", false);
     startAppsPing();
 
 
-
         const host = $("toastHost");
     if (host) setTimeout(() => { try { host.remove(); } catch(e){} }, 6000);
   });
@@ -3394,14 +3546,6 @@ def favicon_redirect():
     return redirect("/images/favicon.ico", code=302)
 
 
-@app.get("/logo/<path:filename>")
-def serve_logo_assets(filename):
-    # Back-compat: old URL → new images route
-    if filename == "logo-full.png":
-        return redirect("/images/logo-full.png", code=302)
-    return ("", 404)
-
-
 @app.post("/toggle-theme")
 def toggle_theme():
     cfg = load_config()
@@ -3481,7 +3625,10 @@ def settings():
 
     add_card = """
       <div class="appCard addAppCard" id="addAppCard" role="button" tabindex="0" title="Add an app">
-        <div class="addAppCardInner">+</div>
+        <div style="text-align:center;">
+          <div class="addAppCardInner">+</div>
+          <div class="muted addAppCardLabel">Add App</div>
+        </div>
       </div>
     """
 
@@ -3494,10 +3641,7 @@ def settings():
               <button class="settingsTab" type="button" data-tab="apps" role="tab" aria-selected="false">Apps</button>
             </div>
             <div class="btnrow">
-              <form method="post" action="/apply-cron" style="margin:0;">
-                <button class="btn warn" type="submit">Apply Cron</button>
-              </form>
-            </div>
+</div>
           </div>
 
           <div class="bd">
@@ -4202,8 +4346,6 @@ def jobs_page():
             <div class="checks" style="margin-top:12px;">
 
 
-
-
               <label class="check">
                 <input type="checkbox" id="job_excl" name="ADD_IMPORT_EXCLUSION">
                 <div>
@@ -4230,7 +4372,6 @@ def jobs_page():
             <button class="btn" type="button" onclick="maybeCloseJobModal()">Cancel</button>
             <button class="btn primary" id="jobSaveBtn" type="submit">Save Job</button>
           </div>
-
 
 
 </form>
@@ -4486,10 +4627,7 @@ def jobs_page():
           <div class="hd">
             <h2>Jobs</h2>
             <div class="btnrow">
-              <form method="post" action="/apply-cron" style="margin:0;">
-                <button class="btn warn" type="submit">Apply Cron</button>
-              </form>
-            </div>
+</div>
           </div>
 
           <div class="bd">
@@ -4643,36 +4781,6 @@ def jobs_run_now():
         flash(f"Failed to start job: {e}", "error")
 
     return redirect("/dashboard")
-
-
-@app.post("/apply-cron")
-def apply_cron():
-    cfg = load_config()
-    jobs = cfg.get("JOBS") or []
-    enabled_jobs = [j for j in jobs if j.get("enabled")]
-
-    if not enabled_jobs:
-        flash("No enabled jobs to schedule.", "error")
-        return redirect(request.referrer or "/jobs")
-
-    log_path = "/var/log/mediareaparr.log"
-    lines = []
-    for j in enabled_jobs:
-        cron = cron_from_day_hour(j.get("SCHED_DAY", "daily"), int(j.get("SCHED_HOUR", 3)))
-        jid = str(j.get("id"))
-        lines.append(f"{cron} python /app/app.py --job-id {jid} >> {log_path} 2>&1")
-
-    cron_text = "\n".join(lines) + "\n"
-
-    try:
-        with open("/etc/crontabs/root", "w", encoding="utf-8") as f:
-            f.write(cron_text)
-        os.kill(1, signal.SIGHUP)
-        flash("Cron schedule applied successfully ✔", "success")
-    except Exception as e:
-        flash(f"Failed to apply cron: {e}", "error")
-
-    return redirect(request.referrer or "/jobs")
 
 
 # ----------------------------
@@ -4997,4 +5105,6 @@ if __name__ == "__main__":
     p.add_argument("--host", default="0.0.0.0")
     p.add_argument("--port", type=int, default=int(os.environ.get("WEBUI_PORT", "7575")))
     args = p.parse_args()
+    start_internal_scheduler()
+
     app.run(host=args.host, port=args.port)
