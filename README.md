@@ -2,43 +2,65 @@
 ![Docker Version](https://img.shields.io/docker/v/snwaine/mediareaparr/latest)
 ![Build Status](https://img.shields.io/github/actions/workflow/status/snwaine/mediareaparr/docker.yml)
 ![License](https://img.shields.io/github/license/snwaine/mediareaparr)
-# THIS IS VERY EARLY ALPHA NOT FOR PUBLIC USE
+
 # 🪦 MediaReaparr
 **Schedule the inevitable.**
 
-MediaReaparr is a self-hosted automation tool that intelligently cleans your media library by removing movies and episodes that no longer meet your quality or score standards.  
-It integrates with **Radarr** and **Sonarr**, supports scheduled jobs, dry-runs, and score-based decisions — all through a clean, dark-themed web UI.
+> ⚠️ **VERY EARLY ALPHA — NOT FOR PUBLIC USE**
+>
+> Breaking changes are expected. Config formats, UI flows, and job behavior may change without notice.
+
+---
+
+## 🧠 What is MediaReaparr?
+
+**MediaReaparr** is a self-hosted automation tool that intelligently cleans your media library by removing movies and TV content that no longer meet your quality or score standards.
+
+It integrates directly with **Radarr** and **Sonarr**, supports **dry-runs**, **score-based deletion**, and **scheduled execution** — all managed through a modern, dark-themed Web UI.
+
+There is **no external cron dependency**.  
+All scheduling and execution happens **inside the container**.
 
 ---
 
 ## ✨ Features
 
-- 🎯 **Score-based cleanup**
-  - Fetches ratings from IMDb, OMDb, and TMDb
-  - Normalizes all ratings to a **0–100** scale
-  - Averages available scores and compares against a threshold
+### 🎯 Score-based cleanup (Radarr)
+- Uses ratings already available in Radarr (IMDb, TMDb, OMDb)
+- Normalizes all scores to a **0–100** scale
+- Averages available ratings
+- Optional rule: *delete only if score is below X*
 
-- ⏱ **Scheduled jobs**
-  - Cron-style schedules
-  - Manual **Run Now**
-  - Enable / disable per job
+### 🎬 Radarr & Sonarr support
+- Multiple app instances
+- Tag-based targeting
+- Per-job configuration
+- Sonarr delete modes:
+  - Episodes only
+  - Episodes → remove empty series
+  - Whole series
 
-- 🎬 **Radarr & Sonarr support**
-  - Per-app configuration
-  - Tag-based targeting
-  - Sonarr delete modes (files / episodes / series)
+### ⏱ Job execution
+- Built-in **internal scheduler**
+- Manual **Run Now**
+- Enable / disable per job
+- Per-job execution history
 
-- 🧪 **Dry-Run mode**
-  - Preview deletions before committing
+### 🧪 Dry-Run mode
+- Preview exactly what *would* be deleted
+- Shows age, score, title, and path
+- No filesystem or API changes
 
-- 🌑 **Modern Web UI**
-  - Dark theme with green MediaReaparr accents
-  - Responsive job cards
-  - Modal-based editing and confirmations
+### 🌑 Modern Web UI
+- Dark theme with green MediaReaparr accents
+- Clean job cards
+- Modal-based editing and confirmations
+- Live status + log viewer
 
-- 🐳 **Docker-first**
-  - Designed for Docker & Unraid
-  - Persistent config & state via mounted volumes
+### 🐳 Docker-first
+- Designed for Docker & Unraid
+- No host-level cron required
+- Persistent config, state, and logs via volumes
 
 ---
 
@@ -47,9 +69,7 @@ It integrates with **Radarr** and **Sonarr**, supports scheduled jobs, dry-runs,
 ```bash
 docker run -d \
   --name mediareaparr \
-  -p 8787:8787 \
+  -p 7575:7575 \
   -v /path/to/config:/config \
   -e FLASK_SECRET_KEY=change-me \
-  ghcr.io/snwaine/mediareaparr:latest
-
-
+  snwaine/mediareaparr:latest
