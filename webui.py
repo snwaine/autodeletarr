@@ -471,8 +471,10 @@ INTERNAL_SCHEDULER_ENABLED = env_default("INTERNAL_SCHEDULER", "1").strip() != "
 SCHEDULER_TICK_SECONDS = clamp_int(env_default("SCHEDULER_TICK_SECONDS", "30"), 5, 3600, 30)
 _SCHED_LOCK_PATH = CONFIG_DIR / ".scheduler.lock"
 
+
 def _weekday_key(dt: datetime) -> str:
     return ["mon", "tue", "wed", "thu", "fri", "sat", "sun"][dt.weekday()]
+
 
 def _job_due(job: Dict[str, Any], now: datetime) -> bool:
     if not job.get("enabled", False):
@@ -488,6 +490,7 @@ def _job_due(job: Dict[str, Any], now: datetime) -> bool:
         return False
     return True
 
+
 def _acquire_scheduler_lock() -> bool:
     """Best-effort single-runner guard (helps if you ever run multiple workers)."""
     try:
@@ -499,6 +502,7 @@ def _acquire_scheduler_lock() -> bool:
         return False
     except Exception:
         return True
+
 
 def _scheduler_spawn_job(job_id: str) -> None:
     """Spawn app.py --job-id <id> and stream output into the shared log."""
@@ -518,6 +522,7 @@ def _scheduler_spawn_job(job_id: str) -> None:
             append_log_line(f"scheduler: failed to spawn job {job_id}: {e}")
         except Exception:
             pass
+
 
 def _scheduler_loop() -> None:
     append_log_line(f"scheduler: starting (tick={SCHEDULER_TICK_SECONDS}s)")
@@ -554,7 +559,7 @@ def _scheduler_loop() -> None:
                 state["scheduler_last"] = last
                 save_state(state)
 
-                append_log_line(f"scheduler: running job {jid} ({jn.get('name','Job')}) window={window}")
+                append_log_line(f"scheduler: running job {jid} ({jn.get('name', 'Job')}) window={window}")
                 _scheduler_spawn_job(jid)
 
         except Exception as e:
@@ -565,6 +570,7 @@ def _scheduler_loop() -> None:
 
         time.sleep(int(SCHEDULER_TICK_SECONDS))
 
+
 def start_internal_scheduler() -> None:
     if not INTERNAL_SCHEDULER_ENABLED:
         append_log_line("scheduler: disabled via INTERNAL_SCHEDULER=0")
@@ -574,6 +580,7 @@ def start_internal_scheduler() -> None:
         return
     t = threading.Thread(target=_scheduler_loop, daemon=True, name="mediareaparr-scheduler")
     t.start()
+
 
 # ----------------------------
 # API helpers
@@ -1357,12 +1364,11 @@ BASE_HEAD = """
     box-shadow: 0 0 0 3px rgba(167,213,65,.16), 0 10px 18px rgba(2,6,23,.10);
   }
 
-  a.btn:hover{ text-decoration: none; }
-
   .btn:hover{
     border-color: rgba(34,197,94,.55);
     box-shadow: 0 0 0 3px rgba(34,197,94,.10), 0 10px 22px rgba(0,0,0,.22);
     transform: translateY(-1px);
+    text-decoration: none;
   }
 
   .btn:active{
@@ -1488,10 +1494,10 @@ BASE_HEAD = """
     background: transparent;
   }
 
-.scoreNumInput{
-  width:90px;
-  min-width:90px;
-}
+  .scoreNumInput{
+    width:90px;
+    min-width:90px;
+  }
   .scoreRow .scoreCheck{
     flex: 1 1 260px;
     min-width: 240px;
@@ -1563,7 +1569,7 @@ BASE_HEAD = """
   }
 
   .jobName:hover{
-    cursor: pointer;
+    cursor: default;
   }
 
   /* Only fade the end when the text actually overflows the box */
@@ -1579,11 +1585,8 @@ BASE_HEAD = """
       rgba(0,0,0,0) 100%
     );
   }
-.jobName:hover{
-  cursor: pointer;
-}
 
-@media (min-width: 700px){ .jobsGrid{ grid-template-columns: repeat(3, minmax(300px, 1fr)); } }
+  @media (min-width: 700px){ .jobsGrid{ grid-template-columns: repeat(3, minmax(300px, 1fr)); } }
   @media (min-width: 1200px){ .jobsGrid{ grid-template-columns: repeat(4, minmax(300px, 1fr)); gap: 16px; } }
   @media (min-width: 1800px){ .jobsGrid{ grid-template-columns: repeat(5, minmax(300px, 1fr)); gap: 20px; } }
 
@@ -4485,7 +4488,6 @@ def jobs_page():
                 <form method="post" action="/jobs/toggle-enabled" style="margin:0;">
                   <input type="hidden" name="job_id" value="{safe_html(j["id"])}">
                   <div class="enableWrap">
-                    <div class="enableLbl">Enable</div>
                     <label class="switch" title="Enable/Disable Job">
                       <input type="checkbox" name="enabled" {"checked" if j["enabled"] else ""} data-action="job-enable">
                       <span class="slider"></span>
@@ -4975,38 +4977,6 @@ def status():
     cfg = load_config()
     state = load_state()
 
-    def render_kv(d: Dict[str, Any]) -> str:
-        rows = []
-        for k, v in d.items():
-            if k == "APPS":
-                apps_list = [normalize_app(a) for a in (v or [])]
-                parts = []
-                for a in apps_list[:50]:
-                    typ = a.get("type")
-                    nm = a.get("name")
-                    ok = "ok" if a.get("ok") else "not-ok"
-                    parts.append(f"{nm} ({typ}, {ok}, url={a.get('url', '')})")
-                summary = "; ".join(parts) + (" …" if len(apps_list) > 50 else "")
-                rows.append(
-                    f"<tr><td><code>{safe_html(k)}</code></td>"
-                    f"<td class='muted'>{safe_html(summary) if summary else safe_html(f'[{len(apps_list)} apps]')}</td></tr>"
-                )
-            elif k == "JOBS":
-                jobs = [normalize_job(x) for x in (v or [])]
-                parts = []
-                for j in jobs[:50]:
-                    parts.append(f"{j.get('name', 'Job')} (app_id={j.get('APP_ID', '')}, tag={j.get('TAG_LABEL', '')})")
-                summary = "; ".join(parts) + (" …" if len(jobs) > 50 else "")
-                rows.append(
-                    f"<tr><td><code>{safe_html(k)}</code></td>"
-                    f"<td class='muted'>{safe_html(summary) if summary else safe_html(f'[{len(jobs)} jobs]')}</td></tr>"
-                )
-            elif "API_KEY" in str(k).upper():
-                rows.append(f"<tr><td><code>{safe_html(k)}</code></td><td class='muted'>***</td></tr>")
-            else:
-                rows.append(f"<tr><td><code>{safe_html(k)}</code></td><td class='muted'>{safe_html(v)}</td></tr>")
-        return "".join(rows)
-
     cfg_for_view = dict(cfg)
     cfg_for_view["APPS"] = []
     for a in (cfg.get("APPS") or []):
@@ -5019,23 +4989,7 @@ def status():
         <div class="card">
           <div class="hd"><h2>Status</h2></div>
           <div class="bd">
-            <div class="muted">Config file: <code>{safe_html(str(CONFIG_PATH))}</code> (exists: <b>{str(CONFIG_PATH.exists()).lower()}</b>)</div>
-            <div class="muted" style="margin-top:8px;">State file: <code>{safe_html(str(STATE_PATH))}</code> (exists: <b>{str(STATE_PATH.exists()).lower()}</b>)</div>
-
-            <div style="margin-top:14px;" class="tablewrap">
-              <table>
-                <thead><tr><th>Config Key</th><th>Value</th></tr></thead>
-                <tbody>{render_kv(cfg_for_view)}</tbody>
-              </table>
-            </div>
-
-            <div style="margin-top:14px;" class="tablewrap">
-              <table>
-                <thead><tr><th>State Key</th><th>Value</th></tr></thead>
-                <tbody>{render_kv(state)}</tbody>
-              </table>
-            </div>
-            <div class="logWrap">
+<div class="logWrap">
               <div class="logToolbar">
                 <div class="logMeta">
                   <div><b>Logs</b> <span class="muted">(tail)</span></div>
