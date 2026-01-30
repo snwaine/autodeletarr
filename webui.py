@@ -5,6 +5,9 @@ import json
 import uuid
 import threading
 import time
+
+import logging
+from logging.handlers import RotatingFileHandler
 from html import escape as html_escape
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
@@ -35,12 +38,14 @@ CONFIG_PATH = CONFIG_DIR / "config.json"
 STATE_PATH = CONFIG_DIR / "state.json"
 
 # ----------------------------
-# Logging (WebUI log viewer)
+# Logging
 # ----------------------------
 DEFAULT_LOG_PATH = Path(os.environ.get("LOG_PATH", str(CONFIG_DIR / "mediareaparr.log")))
+DEFAULT_LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO").upper().strip()
 
 
 def get_log_path(cfg: Optional[Dict[str, Any]] = None) -> Path:
+    """Resolve log file path from config or env."""
     try:
         if isinstance(cfg, dict):
             p = str(cfg.get("LOG_PATH") or cfg.get("log_path") or "").strip()
@@ -51,38 +56,144 @@ def get_log_path(cfg: Optional[Dict[str, Any]] = None) -> Path:
     return DEFAULT_LOG_PATH
 
 
-def tail_file(path: Path, max_lines: int = 500, max_bytes: int = 1024 * 1024) -> str:
-    """Return the last N lines of a text file (best-effort, safe for large files)."""
+def get_log_level(cfg: Optional[Dict[str, Any]] = None) -> str:
     try:
-        p = Path(path)
-        if not p.exists() or not p.is_file():
-            return f"(log file not found) {p}"
-        # Read at most max_bytes from the end
-        with p.open("rb") as f:
-            try:
-                f.seek(0, 2)
-                size = f.tell()
-                f.seek(max(0, size - max_bytes), 0)
-            except Exception:
-                pass
-            data = f.read()
-        txt = data.decode("utf-8", errors="replace")
-        lines = txt.splitlines()
-        if max_lines and len(lines) > max_lines:
-            lines = lines[-max_lines:]
-        return "\n".join(lines)
-    except Exception as e:
-        return f"(failed to read log) {e}"
-
-
-def append_log_line(msg: str) -> None:
-    try:
-        lp = get_log_path()
-        lp.parent.mkdir(parents=True, exist_ok=True)
-        ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
-        lp.open("a", encoding="utf-8").write(f"{ts} [webui] {msg}\n")
+        if isinstance(cfg, dict):
+            lvl = str(cfg.get("LOG_LEVEL") or cfg.get("log_level") or "").strip()
+            if lvl:
+                return lvl.upper()
     except Exception:
         pass
+    return DEFAULT_LOG_LEVEL or "INFO"
+
+
+_LOGGER: Optional[logging.Logger] = None
+
+
+def setup_logger(cfg: Optional[Dict[str, Any]] = None) -> logging.Logger:
+    """Create a rotating file + console logger (singleton)."""
+    global _LOGGER
+    if _LOGGER is not None:
+        # allow level to be adjusted dynamically
+        try:
+            _LOGGER.setLevel(getattr(logging, get_log_level(cfg), logging.INFO))
+        except Exception:
+            _LOGGER.setLevel(logging.INFO)
+        return _LOGGER
+
+    log_path = get_log_path(cfg)
+    try:
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        pass
+
+    logger = logging.getLogger("mediareaparr.webui")
+    logger.propagate = False
+
+    level = getattr(logging, get_log_level(cfg), logging.INFO)
+    logger.setLevel(level)
+
+    fmt = logging.Formatter("%(asctime)s [%(levelname)s] [webui] %(message)s")
+
+    # Avoid duplicates if reloaded
+    if not any(isinstance(h, RotatingFileHandler) for h in logger.handlers):
+        fh = RotatingFileHandler(
+            str(log_path),
+            maxBytes=2_000_000,
+            backupCount=5,
+            encoding="utf-8",
+        )
+        fh.setFormatter(fmt)
+        logger.addHandler(fh)
+
+    if not any(isinstance(h, logging.StreamHandler) for h in logger.handlers):
+        sh = logging.StreamHandler(stream=sys.stdout)
+        sh.setFormatter(fmt)
+        logger.addHandler(sh)
+
+    _LOGGER = logger
+    return logger
+
+
+def log_event(level: str, message: str, exc: Optional[BaseException] = None, **fields: Any) -> None:
+    """Structured-ish logging: adds key=val pairs and optional exception."""
+    logger = setup_logger()
+    try:
+        suffix = ""
+        if fields:
+            # stable ordering
+            parts = []
+            for k in sorted(fields.keys()):
+                v = fields.get(k)
+                if v is None:
+                    continue
+                parts.append(f"{k}={v}")
+            if parts:
+                suffix = " | " + " ".join(parts)
+        msg = f"{message}{suffix}"
+        lvl = level.upper().strip()
+        fn = {
+            "DEBUG": logger.debug,
+            "INFO": logger.info,
+            "WARNING": logger.warning,
+            "WARN": logger.warning,
+            "ERROR": logger.error,
+            "CRITICAL": logger.critical,
+        }.get(lvl, logger.info)
+        if exc is not None:
+            fn(msg, exc_info=exc)
+        else:
+            fn(msg)
+    except Exception:
+        # last resort: don't crash the UI due to logging
+        try:
+            sys.stderr.write(f"LOGGING-FAIL [{level}] {message}\n")
+        except Exception:
+            pass
+
+
+def log_debug(message: str, **fields: Any) -> None:
+    log_event("DEBUG", message, **fields)
+
+
+def log_info(message: str, **fields: Any) -> None:
+    log_event("INFO", message, **fields)
+
+
+def log_warning(message: str, **fields: Any) -> None:
+    log_event("WARNING", message, **fields)
+
+
+def log_error(message: str, exc: Optional[BaseException] = None, **fields: Any) -> None:
+    log_event("ERROR", message, exc=exc, **fields)
+
+
+def append_log_line(line: str) -> None:
+    """Backward-compatible helper used throughout the UI."""
+    log_info(line)
+
+
+def tail_file(path: Path, max_lines: int = 500) -> str:
+    """Tail a text file efficiently."""
+    try:
+        with path.open("rb") as f:
+            f.seek(0, 2)
+            end = f.tell()
+            buf = bytearray()
+            lines = 0
+            chunk = 4096
+            while end > 0 and lines <= max_lines:
+                read_size = chunk if end >= chunk else end
+                end -= read_size
+                f.seek(end)
+                buf[:0] = f.read(read_size)
+                lines = buf.count(b"\n")
+            return b"\n".join(buf.splitlines()[-max_lines:]).decode("utf-8", errors="replace")
+    except FileNotFoundError:
+        return ""
+    except Exception as e:
+        log_error("tail_file failed", exc=e, path=str(path))
+        return ""
 
 
 APP_DIR = Path(__file__).resolve().parent
@@ -90,6 +201,45 @@ APP_IMAGES_DIR = APP_DIR / "images"
 CONFIG_IMAGES_DIR = CONFIG_DIR / "images"
 app = Flask(__name__)
 app.secret_key = os.environ.get("FLASK_SECRET_KEY", "mediareaparr-secret")
+
+# Initialize logger early
+setup_logger()
+
+@app.before_request
+def _log_request_start():
+    try:
+        rid = request.headers.get("X-Request-Id") or str(uuid.uuid4())
+        request.environ["REQUEST_ID"] = rid
+        log_debug("request", method=request.method, path=request.path, rid=rid)
+    except Exception:
+        pass
+
+
+@app.after_request
+def _log_request_end(resp):
+    try:
+        rid = request.environ.get("REQUEST_ID", "")
+        log_debug("response", status=resp.status_code, path=request.path, rid=rid)
+    except Exception:
+        pass
+    return resp
+
+
+@app.errorhandler(404)
+def _handle_404(e):
+    log_warning("404 not found", path=request.path, method=request.method)
+    return render_template_string(shell("Not found", "", "<div class='card'>Not found.</div>")), 404
+
+
+@app.errorhandler(Exception)
+def _handle_exception(e):
+    # Log stack trace
+    log_error("unhandled exception", exc=e, path=request.path, method=request.method)
+    # Keep API endpoints simple
+    if request.path.startswith("/api/") or request.path.startswith("/status/"):
+        return {"ok": False, "error": "Internal Server Error"}, 500
+    return render_template_string(shell("Error", "", "<div class='card'>Something went wrong. Check logs.</div>")), 500
+
 
 
 def env_default(name: str, default: str = "") -> str:
