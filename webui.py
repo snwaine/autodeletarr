@@ -1,3 +1,38 @@
+
+# --- LOG PARSER OVERRIDES (MediaReaparr) ---
+def _override_severity_label(raw_line: str, msg: str, severity: str, label: str):
+    l = raw_line.lower()
+    m = msg.lower()
+
+    # Connection lines (may appear after timestamp/tokens)
+    if "//" in msg or "//" in raw_line:
+        if ":8989" in msg or ":8989" in raw_line:
+            return "DEBUG", "Sonarr Connection"
+        if ":7878" in msg or ":7878" in raw_line:
+            return "DEBUG", "Radarr Connection"
+        return "DEBUG", "Connection"
+
+    # Job run context / parameters
+    if any(k in msg for k in [
+        "SONARR_DELETE_MODE=", "DRY_RUN=", "DELETE_FILES=",
+        "ADD_IMPORT_EXCLUSION=", "TAG_LABEL=", "DAYS_OLD=", "CUTOFF=",
+        "SCORE_FILTER=", "MIN_AVG_SCORE=",
+    ]):
+        return "DEBUG", "Cleaning"
+
+    # Radarr DRY-RUN delete preview
+    if "dry-run would delete movie" in m:
+        return "DEBUG", "Radarr Cleaning"
+
+    # Running job banners
+    if "running sonarr job" in m:
+        return "INFO", "Sonarr Cleaning"
+    if "running radarr job" in m:
+        return "INFO", "Radarr Cleaning"
+
+    return _override_severity_label(raw, msg, severity, label)
+
+
 import os
 import sys
 import subprocess
