@@ -154,11 +154,7 @@ def setup_logging() -> logging.Logger:
         dh.setFormatter(fmt)
         logger.addHandler(dh)
         _start_midnight_rollover_thread(dh)
-
-    if not any(isinstance(h, logging.StreamHandler) for h in logger.handlers):
-        sh = logging.StreamHandler(stream=sys.stdout)
-        sh.setFormatter(fmt)
-        logger.addHandler(sh)
+    # Console logging disabled (WebUI captures job output and would duplicate lines)
 
     _LOGGER = logger
     return logger
@@ -192,20 +188,20 @@ def log_event(level: str, message: str, label: str = "App", exc: Optional[BaseEx
         fn(msg)
 
 
-def log_debug(message: str, **fields: Any) -> None:
-    log_event("DEBUG", message, **fields)
+def log_debug(message: str, label: str = "App", **fields: Any) -> None:
+    log_event("DEBUG", message, label=label, **fields)
 
 
-def log_info(message: str, **fields: Any) -> None:
-    log_event("INFO", message, **fields)
+def log_info(message: str, label: str = "App", **fields: Any) -> None:
+    log_event("INFO", message, label=label, **fields)
 
 
-def log_warning(message: str, **fields: Any) -> None:
-    log_event("WARNING", message, **fields)
+def log_warning(message: str, label: str = "App", **fields: Any) -> None:
+    log_event("WARNING", message, label=label, **fields)
 
 
-def log_error(message: str, exc: Optional[BaseException] = None, **fields: Any) -> None:
-    log_event("ERROR", message, exc=exc, **fields)
+def log_error(message: str, label: str = "App", exc: Optional[BaseException] = None, **fields: Any) -> None:
+    log_event("ERROR", message, label=label, exc=exc, **fields)
 
 
 # ----------------------------
@@ -227,110 +223,25 @@ def log_cleaning_summary(
     sonarr_items: list,
     max_items: int = 5,
 ):
-    """
-    Write ONE summary line per run directly to LOG_PATH using bracket tokens the WebUI parses:
-      DD-MM-YYYY HH:MM [INFO] [Radarr Cleaning] ...
+    """Write ONE summary line per run using the canonical log format.
 
-    Labels:
-      [Radarr Cleaning], [Radarr Cleaning Dry Run], [Sonarr Cleaning], [Sonarr Cleaning Dry Run]
+    Produces a single line like:
+      Feb 01, 2026, 7:26:12 PM [Info] [Radarr Cleaning] job run finished | deleted_count=1 errors=0 ...
     """
     try:
-        ts = datetime.now().strftime("%d-%m-%Y %H:%M")
-        label = ("Radarr" if app_type == "radarr" else "Sonarr") + " Cleaning" + (" Dry Run" if dry_run else "")
+        label = ("Radarr" if app_type == "radarr" else "Sonarr") + " Cleaning"
+        if dry_run:
+            label += " Dry Run"
 
-        if app_type == "radarr":
-            shown, extra = _truncate(radarr_items, max_items)
-            titles = ", ".join(shown)
-            suffix = f", +{extra} more" if extra else ""
-            n = len(radarr_items)
-            verb = "could be deleted" if dry_run else "deleted"
-            msg = f"{n} movie{'s' if n != 1 else ''} {verb} {{{titles}{suffix}}}"
+        deleted_count = len(radarr_items or []) + len(sonarr_items or [])
+        errors = 0
 
-        elif app_type == "sonarr":
-            total_eps = 0
-            for s in sonarr_items:
-                try:
-                    total_eps += int(s.get("episodes") or 0)
-                except Exception:
-                    pass
-            shown, extra = _truncate(sonarr_items, max_items)
-            parts = []
-            for s in shown:
-                ser = str(s.get("series") or "Unknown").strip()
-                try:
-                    n = int(s.get("episodes") or 0)
-                except Exception:
-                    n = 0
-                parts.append(f"{ser} ({n})")
-            suffix = f", +{extra} more" if extra else ""
-            verb = "could be deleted" if dry_run else "deleted"
-            msg = f"{total_eps} episode{'s' if total_eps != 1 else ''} {verb} " + "{" + ", ".join(parts) + suffix + "}"
-
-        else:
-            return
-
-        LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
-        LOG_PATH.open("a", encoding="utf-8").write(f"{ts} [INFO] [{label}] {msg}\n")
+        log_info(
+            f"job run finished | job_name={job_name} dry_run={dry_run} deleted_count={deleted_count} errors={errors}",
+            label=label,
+        )
     except Exception:
         pass
-
-def now_utc() -> datetime:
-    return datetime.now(timezone.utc)
-
-
-def now_iso() -> str:
-    return now_utc().isoformat()
-
-
-def clamp_int(v: Any, lo: int, hi: int, default: int) -> int:
-    try:
-        v = int(v)
-    except Exception:
-        return default
-    if v < lo:
-        return lo
-    if v > hi:
-        return hi
-    return v
-
-
-def normalize_bool(v: Any, default: bool) -> bool:
-    if v is None:
-        return default
-    if isinstance(v, bool):
-        return v
-    s = str(v).strip().lower()
-    if s in ("1", "true", "yes", "on"):
-        return True
-    if s in ("0", "false", "no", "off"):
-        return False
-    return default
-
-
-def parse_iso_date(s: str) -> Optional[datetime]:
-    """Parse ISO date/time strings into UTC datetimes."""
-    if not s:
-        return None
-    try:
-        if s.endswith("Z"):
-            s = s[:-1] + "+00:00"
-        dt = datetime.fromisoformat(s)
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-        return dt.astimezone(timezone.utc)
-    except Exception:
-        return None
-
-
-# Backward-compat helper: older code used parse_radarr_date(...)
-# Radarr "added" is ISO so parse_iso_date is correct.
-def parse_radarr_date(s: str) -> Optional[datetime]:
-    return parse_iso_date(s)
-
-
-def http_timeout_seconds(cfg: Dict[str, Any]) -> int:
-    return clamp_int(cfg.get("HTTP_TIMEOUT_SECONDS", 30), 5, 300, 30)
-
 
 # ----------------------------
 # Config/state IO
@@ -810,12 +721,11 @@ def run_job(cfg: Dict[str, Any], state: Dict[str, Any], job: Dict[str, Any]) -> 
                 raise RuntimeError("RADARR_URL is required (or configure an App in WebUI).")
             if not api_key:
                 raise RuntimeError("RADARR_API_KEY is required (or configure an App in WebUI).")
-
-            print(f"[mediareaparr] Running Radarr job '{job.get('name')}' ({job_id})")
-            print(f"[mediareaparr] RADARR_URL={radarr_url}")
-            print(f"[mediareaparr] TAG_LABEL={tag_label} DAYS_OLD={days_old} CUTOFF={cutoff.isoformat()}")
-            print(f"[mediareaparr] DRY_RUN={dry_run} DELETE_FILES={delete_files} ADD_IMPORT_EXCLUSION={add_import_exclusion}")
-            print(f"[mediareaparr] SCORE_FILTER={radarr_score_enabled} MIN_AVG_SCORE={radarr_min_avg_score}")
+            log_info(f"Running Radarr job '{job.get('name')}' ({job_id})", label="Radarr Cleaning")
+            log_debug(f"RADARR_URL={radarr_url}", label="Radarr Connection")
+            log_debug(f"TAG_LABEL={tag_label} DAYS_OLD={days_old} CUTOFF={cutoff.isoformat()}", label="Radarr Cleaning")
+            log_debug(f"DRY_RUN={dry_run} DELETE_FILES={delete_files} ADD_IMPORT_EXCLUSION={add_import_exclusion}", label="Radarr Cleaning")
+            log_debug(f"SCORE_FILTER={radarr_score_enabled} MIN_AVG_SCORE={radarr_min_avg_score}", label="Radarr Cleaning")
 
             label_to_id, _ = radarr_tags_map(radarr_url, api_key, timeout)
             tag_id = label_to_id.get(tag_label)
@@ -862,16 +772,16 @@ def run_job(cfg: Dict[str, Any], state: Dict[str, Any], job: Dict[str, Any]) -> 
                             score_gate_reason = f"avg_score_{avg_score:.1f}_not_below_{radarr_min_avg_score}"
 
                 if score_gate_blocked:
-                    print(
-                        f"[mediareaparr] SKIP (score gate) id={movie_id} '{title}' "
-                        f"age={age_days} score={avg_score} reason={score_gate_reason}"
+                    log_debug(
+                        f"SKIP (score gate) id={movie_id} '{title}' age={age_days} score={avg_score} reason={score_gate_reason}",
+                        label="Radarr Cleaning",
                     )
                     continue
 
                 if dry_run:
-                    print(
-                        f"[mediareaparr] DRY-RUN would delete movie id={movie_id} '{title}' ({year}) age={age_days} "
-                        f"score={avg_score} path={path}"
+                    log_debug(
+                        f"DRY-RUN would delete movie id={movie_id} '{title}' ({year}) age={age_days} score={avg_score} path={path}",
+                        label="Radarr Cleaning",
                     )
                     radarr_summary.append(f"{title} ({year})")
                     run_state["deleted"].append(
@@ -898,7 +808,7 @@ def run_job(cfg: Dict[str, Any], state: Dict[str, Any], job: Dict[str, Any]) -> 
                         raise RuntimeError("Radarr delete call returned but movie still exists in Radarr")
 
                     print(
-                        f"[mediareaparr] Deleted movie id={movie_id} '{title}' ({year}) "
+                        f"Deleted movie id={movie_id} '{title}' ({year}) "
                         f"age={age_days} score={avg_score} via={method}"
                     )
                     radarr_summary.append(f"{title} ({year})")
@@ -918,7 +828,7 @@ def run_job(cfg: Dict[str, Any], state: Dict[str, Any], job: Dict[str, Any]) -> 
                     _persist_run(state, job_id, run_state)
                 except Exception as e:
                     err = f"ERROR Radarr deleting id={movie_id} title='{title}': {e}"
-                    print(f"[mediareaparr] {err}", file=sys.stderr)
+                    log_error(str(err), label="App")
                     run_state["errors"].append(err)
                     _persist_run(state, job_id, run_state)
 
@@ -940,12 +850,11 @@ def run_job(cfg: Dict[str, Any], state: Dict[str, Any], job: Dict[str, Any]) -> 
                 raise RuntimeError("SONARR_URL is required (or configure an App in WebUI).")
             if not api_key:
                 raise RuntimeError("SONARR_API_KEY is required (or configure an App in WebUI).")
-
-            print(f"[mediareaparr] Running Sonarr job '{job.get('name')}' ({job_id})")
-            print(f"[mediareaparr] SONARR_URL={sonarr_url}")
-            print(f"[mediareaparr] TAG_LABEL={tag_label} DAYS_OLD={days_old} CUTOFF={cutoff.isoformat()}")
-            print(f"[mediareaparr] DRY_RUN={dry_run} DELETE_FILES={delete_files} ADD_IMPORT_EXCLUSION={add_import_exclusion}")
-            print(f"[mediareaparr] SONARR_DELETE_MODE={sonarr_mode}")
+            log_info(f"Running Sonarr job '{job.get('name')}' ({job_id})", label="Sonarr Cleaning")
+            log_debug(f"SONARR_URL={sonarr_url}", label="Sonarr Connection")
+            log_debug(f"TAG_LABEL={tag_label} DAYS_OLD={days_old} CUTOFF={cutoff.isoformat()}", label="Sonarr Cleaning")
+            log_debug(f"DRY_RUN={dry_run} DELETE_FILES={delete_files} ADD_IMPORT_EXCLUSION={add_import_exclusion}", label="Sonarr Cleaning")
+            log_debug(f"SONARR_DELETE_MODE={sonarr_mode}", label="Sonarr Cleaning")
 
             label_to_id, _ = sonarr_tags_map(sonarr_url, api_key, timeout)
             tag_id = label_to_id.get(tag_label)
@@ -976,9 +885,9 @@ def run_job(cfg: Dict[str, Any], state: Dict[str, Any], job: Dict[str, Any]) -> 
                 path = s.get("path")
 
                 if dry_run:
-                    print(
-                        f"[mediareaparr] DRY-RUN candidate series id={series_id} '{title}' ({year}) "
-                        f"age={age_days} path={path} mode={sonarr_mode}"
+                    log_debug(
+                        f"DRY-RUN candidate series id={series_id} '{title}' ({year}) age={age_days} path={path} mode={sonarr_mode}",
+                        label="Sonarr Cleaning",
                     )
                     run_state["deleted"].append(
                         {
@@ -999,7 +908,7 @@ def run_job(cfg: Dict[str, Any], state: Dict[str, Any], job: Dict[str, Any]) -> 
                 try:
                     if sonarr_mode == "series_whole":
                         sonarr_delete_series(sonarr_url, api_key, timeout, series_id, delete_files, add_import_exclusion)
-                        print(f"[mediareaparr] Deleted series (whole) id={series_id} '{title}' ({year}) age={age_days}")
+                        log_info(f"Deleted series (whole) id={series_id} '{title}' ({year}) age={age_days}", label="Sonarr Cleaning")
                         run_state["deleted"].append(
                             {
                                 "kind": "series",
@@ -1015,7 +924,7 @@ def run_job(cfg: Dict[str, Any], state: Dict[str, Any], job: Dict[str, Any]) -> 
 
                     elif sonarr_mode in ("episodes_only", "episodes_then_series_if_empty"):
                         if not delete_files:
-                            print(f"[mediareaparr] SKIP episode deletion (DELETE_FILES=OFF) series id={series_id} '{title}'")
+                            print(f"SKIP episode deletion (DELETE_FILES=OFF) series id={series_id} '{title}'")
                         else:
                             eps = sonarr_list_episode_files(sonarr_url, api_key, timeout, series_id)
                             ep_ids: List[int] = []
@@ -1028,7 +937,7 @@ def run_job(cfg: Dict[str, Any], state: Dict[str, Any], job: Dict[str, Any]) -> 
                             for ef_id in ep_ids:
                                 sonarr_delete_episode_file(sonarr_url, api_key, timeout, ef_id)
 
-                            print(f"[mediareaparr] Deleted {len(ep_ids)} episode file(s) for series id={series_id} '{title}'")
+                            print(f"Deleted {len(ep_ids)} episode file(s) for series id={series_id} '{title}'")
 
                             # Summary for Sonarr-style log
                             try:
@@ -1048,7 +957,7 @@ def run_job(cfg: Dict[str, Any], state: Dict[str, Any], job: Dict[str, Any]) -> 
                                     add_import_excl=add_import_exclusion,
                                 )
                                 print(
-                                    f"[mediareaparr] Deleted empty series container id={series_id} '{title}' "
+                                    f"Deleted empty series container id={series_id} '{title}' "
                                     f"(after episode delete)"
                                 )
                                 run_state["deleted"].append(
@@ -1092,14 +1001,14 @@ def run_job(cfg: Dict[str, Any], state: Dict[str, Any], job: Dict[str, Any]) -> 
                             )
 
                     else:
-                        print(f"[mediareaparr] Unknown Sonarr mode '{sonarr_mode}', skipping series id={series_id} '{title}'")
+                        print(f"Unknown Sonarr mode '{sonarr_mode}', skipping series id={series_id} '{title}'")
 
                     run_state["deleted_count"] = len(run_state["deleted"])
                     _persist_run(state, job_id, run_state)
 
                 except Exception as e:
                     err = f"ERROR Sonarr processing id={series_id} title='{title}': {e}"
-                    print(f"[mediareaparr] {err}", file=sys.stderr)
+                    log_error(str(err), label="App")
                     run_state["errors"].append(err)
                     _persist_run(state, job_id, run_state)
 
@@ -1159,18 +1068,18 @@ def main() -> int:
 
         if not job_id:
             log_error("--job-id is required (cron uses it).")
-            print("[mediareaparr] ERROR: --job-id is required (cron uses it).", file=sys.stderr)
+            log_error("--job-id is required (cron uses it).", label="App")
             return 2
 
         job = find_job_by_id(cfg, job_id)
         if not job:
             log_error("Job not found", job_id=job_id)
-            print(f"[mediareaparr] ERROR: Job not found: {job_id}", file=sys.stderr)
+            log_error(f"Job not found: {job_id}", label="App")
             return 2
 
         if not job.get("enabled", False):
             log_warning("Job is disabled", job_id=job_id, job_name=job.get("name"))
-            print(f"[mediareaparr] Job is disabled: {job_id} ({job.get('name')})")
+            log_warning(f"Job is disabled: {job_id} ({job.get('name')})", label="App")
             # still record a run so dashboard shows something useful
             run_state = {
                 "job_id": job_id,
