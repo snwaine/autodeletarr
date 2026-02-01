@@ -39,7 +39,7 @@ STATE_PATH = CONFIG_DIR / "state.json"
 # ----------------------------
 # Logging (WebUI log viewer)
 # ----------------------------
-DEFAULT_LOG_PATH = Path(os.environ.get("LOG_PATH", str(CONFIG_DIR / "logDB.log")))
+DEFAULT_LOG_PATH = Path(os.environ.get("LOG_PATH", str(CONFIG_DIR / "mediareaparr.log")))
 
 
 def get_log_path(cfg: Optional[Dict[str, Any]] = None) -> Path:
