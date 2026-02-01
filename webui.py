@@ -1,38 +1,4 @@
-
-# --- LOG PARSER OVERRIDES (MediaReaparr) ---
-def _override_severity_label(raw_line: str, msg: str, severity: str, label: str):
-    l = raw_line.lower()
-    m = msg.lower()
-
-    # Connection lines (may appear after timestamp/tokens)
-    if "//" in msg or "//" in raw_line:
-        if ":8989" in msg or ":8989" in raw_line:
-            return "DEBUG", "Sonarr Connection"
-        if ":7878" in msg or ":7878" in raw_line:
-            return "DEBUG", "Radarr Connection"
-        return "DEBUG", "Connection"
-
-    # Job run context / parameters
-    if any(k in msg for k in [
-        "SONARR_DELETE_MODE=", "DRY_RUN=", "DELETE_FILES=",
-        "ADD_IMPORT_EXCLUSION=", "TAG_LABEL=", "DAYS_OLD=", "CUTOFF=",
-        "SCORE_FILTER=", "MIN_AVG_SCORE=",
-    ]):
-        return "DEBUG", "Cleaning"
-
-    # Radarr DRY-RUN delete preview
-    if "dry-run would delete movie" in m:
-        return "DEBUG", "Radarr Cleaning"
-
-    # Running job banners
-    if "running sonarr job" in m:
-        return "INFO", "Sonarr Cleaning"
-    if "running radarr job" in m:
-        return "INFO", "Radarr Cleaning"
-
-    return _override_severity_label(raw, msg, severity, label)
-
-
+import re
 import os
 import sys
 import subprocess
@@ -42,6 +8,7 @@ import threading
 import time
 import atexit
 import signal
+import re
 from html import escape as html_escape
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
@@ -74,18 +41,81 @@ STATE_PATH = CONFIG_DIR / "state.json"
 # ----------------------------
 # Logging (WebUI log viewer)
 # ----------------------------
-DEFAULT_LOG_PATH = Path(os.environ.get("LOG_PATH", str(CONFIG_DIR / "mediareaparr.log")))
+
+# Daily log rotation (all logs are named: "dd-mm-yyyy mediareaparr.log")
+# LOG_DIR may be set to control where logs are written/read.
+DEFAULT_LOG_DIR = Path(os.environ.get("LOG_DIR", "")).expanduser() if os.environ.get("LOG_DIR") else None
+if DEFAULT_LOG_DIR is None:
+    # Back-compat: if LOG_PATH was provided as a file path, use its parent as LOG_DIR
+    _lp = os.environ.get("LOG_PATH", "")
+    if _lp:
+        try:
+            DEFAULT_LOG_DIR = Path(_lp).expanduser().resolve().parent
+        except Exception:
+            DEFAULT_LOG_DIR = None
+if DEFAULT_LOG_DIR is None:
+    DEFAULT_LOG_DIR = CONFIG_DIR
+
+LOG_FILE_SUFFIX = " mediareaparr.log"
 
 
-def get_log_path(cfg: Optional[Dict[str, Any]] = None) -> Path:
+def _today_dd_mm_yyyy() -> str:
+    return datetime.now(timezone.utc).strftime("%d-%m-%Y")
+
+
+def _is_valid_dd_mm_yyyy(s: str) -> bool:
+    s = (s or "").strip()
+    if not re.fullmatch(r"\d{2}-\d{2}-\d{4}", s):
+        return False
+    try:
+        datetime.strptime(s, "%d-%m-%Y")
+        return True
+    except Exception:
+        return False
+
+
+def get_log_path(cfg: Optional[Dict[str, Any]] = None, date_key: Optional[str] = None) -> Path:
+    # cfg may still override LOG_DIR/LOG_PATH (but the filename format is fixed)
+    log_dir = DEFAULT_LOG_DIR
     try:
         if isinstance(cfg, dict):
-            p = str(cfg.get("LOG_PATH") or cfg.get("log_path") or "").strip()
-            if p:
-                return Path(p)
+            d = str(cfg.get("LOG_DIR") or cfg.get("log_dir") or "").strip()
+            if d:
+                log_dir = Path(d).expanduser()
+            else:
+                p = str(cfg.get("LOG_PATH") or cfg.get("log_path") or "").strip()
+                if p:
+                    try:
+                        log_dir = Path(p).expanduser().resolve().parent
+                    except Exception:
+                        pass
     except Exception:
         pass
-    return DEFAULT_LOG_PATH
+
+    dk = (date_key or "").strip()
+    if not _is_valid_dd_mm_yyyy(dk):
+        dk = _today_dd_mm_yyyy()
+
+    return Path(log_dir) / f"{dk}{LOG_FILE_SUFFIX}"
+
+
+def list_log_dates(cfg: Optional[Dict[str, Any]] = None) -> List[str]:
+    # Return available dates (dd-mm-yyyy) based on files in LOG_DIR
+    try:
+        base = get_log_path(cfg).parent
+        dates = []
+        for p in base.glob(f"*{LOG_FILE_SUFFIX}"):
+            name = p.name
+            if not name.endswith(LOG_FILE_SUFFIX):
+                continue
+            dk = name[: -len(LOG_FILE_SUFFIX)]
+            if _is_valid_dd_mm_yyyy(dk):
+                dates.append(dk)
+        # Newest first
+        dates.sort(key=lambda s: datetime.strptime(s, "%d-%m-%Y"), reverse=True)
+        return dates
+    except Exception:
+        return []
 
 
 def tail_file(path: Path, max_lines: int = 500, max_bytes: int = 1024 * 1024) -> str:
@@ -112,17 +142,30 @@ def tail_file(path: Path, max_lines: int = 500, max_bytes: int = 1024 * 1024) ->
         return f"(failed to read log) {e}"
 
 
-def append_log_line(msg: str, sev: str = "INFO") -> None:
+def append_log_line(msg: str, sev: str = "INFO", label: str = "WebUI") -> None:
+    """Append a single log line to today's log file in canonical format.
+
+    Format: Feb 01, 2026, 7:26:12 PM [Info] [Label] Message
+    """
     try:
         lp = get_log_path()
         lp.parent.mkdir(parents=True, exist_ok=True)
-        ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+
+        # Use container-local time (honors TZ env var)
+        ts = datetime.now().strftime("%b %d, %Y, %I:%M:%S %p")
+
         s = (sev or "INFO").strip().upper()
         if s == "WARN":
             s = "WARNING"
-        lp.open("a", encoding="utf-8").write(f"{ts} [{s}] [webui] {msg}\n")
+        # Title-case severity to match app.py formatter output (Info/Debug/Warning/Error)
+        sev_out = s.title()
+
+        lbl = (label or "WebUI").strip()
+        lp.open("a", encoding="utf-8").write(f"{ts} [{sev_out}] [{lbl}] {msg}\n")
     except Exception:
         pass
+
+
 
 APP_DIR = Path(__file__).resolve().parent
 APP_IMAGES_DIR = APP_DIR / "images"
@@ -134,6 +177,7 @@ app = Flask(__name__)
 # ----------------------------
 from flask import jsonify
 
+
 def _wants_json() -> bool:
     # Any API-ish path or explicit JSON accept header
     try:
@@ -144,6 +188,7 @@ def _wants_json() -> bool:
         return "application/json" in accept
     except Exception:
         return False
+
 
 @app.errorhandler(Exception)
 def handle_unexpected_error(e):
@@ -178,6 +223,8 @@ def handle_unexpected_error(e):
         "</pre></div></body></html>",
         500,
     )
+
+
 app.secret_key = os.environ.get("FLASK_SECRET_KEY", "mediareaparr-secret")
 
 
@@ -665,7 +712,7 @@ def _scheduler_spawn_job(job_id: str) -> None:
         )
     except Exception as e:
         try:
-            append_log_line(f"scheduler: failed to spawn job {job_id}: {e}", sev="ERROR")
+            append_log_line(f"scheduler: failed to spawn job {job_id}: {e}", sev="ERROR", label="Scheduler")
         except Exception:
             pass
 
@@ -710,7 +757,7 @@ def _scheduler_loop() -> None:
 
         except Exception as e:
             try:
-                append_log_line(f"scheduler: loop error: {e}", sev="DEBUG")
+                append_log_line(f"scheduler: loop error: {e}", sev="DEBUG", label="Scheduler")
             except Exception:
                 pass
 
@@ -741,7 +788,7 @@ def _install_scheduler_lock_cleanup() -> None:
 
 def start_internal_scheduler() -> None:
     if not INTERNAL_SCHEDULER_ENABLED:
-        append_log_line("scheduler: disabled via INTERNAL_SCHEDULER=0", sev="DEBUG")
+        append_log_line("scheduler: disabled via INTERNAL_SCHEDULER=0", sev="DEBUG", label="Scheduler")
         return
     if not _acquire_scheduler_lock():
         append_log_line("scheduler: lock exists, not starting (another worker owns it)", sev="DEBUG")
@@ -5300,9 +5347,28 @@ def dashboard():
 def status_log():
     cfg = load_config()
     lines = clamp_int(request.args.get("lines", 500), 10, 5000, 500)
-    log_path = get_log_path()
+    date_key = (request.args.get("date") or "").strip()
+    log_path = get_log_path(cfg, date_key=date_key)
     txt = tail_file(log_path, max_lines=lines)
     return Response(txt, mimetype="text/plain; charset=utf-8")
+
+
+@app.get("/status/log/dates")
+def status_log_dates():
+    cfg = load_config()
+    dates = list_log_dates(cfg)
+    selected = (request.args.get("selected") or "").strip()
+    if not _is_valid_dd_mm_yyyy(selected):
+        selected = _today_dd_mm_yyyy()
+    if selected and selected not in dates:
+        dates = [selected] + dates
+    return jsonify({
+        "ok": True,
+        "dates": dates,
+        "selected": selected,
+        "log_dir": str(get_log_path(cfg, date_key=selected).parent),
+        "log_path": str(get_log_path(cfg, date_key=selected)),
+    })
 
 
 # ----------------------------
@@ -5328,10 +5394,14 @@ def status():
               <div class="logTableHeader">
                 <div class="left">
                   <div><b>Log Viewer</b> <span class="muted">(from file)</span></div>
-                  <div class="muted">Path: <code>{safe_html(str(get_log_path()))}</code></div>
+                  <div class="muted">Path: <code id="logPathCode">{safe_html(str(get_log_path(cfg)))}</code></div>
                 </div>
 
                 <div class="right">
+                  <select id="logDateSelect" class="logFilterSelect" style="min-width:160px" onchange="onLogDateChange()">
+                    <option value="">Loading…</option>
+                  </select>
+
                   <select id="logLevelFilter" class="logFilterSelect" onchange="applyLogFilters()">
                     <option value="">All severities</option>
                     <option value="DEBUG">Debug</option>
@@ -5416,13 +5486,33 @@ def status():
 
                 // Parse leading timestamp.
                 // Supported:
+                // - Mon DD, YYYY, H:MM:SS AM/PM   (canonical, e.g. "Feb 01, 2026, 7:26:12 PM")
                 // - YYYY-MM-DD HH:MM:SS(,mmm)
                 // - DD-MM-YYYY HH:MM(:SS)?(,mmm)?
                 let ts = "";
                 let pos = 0;
 
+                // Mon DD, YYYY, H:MM:SS AM/PM
+                // (We keep this regex-free by slicing up to the first " [" token.)
+                const bracketAt = s.indexOf(" [");
+                if (bracketAt > 0) {{
+                  const cand = s.substring(0, bracketAt).trim();
+                  const mon = cand.length >= 3 ? cand.substring(0, 3) : "";
+                  const months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+                  if (months.indexOf(mon) !== -1) {{
+                    // Basic shape check: "Mon DD, YYYY, ..."
+                    // e.g. "Feb 01, 2026, 7:26:12 PM"
+                    const c6 = cand.length > 6 ? cand[6] : "";
+                    const c12 = cand.length > 12 ? cand[12] : "";
+                    if (c6 === "," && c12 === ",") {{
+                      ts = cand;
+                      pos = bracketAt;
+                    }}
+                  }}
+                }}
+
                 // YYYY-MM-DD HH:MM:SS
-                if (s.length >= 19 && s[4] === "-" && s[7] === "-" && (s[10] === " " || s[10] === "T") && s[13] === ":" && s[16] === ":") {{
+                if (!ts && s.length >= 19 && s[4] === "-" && s[7] === "-" && (s[10] === " " || s[10] === "T") && s[13] === ":" && s[16] === ":") {{
                   let tsLen = 19;
                   if (s.length >= 23 && (s[19] === "," || s[19] === ".") && isDigit(s[20]) && isDigit(s[21]) && isDigit(s[22])) {{
                     tsLen = 23;
@@ -5431,7 +5521,7 @@ def status():
                   pos = tsLen;
                 }}
                 // DD-MM-YYYY HH:MM or DD-MM-YYYY HH:MM:SS
-                else if (s.length >= 16 && isDigit(s[0]) && isDigit(s[1]) && s[2] === "-" && isDigit(s[3]) && isDigit(s[4]) && s[5] === "-" && isDigit(s[6]) && isDigit(s[7]) && isDigit(s[8]) && isDigit(s[9]) && s[10] === " " && isDigit(s[11]) && isDigit(s[12]) && s[13] === ":" && isDigit(s[14]) && isDigit(s[15])) {{
+                else if (!ts && s.length >= 16 && isDigit(s[0]) && isDigit(s[1]) && s[2] === "-" && isDigit(s[3]) && isDigit(s[4]) && s[5] === "-" && isDigit(s[6]) && isDigit(s[7]) && isDigit(s[8]) && isDigit(s[9]) && s[10] === " " && isDigit(s[11]) && isDigit(s[12]) && s[13] === ":" && isDigit(s[14]) && isDigit(s[15])) {{
                   let tsLen = 16; // DD-MM-YYYY HH:MM
                   // optional :SS
                   if (s.length >= 19 && s[16] === ":" && isDigit(s[17]) && isDigit(s[18])) {{
@@ -5520,60 +5610,6 @@ def status():
                     rest = rest.slice(idx + 1).trim();
                   }}
                 }}
-                // Force-category run context lines as Debug/Cleaning (even if emitted as [INFO] [mediareaparr] ...).
-                // These are parameter/cutoff lines that would otherwise clutter Info.
-                const uAll = s.toUpperCase();
-
-                // Bare endpoint traces (e.g. //192.168.0.47:8989) => Connection debug.
-                // NOTE: In many of your lines, the endpoint appears AFTER the timestamp/brackets,
-                // so we must check both the full line (s) and the parsed message (rest).
-                const sTrim = s.trim();
-                const restTrim = (rest || "").trim();
-                const connStr = (restTrim && restTrim.length >= 2) ? restTrim : sTrim;
-
-                if (
-                  sTrim.startsWith("//") ||
-                  restTrim.startsWith("//") ||
-                  restTrim.startsWith("http://") ||
-                  restTrim.startsWith("https://")
-                ) {{
-                  sev = "DEBUG";
-                  if (connStr.includes(":8989")) label = "Sonarr Connection";
-                  else if (connStr.includes(":7878")) label = "Radarr Connection";
-                  else label = "Connection";
-
-                  // If the message itself is just the endpoint, keep it as the message.
-                  // If it's embedded inside a longer line, still show the original rest.
-                }}
-
-                // "Running <App> job ..." banner lines => Info + app-specific Cleaning label.
-                if (uAll.includes("RUNNING SONARR JOB")) {{
-                  sev = "INFO";
-                  label = "Sonarr Cleaning";
-                }} else if (uAll.includes("RUNNING RADARR JOB")) {{
-                  sev = "INFO";
-                  label = "Radarr Cleaning";
-                }}
-
-                // Parameter/cutoff lines => Debug/Cleaning.
-                if (
-                  uAll.includes("JOB RUN STARTED") ||
-                  uAll.includes("JOB RUN FINISHED") ||
-                  uAll.includes("SONARR_DELETE_MODE=") ||
-                  uAll.includes("DRY_RUN=") ||
-                  uAll.includes("DELETE_FILES=") ||
-                  uAll.includes("ADD_IMPORT_EXCLUSION=") ||
-                  uAll.includes("SCORE_FILTER=") ||
-                  uAll.includes("MIN_AVG_SCORE=") ||
-                  uAll.includes("TAG_LABEL=") ||
-                  uAll.includes("DAYS_OLD=") ||
-                  uAll.includes("CUTOFF=")
-                ) {{
-                  sev = "DEBUG";
-                  label = "Cleaning";
-                }}
-
-
 
                 return {{
                   ts: ts || "—",
@@ -5663,10 +5699,42 @@ def status():
               function pagePrev(){{ __logPage -= 1; renderPage(); }}
               function pageNext(){{ __logPage += 1; renderPage(); }}
 
-              function reloadLogs(){{
+
+              function loadLogDates(){{
+                const sel = document.getElementById("logDateSelect");
+                if (!sel) return Promise.resolve();
+                const current = (sel.value || "");
+                return fetch("/status/log/dates?selected=" + encodeURIComponent(current || ""), {{cache:"no-store"}})
+                  .then(r => r.json())
+                  .then(j => {{
+                    if (!j || !j.ok) return;
+                    const dates = Array.isArray(j.dates) ? j.dates : [];
+                    const selected = j.selected || "";
+                    sel.innerHTML = "";
+                    for (const d of dates) {{
+                      const opt = document.createElement("option");
+                      opt.value = d;
+                      opt.textContent = d;
+                      sel.appendChild(opt);
+                    }}
+                    if (selected) sel.value = selected;
+                    const p = document.getElementById("logPathCode");
+                    if (p && j.log_path) p.textContent = j.log_path;
+                  }})
+                  .catch(() => {{}});
+              }}
+
+              function onLogDateChange(){{
+                __logPage = 1;
+                reloadLogs();
+              }}
+
+function reloadLogs(){{
                 // Pull a large tail by default (keeps things fast even for big files)
                 const lines = 5000;
-                fetch("/status/log?lines=" + lines, {{cache:"no-store"}})
+                const dk = (document.getElementById("logDateSelect") && document.getElementById("logDateSelect").value) || "";
+                const url = "/status/log?lines=" + lines + (dk ? ("&date=" + encodeURIComponent(dk)) : "");
+                fetch(url, {{cache:"no-store"}})
                   .then(r => r.text())
                   .then(t => {{
                     const linesArr = (t || "").split(String.fromCharCode(10)).map(x => x.replace(String.fromCharCode(13), "")).filter(Boolean);
@@ -5694,7 +5762,7 @@ def status():
               (function initLogs(){{
                 // set default page size to 10 (matches screenshot)
                 document.getElementById("logPageSize").value = "10";
-                reloadLogs();
+                loadLogDates().then(() => reloadLogs());
               }})();
             </script>
 
@@ -5715,3 +5783,32 @@ if __name__ == "__main__":
     start_internal_scheduler()
 
     app.run(host=args.host, port=args.port)
+
+
+# ----------------------------
+# Log line parsing (canonical format)
+# ----------------------------
+_CANONICAL_LOG_RE = re.compile(
+    r'^(?P<ts>[A-Z][a-z]{2} \d{2}, \d{4}, \d{2}:\d{2}:\d{2} (?:AM|PM)) '
+    r'\[(?P<sev>[^\]]+)\] '
+    r'\[(?P<label>[^\]]+)\] '
+    r'(?P<msg>.*)$'
+)
+
+def parse_log_line(line: str):
+    s = line.rstrip("\n")
+    m = _CANONICAL_LOG_RE.match(s)
+    if m:
+        return {
+            "timestamp": m.group("ts"),
+            "severity": m.group("sev").title(),
+            "label": m.group("label"),
+            "message": m.group("msg"),
+        }
+    # fallback: return whole line as message
+    return {
+        "timestamp": "",
+        "severity": "Info",
+        "label": "App",
+        "message": s,
+    }
