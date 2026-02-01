@@ -5,9 +5,8 @@ import json
 import uuid
 import threading
 import time
-
-import logging
-from logging.handlers import RotatingFileHandler
+import atexit
+import signal
 from html import escape as html_escape
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
@@ -38,14 +37,12 @@ CONFIG_PATH = CONFIG_DIR / "config.json"
 STATE_PATH = CONFIG_DIR / "state.json"
 
 # ----------------------------
-# Logging
+# Logging (WebUI log viewer)
 # ----------------------------
-DEFAULT_LOG_PATH = Path(os.environ.get("LOG_PATH", str(CONFIG_DIR / "mediareaparr.log")))
-DEFAULT_LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO").upper().strip()
+DEFAULT_LOG_PATH = Path(os.environ.get("LOG_PATH", str(CONFIG_DIR / "logDB.log")))
 
 
 def get_log_path(cfg: Optional[Dict[str, Any]] = None) -> Path:
-    """Resolve log file path from config or env."""
     try:
         if isinstance(cfg, dict):
             p = str(cfg.get("LOG_PATH") or cfg.get("log_path") or "").strip()
@@ -56,190 +53,97 @@ def get_log_path(cfg: Optional[Dict[str, Any]] = None) -> Path:
     return DEFAULT_LOG_PATH
 
 
-def get_log_level(cfg: Optional[Dict[str, Any]] = None) -> str:
+def tail_file(path: Path, max_lines: int = 500, max_bytes: int = 1024 * 1024) -> str:
+    """Return the last N lines of a text file (best-effort, safe for large files)."""
     try:
-        if isinstance(cfg, dict):
-            lvl = str(cfg.get("LOG_LEVEL") or cfg.get("log_level") or "").strip()
-            if lvl:
-                return lvl.upper()
-    except Exception:
-        pass
-    return DEFAULT_LOG_LEVEL or "INFO"
-
-
-_LOGGER: Optional[logging.Logger] = None
-
-
-def setup_logger(cfg: Optional[Dict[str, Any]] = None) -> logging.Logger:
-    """Create a rotating file + console logger (singleton)."""
-    global _LOGGER
-    if _LOGGER is not None:
-        # allow level to be adjusted dynamically
-        try:
-            _LOGGER.setLevel(getattr(logging, get_log_level(cfg), logging.INFO))
-        except Exception:
-            _LOGGER.setLevel(logging.INFO)
-        return _LOGGER
-
-    log_path = get_log_path(cfg)
-    try:
-        log_path.parent.mkdir(parents=True, exist_ok=True)
-    except Exception:
-        pass
-
-    logger = logging.getLogger("mediareaparr.webui")
-    logger.propagate = False
-
-    level = getattr(logging, get_log_level(cfg), logging.INFO)
-    logger.setLevel(level)
-
-    fmt = logging.Formatter("%(asctime)s [%(levelname)s] [webui] %(message)s")
-
-    # Avoid duplicates if reloaded
-    if not any(isinstance(h, RotatingFileHandler) for h in logger.handlers):
-        fh = RotatingFileHandler(
-            str(log_path),
-            maxBytes=2_000_000,
-            backupCount=5,
-            encoding="utf-8",
-        )
-        fh.setFormatter(fmt)
-        logger.addHandler(fh)
-
-    if not any(isinstance(h, logging.StreamHandler) for h in logger.handlers):
-        sh = logging.StreamHandler(stream=sys.stdout)
-        sh.setFormatter(fmt)
-        logger.addHandler(sh)
-
-    _LOGGER = logger
-    return logger
-
-
-def log_event(level: str, message: str, exc: Optional[BaseException] = None, **fields: Any) -> None:
-    """Structured-ish logging: adds key=val pairs and optional exception."""
-    logger = setup_logger()
-    try:
-        suffix = ""
-        if fields:
-            # stable ordering
-            parts = []
-            for k in sorted(fields.keys()):
-                v = fields.get(k)
-                if v is None:
-                    continue
-                parts.append(f"{k}={v}")
-            if parts:
-                suffix = " | " + " ".join(parts)
-        msg = f"{message}{suffix}"
-        lvl = level.upper().strip()
-        fn = {
-            "DEBUG": logger.debug,
-            "INFO": logger.info,
-            "WARNING": logger.warning,
-            "WARN": logger.warning,
-            "ERROR": logger.error,
-            "CRITICAL": logger.critical,
-        }.get(lvl, logger.info)
-        if exc is not None:
-            fn(msg, exc_info=exc)
-        else:
-            fn(msg)
-    except Exception:
-        # last resort: don't crash the UI due to logging
-        try:
-            sys.stderr.write(f"LOGGING-FAIL [{level}] {message}\n")
-        except Exception:
-            pass
-
-
-def log_debug(message: str, **fields: Any) -> None:
-    log_event("DEBUG", message, **fields)
-
-
-def log_info(message: str, **fields: Any) -> None:
-    log_event("INFO", message, **fields)
-
-
-def log_warning(message: str, **fields: Any) -> None:
-    log_event("WARNING", message, **fields)
-
-
-def log_error(message: str, exc: Optional[BaseException] = None, **fields: Any) -> None:
-    log_event("ERROR", message, exc=exc, **fields)
-
-
-def append_log_line(line: str) -> None:
-    """Backward-compatible helper used throughout the UI."""
-    log_info(line)
-
-
-def tail_file(path: Path, max_lines: int = 500) -> str:
-    """Tail a text file efficiently."""
-    try:
-        with path.open("rb") as f:
-            f.seek(0, 2)
-            end = f.tell()
-            buf = bytearray()
-            lines = 0
-            chunk = 4096
-            while end > 0 and lines <= max_lines:
-                read_size = chunk if end >= chunk else end
-                end -= read_size
-                f.seek(end)
-                buf[:0] = f.read(read_size)
-                lines = buf.count(b"\n")
-            return b"\n".join(buf.splitlines()[-max_lines:]).decode("utf-8", errors="replace")
-    except FileNotFoundError:
-        return ""
+        p = Path(path)
+        if not p.exists() or not p.is_file():
+            return f"(log file not found) {p}"
+        # Read at most max_bytes from the end
+        with p.open("rb") as f:
+            try:
+                f.seek(0, 2)
+                size = f.tell()
+                f.seek(max(0, size - max_bytes), 0)
+            except Exception:
+                pass
+            data = f.read()
+        txt = data.decode("utf-8", errors="replace")
+        lines = txt.splitlines()
+        if max_lines and len(lines) > max_lines:
+            lines = lines[-max_lines:]
+        return "\n".join(lines)
     except Exception as e:
-        log_error("tail_file failed", exc=e, path=str(path))
-        return ""
+        return f"(failed to read log) {e}"
 
+
+def append_log_line(msg: str, sev: str = "INFO") -> None:
+    try:
+        lp = get_log_path()
+        lp.parent.mkdir(parents=True, exist_ok=True)
+        ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        s = (sev or "INFO").strip().upper()
+        if s == "WARN":
+            s = "WARNING"
+        lp.open("a", encoding="utf-8").write(f"{ts} [{s}] [webui] {msg}\n")
+    except Exception:
+        pass
 
 APP_DIR = Path(__file__).resolve().parent
 APP_IMAGES_DIR = APP_DIR / "images"
 CONFIG_IMAGES_DIR = CONFIG_DIR / "images"
 app = Flask(__name__)
-app.secret_key = os.environ.get("FLASK_SECRET_KEY", "mediareaparr-secret")
 
-# Initialize logger early
-setup_logger()
+# ----------------------------
+# Global 500 handler (prevents blank/opaque 500s)
+# ----------------------------
+from flask import jsonify
 
-@app.before_request
-def _log_request_start():
+def _wants_json() -> bool:
+    # Any API-ish path or explicit JSON accept header
     try:
-        rid = request.headers.get("X-Request-Id") or str(uuid.uuid4())
-        request.environ["REQUEST_ID"] = rid
-        log_debug("request", method=request.method, path=request.path, rid=rid)
+        p = request.path or ""
+        if p.startswith("/api/") or p.startswith("/status/") or p.endswith(".json"):
+            return True
+        accept = (request.headers.get("Accept") or "").lower()
+        return "application/json" in accept
     except Exception:
-        pass
-
-
-@app.after_request
-def _log_request_end(resp):
-    try:
-        rid = request.environ.get("REQUEST_ID", "")
-        log_debug("response", status=resp.status_code, path=request.path, rid=rid)
-    except Exception:
-        pass
-    return resp
-
-
-@app.errorhandler(404)
-def _handle_404(e):
-    log_warning("404 not found", path=request.path, method=request.method)
-    return render_template_string(shell("Not found", "", "<div class='card'>Not found.</div>")), 404
-
+        return False
 
 @app.errorhandler(Exception)
-def _handle_exception(e):
-    # Log stack trace
-    log_error("unhandled exception", exc=e, path=request.path, method=request.method)
-    # Keep API endpoints simple
-    if request.path.startswith("/api/") or request.path.startswith("/status/"):
-        return {"ok": False, "error": "Internal Server Error"}, 500
-    return render_template_string(shell("Error", "", "<div class='card'>Something went wrong. Check logs.</div>")), 500
+def handle_unexpected_error(e):
+    # Try to log a useful traceback without crashing again
+    try:
+        tb = traceback.format_exc(limit=25)
+        try:
+            append_log_line("UNHANDLED EXCEPTION: " + str(e))
+            for line in tb.splitlines()[-25:]:
+                append_log_line(line)
+        except Exception:
+            pass
+    except Exception:
+        tb = "traceback unavailable"
 
+    if _wants_json():
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+    # Minimal HTML error page so the UI doesn't just show "loading"
+    return (
+        "<!doctype html><html><head><meta charset='utf-8'>"
+        "<title>MediaReaparr - Error</title>"
+        "<style>body{font-family:system-ui;background:#0e0f11;color:#e6e6e6;padding:20px}"
+        ".box{max-width:900px;background:#15171b;border:1px solid #2a2d33;border-radius:12px;padding:16px}"
+        "pre{white-space:pre-wrap;background:#0b0c0e;border:1px solid #222;border-radius:10px;padding:12px;color:#b8ffcc}"
+        "a{color:#7CFFB2}</style></head><body>"
+        "<div class='box'><h2>500 - Server Error</h2>"
+        "<p>This page failed to render due to an internal server error.</p>"
+        "<p><b>Tip:</b> Check container logs (docker logs) for the full traceback.</p>"
+        "<h3>Exception</h3><pre>"
+        + html_escape(str(e)) +
+        "</pre></div></body></html>",
+        500,
+    )
+app.secret_key = os.environ.get("FLASK_SECRET_KEY", "mediareaparr-secret")
 
 
 def env_default(name: str, default: str = "") -> str:
@@ -513,27 +417,43 @@ def run_now_button_html(job: Dict[str, Any], app_label: str = "App") -> str:
     delete_files = "true" if bool(job.get("DELETE_FILES", True)) else "false"
     app_lbl = safe_html(app_label)
 
-    # 🔹 DRY RUN → Preview-only (no execution)
+    # 🔹 DRY RUN → execute app.py in dry-run mode (logs like Radarr/Sonarr)
     if job.get("DRY_RUN", True):
         return f'''
-          <a class="btn good"
-            href="/preview?job_id={jid}"
-              title="Dry Run enabled — no changes will be made">
-              Dry Run
-          </a>
+          <div style="display:flex; flex-direction:column; gap:8px; align-items:stretch;">
+            <form method="post" action="/jobs/run-dry" style="margin:0; display:inline;">
+              <input type="hidden" name="job_id" value="{jid}">
+              <button class="btn good" type="submit"
+                title="Dry Run — no changes will be made (writes to logs)">
+                Dry Run
+              </button>
+            </form>
+
+            <a class="btn" href="/preview?job_id={jid}"
+               title="Preview candidates (no changes will be made)">
+              Preview
+            </a>
+          </div>
         '''
 
     # REAL RUN (confirmation via JS listener; no inline JS)
     return f'''
-      <button class="btn bad" type="button"
-        data-action="run-now"
-        data-job-id="{jid}"
-        data-app-label="{app_lbl}"
-        data-dry-run="0"
-        data-delete-files="{delete_files}"
-        data-enabled="{enabled}">
-        Run Now
-      </button>
+      <div style="display:flex; flex-direction:column; gap:8px; align-items:stretch;">
+        <button class="btn bad" type="button"
+          data-action="run-now"
+          data-job-id="{jid}"
+          data-app-label="{app_lbl}"
+          data-dry-run="0"
+          data-delete-files="{delete_files}"
+          data-enabled="{enabled}">
+          Run Now
+        </button>
+
+        <a class="btn" href="/preview?job_id={jid}"
+           title="Preview candidates (no changes will be made)">
+          Preview
+        </a>
+      </div>
     '''
 
 
@@ -641,16 +561,57 @@ def _job_due(job: Dict[str, Any], now: datetime) -> bool:
     return True
 
 
+def _pid_is_running(pid: int) -> bool:
+    try:
+        if pid <= 0:
+            return False
+        # Works on Linux + most POSIX
+        os.kill(pid, 0)
+        return True
+    except PermissionError:
+        # Process exists but we can't signal it
+        return True
+    except Exception:
+        return False
+
+
+def _release_scheduler_lock() -> None:
+    try:
+        if _SCHED_LOCK_PATH.exists():
+            pid_txt = _SCHED_LOCK_PATH.read_text(encoding="utf-8", errors="ignore").strip()
+            try:
+                lock_pid = int(pid_txt.splitlines()[0].strip())
+            except Exception:
+                lock_pid = None
+            # Only remove if we own it (or pid is missing)
+            if lock_pid in (None, os.getpid()):
+                _SCHED_LOCK_PATH.unlink(missing_ok=True)
+    except Exception:
+        pass
+
+
 def _acquire_scheduler_lock() -> bool:
-    """Best-effort single-runner guard (helps if you ever run multiple workers)."""
+    """Best-effort single-runner guard (helps if you ever run multiple workers).
+    Handles stale lock files (e.g. after unclean shutdown).
+    """
     try:
         fd = os.open(str(_SCHED_LOCK_PATH), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write(f"{os.getpid()}\n")
         return True
     except FileExistsError:
+        # Check for stale lock
+        try:
+            pid_txt = _SCHED_LOCK_PATH.read_text(encoding="utf-8", errors="ignore").strip()
+            lock_pid = int(pid_txt.splitlines()[0].strip()) if pid_txt else -1
+            if not _pid_is_running(lock_pid):
+                _SCHED_LOCK_PATH.unlink(missing_ok=True)
+                return _acquire_scheduler_lock()
+        except Exception:
+            pass
         return False
     except Exception:
+        # Don't block startup if something odd happens with the lock
         return True
 
 
@@ -669,13 +630,13 @@ def _scheduler_spawn_job(job_id: str) -> None:
         )
     except Exception as e:
         try:
-            append_log_line(f"scheduler: failed to spawn job {job_id}: {e}")
+            append_log_line(f"scheduler: failed to spawn job {job_id}: {e}", sev="ERROR")
         except Exception:
             pass
 
 
 def _scheduler_loop() -> None:
-    append_log_line(f"scheduler: starting (tick={SCHEDULER_TICK_SECONDS}s)")
+    append_log_line(f"scheduler: starting (tick={SCHEDULER_TICK_SECONDS}s)", sev="DEBUG")
     while True:
         try:
             cfg = load_config()
@@ -709,25 +670,50 @@ def _scheduler_loop() -> None:
                 state["scheduler_last"] = last
                 save_state(state)
 
-                append_log_line(f"scheduler: running job {jid} ({jn.get('name', 'Job')}) window={window}")
+                append_log_line(f"scheduler: running job {jid} ({jn.get('name', 'Job')}) window={window}", sev="DEBUG")
                 _scheduler_spawn_job(jid)
 
         except Exception as e:
             try:
-                append_log_line(f"scheduler: loop error: {e}")
+                append_log_line(f"scheduler: loop error: {e}", sev="DEBUG")
             except Exception:
                 pass
 
         time.sleep(int(SCHEDULER_TICK_SECONDS))
 
 
+def _install_scheduler_lock_cleanup() -> None:
+    # Ensure the lock doesn't stick around after container stop/restart.
+    try:
+        atexit.register(_release_scheduler_lock)
+    except Exception:
+        pass
+
+    def _handler(signum, frame):
+        try:
+            _release_scheduler_lock()
+        finally:
+            raise SystemExit(0)
+
+    for _sig in (getattr(signal, "SIGTERM", None), getattr(signal, "SIGINT", None)):
+        if _sig is None:
+            continue
+        try:
+            signal.signal(_sig, _handler)
+        except Exception:
+            pass
+
+
 def start_internal_scheduler() -> None:
     if not INTERNAL_SCHEDULER_ENABLED:
-        append_log_line("scheduler: disabled via INTERNAL_SCHEDULER=0")
+        append_log_line("scheduler: disabled via INTERNAL_SCHEDULER=0", sev="DEBUG")
         return
     if not _acquire_scheduler_lock():
-        append_log_line("scheduler: lock exists, not starting (another worker owns it)")
+        append_log_line("scheduler: lock exists, not starting (another worker owns it)", sev="DEBUG")
         return
+
+    _install_scheduler_lock_cleanup()
+
     t = threading.Thread(target=_scheduler_loop, daemon=True, name="mediareaparr-scheduler")
     t.start()
 
@@ -2349,6 +2335,116 @@ BASE_HEAD = """
     line-height: 1.4;
     white-space: pre;
   }
+
+  /* Logs table (Status page) */
+  .logTableWrap{
+    border: 1px solid var(--line);
+    background: rgba(0,0,0,.22);
+    border-radius: 12px;
+    overflow: hidden;
+  }
+  .logTableHeader{
+    display:flex;
+    align-items:center;
+    justify-content:space-between;
+    padding: 12px 12px;
+    border-bottom: 1px solid var(--line);
+    background: rgba(255,255,255,.03);
+    gap: 12px;
+  }
+  .logTableHeader .left{ display:flex; flex-direction:column; gap:2px; }
+  .logTableHeader .right{ display:flex; align-items:center; gap:10px; flex-wrap:wrap; justify-content:flex-end; }
+  .logFilterSelect{
+    background: rgba(0,0,0,.25);
+    border: 1px solid var(--line);
+    color: var(--text);
+    border-radius: 10px;
+    padding: 8px 10px;
+    min-width: 170px;
+    outline: none;
+  }
+  .logTable{
+    width: 100%;
+    border-collapse: separate;
+    border-spacing: 0;
+    font-size: 13px;
+  }
+  .logTable thead th{
+    text-align:left;
+    font-size: 12px;
+    letter-spacing: .08em;
+    text-transform: uppercase;
+    color: rgba(255,255,255,.7);
+    padding: 10px 12px;
+    background: rgba(255,255,255,.06);
+    border-bottom: 1px solid var(--line);
+  }
+  .logTable tbody td{
+    padding: 12px 12px;
+    border-bottom: 1px solid rgba(255,255,255,.06);
+    vertical-align: middle;
+  }
+  .logTable tbody tr:hover td{
+    background: rgba(255,255,255,.03);
+  }
+  .logPill{
+    display:inline-flex;
+    align-items:center;
+    justify-content:center;
+    height: 22px;
+    padding: 0 10px;
+    border-radius: 999px;
+    font-size: 11px;
+    border: 1px solid rgba(255,255,255,.25);
+    color: rgba(255,255,255,.85);
+    background: rgba(0,0,0,.18);
+    letter-spacing: .04em;
+  }
+  .logPill.info{ border-color: rgba(0,255,120,.55); color: rgba(140,255,200,.95); }
+  .logPill.debug{ border-color: rgba(255,255,255,.25); }
+  .logPill.warning{ border-color: rgba(255,200,0,.55); color: rgba(255,230,140,.95); }
+  .logPill.error{ border-color: rgba(255,80,80,.7); color: rgba(255,190,190,.98); }
+
+  .logLabel{ font-weight: 700; }
+  .logMsg{ color: rgba(255,255,255,.92); }
+  .logActions{ display:flex; gap:8px; justify-content:flex-end; }
+  .iconBtn{
+    width: 36px;
+    height: 32px;
+    border-radius: 8px;
+    border: 1px solid rgba(0,0,0,.25);
+    background: rgba(255,140,0,.9);
+    color: #fff;
+    display:inline-flex;
+    align-items:center;
+    justify-content:center;
+    cursor: pointer;
+  }
+  .iconBtn:hover{ filter: brightness(1.05); }
+  .iconBtn:active{ transform: translateY(1px); }
+
+  .logPager{
+    display:flex;
+    align-items:center;
+    justify-content:space-between;
+    padding: 10px 12px;
+    background: rgba(255,255,255,.05);
+    gap: 12px;
+  }
+  .logPager .muted{ color: rgba(255,255,255,.65); }
+  .pagerBtns{ display:flex; gap:10px; align-items:center; }
+  .btnTiny{
+    padding: 8px 12px;
+    border-radius: 10px;
+    border: 1px solid var(--line);
+    background: rgba(0,0,0,.20);
+    color: var(--text);
+  }
+  .btnTiny:disabled{
+    opacity: .45;
+    cursor: not-allowed;
+  }
+
   .logMeta{ display:flex; gap:10px; align-items:center; }
   .checkRow{ display:flex; gap:8px; align-items:center; }
 
@@ -3601,7 +3697,7 @@ def shell(page_title: str, active: str, body: str):
           {sb_item("Dashboard", "/dashboard", "dash")}
           {sb_item("Jobs", "/jobs", "jobs")}
           {sb_item("Settings", "/settings", "settings")}
-          {sb_item("Status", "/status", "status")}
+          {sb_item("Logs", "/status", "logs")}
           <div style="height:6px;"></div>
           {theme_btn_sidebar}
         </div>
@@ -4935,6 +5031,59 @@ def jobs_run_now():
     return redirect("/dashboard")
 
 
+@app.post("/jobs/run-dry")
+def jobs_run_dry():
+    cfg = load_config()
+    job_id = (request.form.get("job_id") or "").strip()
+    if not job_id:
+        flash("Missing job id.", "error")
+        return redirect("/jobs")
+
+    job = find_job(cfg, job_id)
+    if not job:
+        flash("Job not found.", "error")
+        return redirect("/jobs")
+
+    jobn = normalize_job(job)
+    if not jobn.get("enabled", False):
+        flash("This job is disabled. Enable it before running.", "error")
+        return redirect("/jobs")
+
+    # If using WebUI apps, enforce readiness (consistent with Run Now)
+    app_id = str(jobn.get("APP_ID") or "").strip()
+    if app_id and not is_app_ready(cfg, app_id):
+        flash("This job's app is missing or not connected. Fix it in Apps.", "error")
+        return redirect("/apps")
+
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    log_path = get_log_path()
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+
+    app_py = (Path(__file__).resolve().parent / "app.py")
+    if not app_py.exists():
+        app_py = Path("/app/app.py")
+
+    cmd = [sys.executable, str(app_py), "--job-id", str(job_id)]
+    append_log_line(f"Dry Run: launching {cmd!r}")
+
+    try:
+        with log_path.open("a", encoding="utf-8") as lf:
+            subprocess.Popen(
+                cmd,
+                stdout=lf,
+                stderr=lf,
+                cwd=str(app_py.parent),
+                env={**os.environ, "CONFIG_DIR": str(CONFIG_DIR), "LOG_PATH": str(log_path), "FORCE_DRY_RUN": "1"},
+                start_new_session=True,
+            )
+        flash("Dry Run started ✔ (watch Status → Logs)", "success")
+    except Exception as e:
+        append_log_line(f"Dry Run: failed to launch job_id={job_id}: {e}")
+        flash(f"Failed to start dry run: {e}", "error")
+
+    return redirect("/dashboard")
+
+
 # ----------------------------
 # Preview
 # ----------------------------
@@ -5069,7 +5218,7 @@ def dashboard():
     last_run = state.get("last_run")
 
     if not last_run:
-        body = """
+        body = f"""
           <div class="grid">
             <div class="card">
               <div class="hd">
@@ -5137,69 +5286,388 @@ def status():
     body = f"""
       <div class="grid">
         <div class="card">
-          <div class="hd"><h2>Status</h2></div>
+          <div class="hd"><h2>Logs</h2></div>
           <div class="bd">
-<div class="logWrap">
-              <div class="logToolbar">
-                <div class="logMeta">
-                  <div><b>Logs</b> <span class="muted">(tail)</span></div>
+
+            <div class="logTableWrap">
+              <div class="logTableHeader">
+                <div class="left">
+                  <div><b>Log Viewer</b> <span class="muted">(from file)</span></div>
                   <div class="muted">Path: <code>{safe_html(str(get_log_path()))}</code></div>
                 </div>
-                <div style="display:flex; gap:10px; align-items:center;">
-                  <button class="btn" type="button" onclick="loadStatusLog(true)">Refresh</button>
+
+                <div class="right">
+                  <select id="logLevelFilter" class="logFilterSelect" onchange="applyLogFilters()">
+                    <option value="">All severities</option>
+                    <option value="DEBUG">Debug</option>
+                    <option value="INFO" selected>Info</option>
+                    <option value="WARNING">Warning</option>
+                    <option value="ERROR">Error</option>
+                  </select>
+
+                  <select id="logPageSize" class="logFilterSelect" style="min-width:140px" onchange="applyLogFilters(true)">
+                    <option value="10">Display 10</option>
+                    <option value="25">Display 25</option>
+                    <option value="50">Display 50</option>
+                    <option value="100">Display 100</option>
+                  </select>
+
+                  <button class="btn" type="button" onclick="reloadLogs()">Refresh</button>
                   <label class="checkRow muted" title="Auto-refresh every 3s">
                     <input type="checkbox" id="logAuto" onchange="toggleLogAuto()"> Auto
                   </label>
-                  <label class="checkRow muted" title="Stick to bottom when new logs arrive">
-                    <input type="checkbox" id="logFollow" checked> Follow
-                  </label>
                 </div>
               </div>
-              <div class="logBox" id="logBox"><span class="muted" id="logText">Loading…</span></div>
+
+              <div style="overflow:auto; max-height: 560px;">
+                <table class="logTable">
+                  <thead>
+                    <tr>
+                      <th style="width: 250px;">Timestamp</th>
+                      <th style="width: 120px;">Severity</th>
+                      <th style="width: 220px;">Label</th>
+                      <th>Message</th>
+                      <th style="width: 92px;"></th>
+                    </tr>
+                  </thead>
+                  <tbody id="logTbody">
+                    <tr><td colspan="5" class="muted">Loading…</td></tr>
+                  </tbody>
+                </table>
+              </div>
+
+              <div class="logPager">
+                <div class="muted" id="logPagerMeta">—</div>
+                <div class="pagerBtns">
+                  <button class="btnTiny" id="logPrevBtn" onclick="pagePrev()" disabled>Previous</button>
+                  <button class="btnTiny" id="logNextBtn" onclick="pageNext()" disabled>Next</button>
+                </div>
+              </div>
             </div>
 
             <script>
               let __logTimer = null;
+              let __logAll = [];
+              let __logFiltered = [];
+              let __logPage = 1;
 
-              function loadStatusLog(forceScroll){{
-                const lines = 800;
-                fetch("/status/log?lines=" + lines, {{cache: "no-store"}})
+              function esc(s){{
+                return (s ?? "").toString()
+                  .replaceAll("&","&amp;").replaceAll("<","&lt;").replaceAll(">","&gt;")
+                  .replaceAll('"',"&quot;").replaceAll("'","&#39;");
+              }}
+
+              function pillClass(sev){{
+                const s = (sev||"").toUpperCase();
+                if (s === "INFO") return "info";
+                if (s === "WARNING" || s === "WARN") return "warning";
+                if (s === "ERROR") return "error";
+                return "debug";
+              }}
+
+              function parseLine(line){{
+                // Regex-free parser that supports:
+                // 1) 2026-01-30 21:10:35,123 [INFO] [webui] message
+                // 2) 2026-01-30 21:10:35 [INFO] [webui] message
+                // 3) 2026-01-30 21:10:35 [webui] [INFO] message
+                // 4) 2026-01-30 21:10:35 INFO webui: message
+                const s0 = (line || "").toString();
+                const s = s0.trim();
+                if (!s) return null;
+
+                function isDigit(ch) {{
+                  return ch >= "0" && ch <= "9";
+                }}
+
+                // Parse leading timestamp.
+                // Supported:
+                // - YYYY-MM-DD HH:MM:SS(,mmm)
+                // - DD-MM-YYYY HH:MM(:SS)?(,mmm)?
+                let ts = "";
+                let pos = 0;
+
+                // YYYY-MM-DD HH:MM:SS
+                if (s.length >= 19 && s[4] === "-" && s[7] === "-" && (s[10] === " " || s[10] === "T") && s[13] === ":" && s[16] === ":") {{
+                  let tsLen = 19;
+                  if (s.length >= 23 && (s[19] === "," || s[19] === ".") && isDigit(s[20]) && isDigit(s[21]) && isDigit(s[22])) {{
+                    tsLen = 23;
+                  }}
+                  ts = s.substring(0, tsLen);
+                  pos = tsLen;
+                }}
+                // DD-MM-YYYY HH:MM or DD-MM-YYYY HH:MM:SS
+                else if (s.length >= 16 && isDigit(s[0]) && isDigit(s[1]) && s[2] === "-" && isDigit(s[3]) && isDigit(s[4]) && s[5] === "-" && isDigit(s[6]) && isDigit(s[7]) && isDigit(s[8]) && isDigit(s[9]) && s[10] === " " && isDigit(s[11]) && isDigit(s[12]) && s[13] === ":" && isDigit(s[14]) && isDigit(s[15])) {{
+                  let tsLen = 16; // DD-MM-YYYY HH:MM
+                  // optional :SS
+                  if (s.length >= 19 && s[16] === ":" && isDigit(s[17]) && isDigit(s[18])) {{
+                    tsLen = 19;
+                  }}
+                  // optional ,mmm
+                  if (s.length >= tsLen + 4 && (s[tsLen] === "," || s[tsLen] === ".") && isDigit(s[tsLen+1]) && isDigit(s[tsLen+2]) && isDigit(s[tsLen+3])) {{
+                    tsLen = tsLen + 4;
+                  }}
+                  ts = s.substring(0, tsLen);
+                  pos = tsLen;
+                }}
+
+                let rest = (pos ? s.substring(pos) : s).trim();
+
+                // Collect bracket tokens at start: [something] [something] ...
+                const tokens = [];
+                while (rest.startsWith("[")) {{
+                  const end = rest.indexOf("]");
+                  if (end <= 1) break;
+                  tokens.push(rest.substring(1, end));
+                  rest = rest.substring(end + 1).trim();
+                  if (tokens.length >= 3) break;
+                }}
+
+                // Determine severity + label from tokens or from leading words
+                let sev = "";
+                let label = "";
+
+                function normSev(x) {{
+                  const u = (x || "").toUpperCase();
+                  if (u === "WARN") return "WARNING";
+                  return u;
+                }}
+                function isSev(x) {{
+                  const u = normSev(x);
+                  return u === "DEBUG" || u === "INFO" || u === "WARNING" || u === "ERROR";
+                }}
+
+                if (tokens.length >= 1 && isSev(tokens[0])) {{
+                  sev = normSev(tokens[0]);
+                  if (tokens.length >= 2) label = tokens[1];
+                }} else if (tokens.length >= 2 && isSev(tokens[1])) {{
+                  // [label] [SEV]
+                  label = tokens[0];
+                  sev = normSev(tokens[1]);
+                }} else {{
+                  // No bracketed severity; try first word
+                  const sp = rest.indexOf(" ");
+                  const first = (sp === -1 ? rest : rest.substring(0, sp));
+                  if (isSev(first)) {{
+                    sev = normSev(first);
+                    rest = (sp === -1) ? "" : rest.substring(sp + 1).trim();
+                    // Optional label as next word before colon
+                    const sp2 = rest.indexOf(" ");
+                    const cand = (sp2 === -1 ? rest : rest.substring(0, sp2));
+                    if (cand && cand.length <= 48) {{
+                      // treat as label if followed by ":" later or if it's a simple tag
+                      const colon = rest.indexOf(":");
+                      if (colon > 0 && colon < 80) {{
+                        label = rest.substring(0, colon).trim();
+                        rest = rest.substring(colon + 1).trim();
+                      }} else if (cand && cand.indexOf(":") === -1) {{
+                        // if next token looks like a label and message continues
+                        label = cand;
+                        rest = (sp2 === -1) ? "" : rest.substring(sp2 + 1).trim();
+                      }}
+                    }}
+                  }}
+                }}
+
+                if (!sev) {{
+                  // Best-effort severity scan without regex
+                  const u = s.toUpperCase();
+                  if (u.includes("ERROR")) sev = "ERROR";
+                  else if (u.includes("WARNING") || u.includes("WARN")) sev = "WARNING";
+                  else if (u.includes("DEBUG")) sev = "DEBUG";
+                  else sev = "INFO";
+                }}
+
+                // If label still empty, try "label: message" pattern at start of rest
+                if (!label) {{
+                  const idx = rest.indexOf(":");
+                  if (idx > 0 && idx < 64) {{
+                    label = rest.slice(0, idx).trim();
+                    rest = rest.slice(idx + 1).trim();
+                  }}
+                }}
+                // Force-category run context lines as Debug/Cleaning (even if emitted as [INFO] [mediareaparr] ...).
+                // These are parameter/cutoff lines that would otherwise clutter Info.
+                const uAll = s.toUpperCase();
+
+                // Bare endpoint traces (e.g. //192.168.0.47:8989) => Connection debug.
+                // NOTE: In many of your lines, the endpoint appears AFTER the timestamp/brackets,
+                // so we must check both the full line (s) and the parsed message (rest).
+                const sTrim = s.trim();
+                const restTrim = (rest || "").trim();
+                const connStr = (restTrim && restTrim.length >= 2) ? restTrim : sTrim;
+
+                if (
+                  sTrim.startsWith("//") ||
+                  restTrim.startsWith("//") ||
+                  restTrim.startsWith("http://") ||
+                  restTrim.startsWith("https://")
+                ) {{
+                  sev = "DEBUG";
+                  if (connStr.includes(":8989")) label = "Sonarr Connection";
+                  else if (connStr.includes(":7878")) label = "Radarr Connection";
+                  else label = "Connection";
+
+                  // If the message itself is just the endpoint, keep it as the message.
+                  // If it's embedded inside a longer line, still show the original rest.
+                }}
+
+                // "Running <App> job ..." banner lines => Info + app-specific Cleaning label.
+                if (uAll.includes("RUNNING SONARR JOB")) {{
+                  sev = "INFO";
+                  label = "Sonarr Cleaning";
+                }} else if (uAll.includes("RUNNING RADARR JOB")) {{
+                  sev = "INFO";
+                  label = "Radarr Cleaning";
+                }}
+
+                // Parameter/cutoff lines => Debug/Cleaning.
+                if (
+                  uAll.includes("JOB RUN STARTED") ||
+                  uAll.includes("JOB RUN FINISHED") ||
+                  uAll.includes("SONARR_DELETE_MODE=") ||
+                  uAll.includes("DRY_RUN=") ||
+                  uAll.includes("DELETE_FILES=") ||
+                  uAll.includes("ADD_IMPORT_EXCLUSION=") ||
+                  uAll.includes("SCORE_FILTER=") ||
+                  uAll.includes("MIN_AVG_SCORE=") ||
+                  uAll.includes("TAG_LABEL=") ||
+                  uAll.includes("DAYS_OLD=") ||
+                  uAll.includes("CUTOFF=")
+                ) {{
+                  sev = "DEBUG";
+                  label = "Cleaning";
+                }}
+
+
+
+                return {{
+                  ts: ts || "—",
+                  sev: sev,
+                  label: label || "—",
+                  msg: rest || "",
+                  raw: s
+                }};
+              }}
+
+              function copyText(txt){{
+                try {{
+                  navigator.clipboard.writeText(txt || "");
+                }} catch(e) {{
+                  // fallback
+                  const ta = document.createElement("textarea");
+                  ta.value = txt || "";
+                  document.body.appendChild(ta);
+                  ta.select();
+                  document.execCommand("copy");
+                  ta.remove();
+                }}
+              }}
+
+              function renderPage(){{
+                const tbody = document.getElementById("logTbody");
+                const pageSize = parseInt(document.getElementById("logPageSize").value || "10", 10);
+                const total = __logFiltered.length;
+                const pages = Math.max(1, Math.ceil(total / pageSize));
+                if (__logPage > pages) __logPage = pages;
+                if (__logPage < 1) __logPage = 1;
+
+                const start = ( __logPage - 1 ) * pageSize;
+                const end = Math.min(total, start + pageSize);
+                const slice = __logFiltered.slice(start, end);
+
+                if (!slice.length) {{
+                  tbody.innerHTML = `<tr><td colspan="5" class="muted">No log entries match the filter.</td></tr>`;
+                }} else {{
+                  tbody.innerHTML = slice.map((e, idx) => {{
+                    const sev = (e.sev || "DEBUG").toUpperCase();
+                    const cls = pillClass(sev);
+                    const label = e.label || "—";
+                    const ts = e.ts || "—";
+                    const msg = e.msg || "";
+                    const raw = e.raw || msg;
+                    return `
+                      <tr>
+                        <td>${{esc(ts)}}</td>
+                        <td><span class="logPill ${{cls}}">${{esc(sev)}}</span></td>
+                        <td class="logLabel">${{esc(label)}}</td>
+                        <td class="logMsg">${{esc(msg)}}</td>
+                        <td>
+                          <div class="logActions">
+                            <button class="iconBtn" title="Copy message" onclick="copyText(${{JSON.stringify(msg)}})">
+                              ⧉
+                            </button>
+                            <button class="iconBtn" title="Copy full line" onclick="copyText(${{JSON.stringify(raw)}})">
+                              ⎘
+                            </button>
+                          </div>
+                        </td>
+                      </tr>`;
+                  }}).join("");
+                }}
+
+                document.getElementById("logPagerMeta").textContent =
+                  `Showing ${{total ? (start+1) : 0}} to ${{end}} of ${{total}} results`;
+
+                const prev = document.getElementById("logPrevBtn");
+                const next = document.getElementById("logNextBtn");
+                prev.disabled = (__logPage <= 1);
+                next.disabled = (__logPage >= pages);
+              }}
+
+              function applyLogFilters(resetPage){{
+                const sev = (document.getElementById("logLevelFilter").value || "").toUpperCase();
+                __logFiltered = __logAll.filter(e => {{
+                  if (!sev) return true;
+                  const s = (e.sev || "").toUpperCase();
+                  return s === sev || (sev==="WARNING" && s==="WARN");
+                }});
+                if (resetPage) __logPage = 1;
+                renderPage();
+              }}
+
+              function pagePrev(){{ __logPage -= 1; renderPage(); }}
+              function pageNext(){{ __logPage += 1; renderPage(); }}
+
+              function reloadLogs(){{
+                // Pull a large tail by default (keeps things fast even for big files)
+                const lines = 5000;
+                fetch("/status/log?lines=" + lines, {{cache:"no-store"}})
                   .then(r => r.text())
                   .then(t => {{
-                    const box = document.getElementById("logBox");
-                    const follow = document.getElementById("logFollow");
-                    const atBottom = (box.scrollTop + box.clientHeight) >= (box.scrollHeight - 10);
-                    box.textContent = t || "(no log output)";
-                    if (forceScroll || (follow && follow.checked && atBottom)){{
-                      box.scrollTop = box.scrollHeight;
-                    }}
+                    const linesArr = (t || "").split(String.fromCharCode(10)).map(x => x.replace(String.fromCharCode(13), "")).filter(Boolean);
+                    __logAll = linesArr.map(parseLine).reverse(); // newest first like your screenshot
+                    applyLogFilters(true);
                   }})
                   .catch(err => {{
-                    const box = document.getElementById("logBox");
-                    box.textContent = "Failed to load logs: " + err;
+                    const tbody = document.getElementById("logTbody");
+                    tbody.innerHTML = `<tr><td colspan="5" class="muted">Failed to load logs: ${{esc(err && err.message ? err.message : err)}}</td></tr>`;
                   }});
               }}
 
               function toggleLogAuto(){{
-                const cb = document.getElementById("logAuto");
-                if (cb && cb.checked){{
-                  loadStatusLog(true);
-                  __logTimer = setInterval(() => loadStatusLog(false), 3000);
-                }}else{{
+                const on = document.getElementById("logAuto").checked;
+                if (on) {{
+                  if (__logTimer) clearInterval(__logTimer);
+                  __logTimer = setInterval(() => reloadLogs(), 3000);
+                }} else {{
                   if (__logTimer) clearInterval(__logTimer);
                   __logTimer = null;
                 }}
               }}
 
               // initial load
-              loadStatusLog(true);
+              (function initLogs(){{
+                // set default page size to 10 (matches screenshot)
+                document.getElementById("logPageSize").value = "10";
+                reloadLogs();
+              }})();
             </script>
 
           </div>
         </div>
       </div>
     """
-    return render_template_string(shell("mediareaparr • Status", "status", body))
+    return render_template_string(shell("mediareaparr • Logs", "logs", body))
 
 
 if __name__ == "__main__":
