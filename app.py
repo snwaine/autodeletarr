@@ -40,7 +40,7 @@ STATE_PATH = CONFIG_DIR / "state.json"
 # ----------------------------
 # Logging
 # ----------------------------
-LOG_PATH = Path(os.environ.get("LOG_PATH", str(CONFIG_DIR / "logDB.log")))
+LOG_PATH = Path(os.environ.get("LOG_PATH", str(CONFIG_DIR / "mediareaparr.log")))
 LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO").upper().strip()
 
 _LOGGER: Optional[logging.Logger] = None
