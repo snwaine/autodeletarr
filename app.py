@@ -28,7 +28,8 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import requests
 import logging
-from logging.handlers import RotatingFileHandler
+import threading
+import time
 
 # ----------------------------
 # Paths
@@ -40,10 +41,89 @@ STATE_PATH = CONFIG_DIR / "state.json"
 # ----------------------------
 # Logging
 # ----------------------------
-LOG_PATH = Path(os.environ.get("LOG_PATH", str(CONFIG_DIR / "mediareaparr.log")))
+LOG_DIR = Path(os.environ.get("LOG_DIR", str(CONFIG_DIR / "logs")))
+def _dated_log_name(dt: "datetime") -> str:
+    # Filename format required: "dd:mm:yyyy mediareaparr.log"
+    return dt.strftime("%d-%m-%Y") + " mediareaparr.log"
+def current_log_path() -> Path:
+    return LOG_DIR / _dated_log_name(datetime.now(timezone.utc))
 LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO").upper().strip()
 
 _LOGGER: Optional[logging.Logger] = None
+
+
+
+class TitleCaseFormatter(logging.Formatter):
+    def format(self, record):
+        try:
+            record.levelname = str(record.levelname).title()
+        except Exception:
+            pass
+        if not hasattr(record, "label"):
+            record.label = "App"
+        return super().format(record)
+
+class DailyDatedFileHandler(logging.Handler):
+    """Writes logs to a date-stamped file and rolls over at midnight (UTC)."""
+    def __init__(self, log_dir: Path, encoding: str = "utf-8"):
+        super().__init__()
+        self.log_dir = Path(log_dir)
+        self.encoding = encoding
+        self._lock = threading.RLock()
+        self._date = None
+        self._fp = None
+        self._open_for(datetime.now(timezone.utc))
+
+    def _path_for(self, dt: "datetime") -> Path:
+        return self.log_dir / _dated_log_name(dt)
+
+    def _open_for(self, dt: "datetime"):
+        self.log_dir.mkdir(parents=True, exist_ok=True)
+        d = dt.strftime("%Y-%m-%d")
+        if self._fp:
+            try:
+                self._fp.close()
+            except Exception:
+                pass
+        self._date = d
+        p = self._path_for(dt)
+        self._fp = open(p, "a", encoding=self.encoding)
+
+    def rollover_if_needed(self):
+        now = datetime.now(timezone.utc)
+        d = now.strftime("%Y-%m-%d")
+        if d != self._date:
+            self._open_for(now)
+
+    def rollover_now(self):
+        self._open_for(datetime.now(timezone.utc))
+
+    def emit(self, record):
+        try:
+            msg = self.format(record)
+            with self._lock:
+                self.rollover_if_needed()
+                self._fp.write(msg + "\n")
+                self._fp.flush()
+        except Exception:
+            self.handleError(record)
+
+def _start_midnight_rollover_thread(handler: DailyDatedFileHandler):
+    def _worker():
+        while True:
+            now = datetime.now(timezone.utc)
+            nxt = (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+            sleep_s = max(1.0, (nxt - now).total_seconds())
+            time.sleep(sleep_s)
+            try:
+                handler.rollover_now()
+                p = current_log_path()
+                p.parent.mkdir(parents=True, exist_ok=True)
+                p.touch(exist_ok=True)
+            except Exception:
+                pass
+    t = threading.Thread(target=_worker, name="mediareaparr-log-rotate", daemon=True)
+    t.start()
 
 
 def setup_logging() -> logging.Logger:
@@ -67,12 +147,13 @@ def setup_logging() -> logging.Logger:
     level = getattr(logging, LOG_LEVEL, logging.INFO)
     logger.setLevel(level)
 
-    fmt = logging.Formatter("%(asctime)s [%(levelname)s] [app] %(message)s")
+    fmt = TitleCaseFormatter("%(asctime)s [%(levelname)s] [%(label)s] [%(message)s]", datefmt="%b %d, %Y, %I:%M:%S %p")
 
-    if not any(isinstance(h, RotatingFileHandler) for h in logger.handlers):
-        fh = RotatingFileHandler(str(LOG_PATH), maxBytes=2_000_000, backupCount=5, encoding="utf-8")
-        fh.setFormatter(fmt)
-        logger.addHandler(fh)
+    if not any(isinstance(h, DailyDatedFileHandler) for h in logger.handlers):
+        dh = DailyDatedFileHandler(LOG_DIR)
+        dh.setFormatter(fmt)
+        logger.addHandler(dh)
+        _start_midnight_rollover_thread(dh)
 
     if not any(isinstance(h, logging.StreamHandler) for h in logger.handlers):
         sh = logging.StreamHandler(stream=sys.stdout)
@@ -83,7 +164,7 @@ def setup_logging() -> logging.Logger:
     return logger
 
 
-def log_event(level: str, message: str, exc: Optional[BaseException] = None, **fields: Any) -> None:
+def log_event(level: str, message: str, label: str = "App", exc: Optional[BaseException] = None, **fields: Any) -> None:
     logger = setup_logging()
     suffix = ""
     if fields:
