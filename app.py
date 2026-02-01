@@ -21,6 +21,7 @@ import os
 import sys
 import json
 import argparse
+import uuid
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
@@ -39,7 +40,7 @@ STATE_PATH = CONFIG_DIR / "state.json"
 # ----------------------------
 # Logging
 # ----------------------------
-LOG_PATH = Path(os.environ.get("LOG_PATH", str(CONFIG_DIR / "mediareaparr.log")))
+LOG_PATH = Path(os.environ.get("LOG_PATH", str(CONFIG_DIR / "logDB.log")))
 LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO").upper().strip()
 
 _LOGGER: Optional[logging.Logger] = None
@@ -127,8 +128,71 @@ def log_error(message: str, exc: Optional[BaseException] = None, **fields: Any) 
 
 
 # ----------------------------
-# Small utils
+# Cleaning summary helpers (Radarr / Sonarr style)
 # ----------------------------
+
+def _truncate(items, max_items=5):
+    if len(items) <= max_items:
+        return items, 0
+    return items[:max_items], len(items) - max_items
+
+
+def log_cleaning_summary(
+    *,
+    job_name: str,
+    app_type: str,
+    dry_run: bool,
+    radarr_items: list,
+    sonarr_items: list,
+    max_items: int = 5,
+):
+    """
+    Write ONE summary line per run directly to LOG_PATH using bracket tokens the WebUI parses:
+      DD-MM-YYYY HH:MM [INFO] [Radarr Cleaning] ...
+
+    Labels:
+      [Radarr Cleaning], [Radarr Cleaning Dry Run], [Sonarr Cleaning], [Sonarr Cleaning Dry Run]
+    """
+    try:
+        ts = datetime.now().strftime("%d-%m-%Y %H:%M")
+        label = ("Radarr" if app_type == "radarr" else "Sonarr") + " Cleaning" + (" Dry Run" if dry_run else "")
+
+        if app_type == "radarr":
+            shown, extra = _truncate(radarr_items, max_items)
+            titles = ", ".join(shown)
+            suffix = f", +{extra} more" if extra else ""
+            n = len(radarr_items)
+            verb = "could be deleted" if dry_run else "deleted"
+            msg = f"{n} movie{'s' if n != 1 else ''} {verb} {{{titles}{suffix}}}"
+
+        elif app_type == "sonarr":
+            total_eps = 0
+            for s in sonarr_items:
+                try:
+                    total_eps += int(s.get("episodes") or 0)
+                except Exception:
+                    pass
+            shown, extra = _truncate(sonarr_items, max_items)
+            parts = []
+            for s in shown:
+                ser = str(s.get("series") or "Unknown").strip()
+                try:
+                    n = int(s.get("episodes") or 0)
+                except Exception:
+                    n = 0
+                parts.append(f"{ser} ({n})")
+            suffix = f", +{extra} more" if extra else ""
+            verb = "could be deleted" if dry_run else "deleted"
+            msg = f"{total_eps} episode{'s' if total_eps != 1 else ''} {verb} " + "{" + ", ".join(parts) + suffix + "}"
+
+        else:
+            return
+
+        LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        LOG_PATH.open("a", encoding="utf-8").write(f"{ts} [INFO] [{label}] {msg}\n")
+    except Exception:
+        pass
+
 def now_utc() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -551,150 +615,186 @@ def radarr_delete_movie_strict(base: str, key: str, timeout_s: int, movie_id: in
 # ----------------------------
 # Runner
 # ----------------------------
+# ----------------------------
+# Runner
+# ----------------------------
 def run_job(cfg: Dict[str, Any], state: Dict[str, Any], job: Dict[str, Any]) -> Dict[str, Any]:
-    job_id = str(job.get('id') or 'unknown')
+    job_id = str(job.get("id") or "unknown").strip() or "unknown"
+    timeout = http_timeout_seconds(cfg)
+
+    # Ensure normalized keys exist (works for legacy too)
+    job = normalize_job(job)
+
+    # Resolve app via APP_ID in cfg["APPS"]
+    apps_cfg = cfg.get("APPS") or []
+    if not isinstance(apps_cfg, list):
+        apps_cfg = []
+
+    app_obj: Optional[Dict[str, Any]] = None
+    app_id = str(job.get("APP_ID") or "").strip()
+    if app_id:
+        for a in apps_cfg:
+            if isinstance(a, dict) and str(a.get("id") or "").strip() == app_id:
+                app_obj = a
+                break
+
+    # Determine mode/type: prefer app_obj.type, else legacy job["APP"]
+    app_key = ""
+    if isinstance(app_obj, dict):
+        app_key = str(app_obj.get("type") or "").strip().lower()
+    if app_key not in ("radarr", "sonarr"):
+        app_key = str(job.get("APP") or "radarr").strip().lower()
+    if app_key not in ("radarr", "sonarr"):
+        app_key = "radarr"
+
+    tag_label = job["TAG_LABEL"]
+    days_old = int(job["DAYS_OLD"])
+    delete_files = bool(job["DELETE_FILES"])
+    add_import_exclusion = bool(job["ADD_IMPORT_EXCLUSION"])
+    dry_run = bool(job["DRY_RUN"])
+
+    # Button overrides (WebUI can force dry/full without changing saved job)
     try:
-        timeout = http_timeout_seconds(cfg)
+        if str(os.environ.get("FORCE_DRY_RUN", "")).strip().lower() in ("1", "true", "yes", "on"):
+            dry_run = True
+        if str(os.environ.get("FORCE_FULL_RUN", "")).strip().lower() in ("1", "true", "yes", "on"):
+            dry_run = False
+    except Exception:
+        pass
 
-        job_id = job["id"]
+    sonarr_mode = str(job.get("SONARR_DELETE_MODE") or "episodes_only").strip().lower()
+    if sonarr_mode not in SONARR_DELETE_MODES:
+        sonarr_mode = "episodes_only"
 
-        # WebUI v2: resolve app via APP_ID in cfg["APPS"]
-        apps_cfg = cfg.get("APPS") or []
-        if not isinstance(apps_cfg, list):
-            apps_cfg = []
+    radarr_score_enabled = bool(job.get("RADARR_SCORE_FILTER_ENABLED", False))
+    radarr_min_avg_score = int(job.get("RADARR_MIN_AVG_SCORE", 60))
 
-        app_obj: Optional[Dict[str, Any]] = None
-        app_id = str(job.get("APP_ID") or "").strip()
-        if app_id:
-            for a in apps_cfg:
-                if isinstance(a, dict) and str(a.get("id") or "").strip() == app_id:
-                    app_obj = a
-                    break
+    run_id = uuid.uuid4().hex[:8]
+    run_mode = "dry" if dry_run else "full"
 
-        # Determine mode/type: prefer app_obj.type, else legacy job["APP"]
-        app_key = ""
-        if isinstance(app_obj, dict):
-            app_key = str(app_obj.get("type") or "").strip().lower()
-        if app_key not in ("radarr", "sonarr"):
-            app_key = str(job.get("APP") or "radarr").strip().lower()
-        if app_key not in ("radarr", "sonarr"):
-            app_key = "radarr"
+    run_started = now_utc()
 
-        tag_label = job["TAG_LABEL"]
-        days_old = int(job["DAYS_OLD"])
-        delete_files = bool(job["DELETE_FILES"])
-        add_import_exclusion = bool(job["ADD_IMPORT_EXCLUSION"])
-        dry_run = bool(job["DRY_RUN"])
-        sonarr_mode = job.get("SONARR_DELETE_MODE", "episodes_only")
+    radarr_summary = []
+    sonarr_summary = []
+    run_state: Dict[str, Any] = {
+        "job_id": job_id,
+        "job_name": job.get("name", "Job"),
+        "run_id": run_id,
+        "run_mode": run_mode,
+        "app": app_key,
+        "app_id": app_id or None,
+        "sonarr_delete_mode": sonarr_mode if app_key == "sonarr" else None,
+        "started_at": run_started.isoformat(),
+        "finished_at": None,
+        "duration_seconds": None,
+        "status": "running",
+        "dry_run": dry_run,
+        "delete_files": delete_files,
+        "add_import_exclusion": add_import_exclusion,
+        "tag": tag_label,
+        "days_old": days_old,
+        "radarr_score_filter_enabled": radarr_score_enabled if app_key == "radarr" else None,
+        "radarr_min_avg_score": radarr_min_avg_score if app_key == "radarr" else None,
+        "candidates_found": 0,
+        "avg_score": None,  # overall avg score (Radarr only, if scores exist)
+        "deleted_count": 0,
+        "deleted": [],
+        "errors": [],
+    }
 
-        radarr_score_enabled = bool(job.get("RADARR_SCORE_FILTER_ENABLED", False))
-        radarr_min_avg_score = int(job.get("RADARR_MIN_AVG_SCORE", 60))
+    _persist_run(state, job_id, run_state)
+    log_info(
+        "job run started",
+        job_id=job_id,
+        job_name=job.get("name"),
+        run_id=run_id,
+        run_mode=run_mode,
+        app=app_key,
+        app_id=(app_id or None),
+    )
 
-        run_started = now_utc()
-        run_state: Dict[str, Any] = {
-            "job_id": job_id,
-            "job_name": job.get("name", "Job"),
-            "app": app_key,
-            "app_id": app_id or None,
-            "sonarr_delete_mode": sonarr_mode if app_key == "sonarr" else None,
-            "started_at": run_started.isoformat(),
-            "finished_at": None,
-            "duration_seconds": None,
-            "status": "running",
-            "dry_run": dry_run,
-            "delete_files": delete_files,
-            "add_import_exclusion": add_import_exclusion,
-            "tag": tag_label,
-            "days_old": days_old,
-            "radarr_score_filter_enabled": radarr_score_enabled if app_key == "radarr" else None,
-            "radarr_min_avg_score": radarr_min_avg_score if app_key == "radarr" else None,
-            "candidates_found": 0,
-            "avg_score": None,  # overall avg score (Radarr only, if scores exist)
-            "deleted_count": 0,
-            "deleted": [],
-            "errors": [],
-        }
+    try:
+        cutoff = now_utc() - timedelta(days=days_old)
 
-        _persist_run(state, job_id, run_state)
+        if app_key == "radarr":
+            # Prefer per-app config from WebUI, fallback to legacy env/config
+            if isinstance(app_obj, dict):
+                radarr_url = str(app_obj.get("url") or "").rstrip("/")
+                api_key = str(app_obj.get("api_key") or "").strip()
+            else:
+                radarr_url = str(cfg.get("RADARR_URL", os.environ.get("RADARR_URL", ""))).rstrip("/")
+                api_key = str(cfg.get("RADARR_API_KEY", os.environ.get("RADARR_API_KEY", ""))).strip()
 
-        try:
-            cutoff = now_utc() - timedelta(days=days_old)
+            if not radarr_url:
+                raise RuntimeError("RADARR_URL is required (or configure an App in WebUI).")
+            if not api_key:
+                raise RuntimeError("RADARR_API_KEY is required (or configure an App in WebUI).")
 
-            if app_key == "radarr":
-                # Prefer per-app config from WebUI, fallback to legacy env/config
-                if isinstance(app_obj, dict):
-                    radarr_url = str(app_obj.get("url") or "").rstrip("/")
-                    api_key = str(app_obj.get("api_key") or "").strip()
-                else:
-                    radarr_url = str(cfg.get("RADARR_URL", os.environ.get("RADARR_URL", ""))).rstrip("/")
-                    api_key = str(cfg.get("RADARR_API_KEY", os.environ.get("RADARR_API_KEY", ""))).strip()
+            print(f"[mediareaparr] Running Radarr job '{job.get('name')}' ({job_id})")
+            print(f"[mediareaparr] RADARR_URL={radarr_url}")
+            print(f"[mediareaparr] TAG_LABEL={tag_label} DAYS_OLD={days_old} CUTOFF={cutoff.isoformat()}")
+            print(f"[mediareaparr] DRY_RUN={dry_run} DELETE_FILES={delete_files} ADD_IMPORT_EXCLUSION={add_import_exclusion}")
+            print(f"[mediareaparr] SCORE_FILTER={radarr_score_enabled} MIN_AVG_SCORE={radarr_min_avg_score}")
 
-                if not radarr_url:
-                    raise RuntimeError("RADARR_URL is required (or configure an App in WebUI).")
-                if not api_key:
-                    raise RuntimeError("RADARR_API_KEY is required (or configure an App in WebUI).")
+            label_to_id, _ = radarr_tags_map(radarr_url, api_key, timeout)
+            tag_id = label_to_id.get(tag_label)
+            if not tag_id:
+                raise RuntimeError(f"Tag '{tag_label}' not found in Radarr. Create it and tag movies first.")
 
-                print(f"[mediareaparr] Running Radarr job '{job.get('name')}' ({job_id})")
-                print(f"[mediareaparr] RADARR_URL={radarr_url}")
-                print(f"[mediareaparr] TAG_LABEL={tag_label} DAYS_OLD={days_old} CUTOFF={cutoff.isoformat()}")
-                print(
-                    f"[mediareaparr] DRY_RUN={dry_run} DELETE_FILES={delete_files} ADD_IMPORT_EXCLUSION={add_import_exclusion}")
-                print(f"[mediareaparr] SCORE_FILTER={radarr_score_enabled} MIN_AVG_SCORE={radarr_min_avg_score}")
+            movies = radarr_list_movies(radarr_url, api_key, timeout)
 
-                label_to_id, _ = radarr_tags_map(radarr_url, api_key, timeout)
-                tag_id = label_to_id.get(tag_label)
-                if not tag_id:
-                    raise RuntimeError(f"Tag '{tag_label}' not found in Radarr. Create it and tag movies first.")
+            candidates: List[Tuple[Dict[str, Any], int]] = []
+            for m in movies:
+                if tag_id not in (m.get("tags") or []):
+                    continue
+                added = parse_radarr_date(str(m.get("added") or ""))
+                if not added:
+                    continue
+                if added < cutoff:
+                    age_days = int((now_utc() - added).total_seconds() // 86400)
+                    candidates.append((m, age_days))
 
-                movies = radarr_list_movies(radarr_url, api_key, timeout)
+            candidates.sort(key=lambda x: x[1], reverse=True)
+            run_state["candidates_found"] = len(candidates)
+            _persist_run(state, job_id, run_state)
 
-                candidates: List[Tuple[Dict[str, Any], int]] = []
-                for m in movies:
-                    if tag_id not in (m.get("tags") or []):
-                        continue
-                    added = parse_radarr_date(str(m.get("added") or ""))
-                    if not added:
-                        continue
-                    if added < cutoff:
-                        age_days = int((now_utc() - added).total_seconds() // 86400)
-                        candidates.append((m, age_days))
+            overall_scores: List[float] = []
 
-                candidates.sort(key=lambda x: x[1], reverse=True)
-                run_state["candidates_found"] = len(candidates)
-                _persist_run(state, job_id, run_state)
+            for m, age_days in candidates:
+                movie_id = int(m.get("id"))
+                title = str(m.get("title") or "")
+                year = m.get("year")
+                path = m.get("path")
 
-                overall_scores: List[float] = []
+                avg_score = radarr_avg_score_0_100(m)
 
-                for m, age_days in candidates:
-                    movie_id = int(m.get("id"))
-                    title = str(m.get("title") or "")
-                    year = m.get("year")
-                    path = m.get("path")
-
-                    avg_score = radarr_avg_score_0_100(m)
-
-                    score_gate_blocked = False
-                    score_gate_reason = None
-                    if radarr_score_enabled:
-                        if avg_score is None:
+                score_gate_blocked = False
+                score_gate_reason = None
+                if radarr_score_enabled:
+                    if avg_score is None:
+                        score_gate_blocked = True
+                        score_gate_reason = "no_ratings_available"
+                    else:
+                        overall_scores.append(float(avg_score))
+                        if avg_score >= float(radarr_min_avg_score):
                             score_gate_blocked = True
-                            score_gate_reason = "no_ratings_available"
-                        else:
-                            overall_scores.append(float(avg_score))
-                            if avg_score >= float(radarr_min_avg_score):
-                                score_gate_blocked = True
-                                score_gate_reason = f"avg_score_{avg_score:.1f}_not_below_{radarr_min_avg_score}"
+                            score_gate_reason = f"avg_score_{avg_score:.1f}_not_below_{radarr_min_avg_score}"
 
-                    if score_gate_blocked:
-                        print(f"[mediareaparr] SKIP (score gate) id={movie_id} '{title}' "
-                              f"age={age_days} score={avg_score} reason={score_gate_reason}")
-                        continue
+                if score_gate_blocked:
+                    print(
+                        f"[mediareaparr] SKIP (score gate) id={movie_id} '{title}' "
+                        f"age={age_days} score={avg_score} reason={score_gate_reason}"
+                    )
+                    continue
 
-                    if dry_run:
-                        print(
-                            f"[mediareaparr] DRY-RUN would delete movie id={movie_id} '{title}' ({year}) age={age_days} "
-                            f"score={avg_score} path={path}")
-                        run_state["deleted"].append({
+                if dry_run:
+                    print(
+                        f"[mediareaparr] DRY-RUN would delete movie id={movie_id} '{title}' ({year}) age={age_days} "
+                        f"score={avg_score} path={path}"
+                    )
+                    radarr_summary.append(f"{title} ({year})")
+                    run_state["deleted"].append(
+                        {
                             "kind": "movie",
                             "id": movie_id,
                             "title": title,
@@ -703,21 +803,26 @@ def run_job(cfg: Dict[str, Any], state: Dict[str, Any], job: Dict[str, Any]) -> 
                             "score": avg_score,
                             "path": path,
                             "dry_run": True,
-                        })
-                        run_state["deleted_count"] = len(run_state["deleted"])
-                        _persist_run(state, job_id, run_state)
-                        continue
+                        }
+                    )
+                    run_state["deleted_count"] = len(run_state["deleted"])
+                    _persist_run(state, job_id, run_state)
+                    continue
 
-                    try:
-                        ok, method = radarr_delete_movie_strict(
-                            radarr_url, api_key, timeout, movie_id, delete_files, add_import_exclusion
-                        )
-                        if not ok:
-                            raise RuntimeError("Radarr delete call returned but movie still exists in Radarr")
+                try:
+                    ok, method = radarr_delete_movie_strict(
+                        radarr_url, api_key, timeout, movie_id, delete_files, add_import_exclusion
+                    )
+                    if not ok:
+                        raise RuntimeError("Radarr delete call returned but movie still exists in Radarr")
 
-                        print(f"[mediareaparr] Deleted movie id={movie_id} '{title}' ({year}) "
-                              f"age={age_days} score={avg_score} via={method}")
-                        run_state["deleted"].append({
+                    print(
+                        f"[mediareaparr] Deleted movie id={movie_id} '{title}' ({year}) "
+                        f"age={age_days} score={avg_score} via={method}"
+                    )
+                    radarr_summary.append(f"{title} ({year})")
+                    run_state["deleted"].append(
+                        {
                             "kind": "movie",
                             "id": movie_id,
                             "title": title,
@@ -726,73 +831,76 @@ def run_job(cfg: Dict[str, Any], state: Dict[str, Any], job: Dict[str, Any]) -> 
                             "score": avg_score,
                             "path": path,
                             "dry_run": False,
-                        })
-                        run_state["deleted_count"] = len(run_state["deleted"])
-                        _persist_run(state, job_id, run_state)
-                    except Exception as e:
-                        err = f"ERROR Radarr deleting id={movie_id} title='{title}': {e}"
-                        print(f"[mediareaparr] {err}", file=sys.stderr)
-                        run_state["errors"].append(err)
-                        _persist_run(state, job_id, run_state)
-
-                # publish an overall avg score for dashboard/job cards (if any)
-                if radarr_score_enabled and overall_scores:
-                    run_state["avg_score"] = float(sum(overall_scores) / len(overall_scores))
+                        }
+                    )
+                    run_state["deleted_count"] = len(run_state["deleted"])
+                    _persist_run(state, job_id, run_state)
+                except Exception as e:
+                    err = f"ERROR Radarr deleting id={movie_id} title='{title}': {e}"
+                    print(f"[mediareaparr] {err}", file=sys.stderr)
+                    run_state["errors"].append(err)
                     _persist_run(state, job_id, run_state)
 
-            else:
-                # Sonarr
-                if isinstance(app_obj, dict):
-                    sonarr_url = str(app_obj.get("url") or "").rstrip("/")
-                    api_key = str(app_obj.get("api_key") or "").strip()
-                else:
-                    sonarr_url = str(cfg.get("SONARR_URL", os.environ.get("SONARR_URL", ""))).rstrip("/")
-                    api_key = str(cfg.get("SONARR_API_KEY", os.environ.get("SONARR_API_KEY", ""))).strip()
-
-                if not sonarr_url:
-                    raise RuntimeError("SONARR_URL is required (or configure an App in WebUI).")
-                if not api_key:
-                    raise RuntimeError("SONARR_API_KEY is required (or configure an App in WebUI).")
-
-                print(f"[mediareaparr] Running Sonarr job '{job.get('name')}' ({job_id})")
-                print(f"[mediareaparr] SONARR_URL={sonarr_url}")
-                print(f"[mediareaparr] TAG_LABEL={tag_label} DAYS_OLD={days_old} CUTOFF={cutoff.isoformat()}")
-                print(
-                    f"[mediareaparr] DRY_RUN={dry_run} DELETE_FILES={delete_files} ADD_IMPORT_EXCLUSION={add_import_exclusion}")
-                print(f"[mediareaparr] SONARR_DELETE_MODE={sonarr_mode}")
-
-                label_to_id, _ = sonarr_tags_map(sonarr_url, api_key, timeout)
-                tag_id = label_to_id.get(tag_label)
-                if not tag_id:
-                    raise RuntimeError(f"Tag '{tag_label}' not found in Sonarr. Create it and tag series first.")
-
-                series_list = sonarr_list_series(sonarr_url, api_key, timeout)
-
-                candidates: List[Tuple[Dict[str, Any], int]] = []
-                for s in series_list:
-                    if tag_id not in (s.get("tags") or []):
-                        continue
-                    added = parse_iso_date(str(s.get("added") or ""))
-                    if not added:
-                        continue
-                    if added < cutoff:
-                        age_days = int((now_utc() - added).total_seconds() // 86400)
-                        candidates.append((s, age_days))
-
-                candidates.sort(key=lambda x: x[1], reverse=True)
-                run_state["candidates_found"] = len(candidates)
+            # publish an overall avg score for dashboard/job cards (if any)
+            if radarr_score_enabled and overall_scores:
+                run_state["avg_score"] = float(sum(overall_scores) / len(overall_scores))
                 _persist_run(state, job_id, run_state)
 
-                for s, age_days in candidates:
-                    series_id = int(s.get("id"))
-                    title = str(s.get("title") or "")
-                    year = s.get("year")
-                    path = s.get("path")
+        else:
+            # Sonarr
+            if isinstance(app_obj, dict):
+                sonarr_url = str(app_obj.get("url") or "").rstrip("/")
+                api_key = str(app_obj.get("api_key") or "").strip()
+            else:
+                sonarr_url = str(cfg.get("SONARR_URL", os.environ.get("SONARR_URL", ""))).rstrip("/")
+                api_key = str(cfg.get("SONARR_API_KEY", os.environ.get("SONARR_API_KEY", ""))).strip()
 
-                    if dry_run:
-                        print(
-                            f"[mediareaparr] DRY-RUN candidate series id={series_id} '{title}' ({year}) age={age_days} path={path} mode={sonarr_mode}")
-                        run_state["deleted"].append({
+            if not sonarr_url:
+                raise RuntimeError("SONARR_URL is required (or configure an App in WebUI).")
+            if not api_key:
+                raise RuntimeError("SONARR_API_KEY is required (or configure an App in WebUI).")
+
+            print(f"[mediareaparr] Running Sonarr job '{job.get('name')}' ({job_id})")
+            print(f"[mediareaparr] SONARR_URL={sonarr_url}")
+            print(f"[mediareaparr] TAG_LABEL={tag_label} DAYS_OLD={days_old} CUTOFF={cutoff.isoformat()}")
+            print(f"[mediareaparr] DRY_RUN={dry_run} DELETE_FILES={delete_files} ADD_IMPORT_EXCLUSION={add_import_exclusion}")
+            print(f"[mediareaparr] SONARR_DELETE_MODE={sonarr_mode}")
+
+            label_to_id, _ = sonarr_tags_map(sonarr_url, api_key, timeout)
+            tag_id = label_to_id.get(tag_label)
+            if not tag_id:
+                raise RuntimeError(f"Tag '{tag_label}' not found in Sonarr. Create it and tag series first.")
+
+            series_list = sonarr_list_series(sonarr_url, api_key, timeout)
+
+            candidates: List[Tuple[Dict[str, Any], int]] = []
+            for s in series_list:
+                if tag_id not in (s.get("tags") or []):
+                    continue
+                added = parse_iso_date(str(s.get("added") or ""))
+                if not added:
+                    continue
+                if added < cutoff:
+                    age_days = int((now_utc() - added).total_seconds() // 86400)
+                    candidates.append((s, age_days))
+
+            candidates.sort(key=lambda x: x[1], reverse=True)
+            run_state["candidates_found"] = len(candidates)
+            _persist_run(state, job_id, run_state)
+
+            for s, age_days in candidates:
+                series_id = int(s.get("id"))
+                title = str(s.get("title") or "")
+                year = s.get("year")
+                path = s.get("path")
+
+                if dry_run:
+                    print(
+                        f"[mediareaparr] DRY-RUN candidate series id={series_id} '{title}' ({year}) "
+                        f"age={age_days} path={path} mode={sonarr_mode}"
+                    )
+                    run_state["deleted"].append(
+                        {
                             "kind": "series_candidate",
                             "id": series_id,
                             "title": title,
@@ -801,18 +909,18 @@ def run_job(cfg: Dict[str, Any], state: Dict[str, Any], job: Dict[str, Any]) -> 
                             "path": path,
                             "mode": sonarr_mode,
                             "dry_run": True,
-                        })
-                        run_state["deleted_count"] = len(run_state["deleted"])
-                        _persist_run(state, job_id, run_state)
-                        continue
+                        }
+                    )
+                    run_state["deleted_count"] = len(run_state["deleted"])
+                    _persist_run(state, job_id, run_state)
+                    continue
 
-                    try:
-                        if sonarr_mode == "series_whole":
-                            sonarr_delete_series(sonarr_url, api_key, timeout, series_id, delete_files,
-                                                 add_import_exclusion)
-                            print(
-                                f"[mediareaparr] Deleted series (whole) id={series_id} '{title}' ({year}) age={age_days}")
-                            run_state["deleted"].append({
+                try:
+                    if sonarr_mode == "series_whole":
+                        sonarr_delete_series(sonarr_url, api_key, timeout, series_id, delete_files, add_import_exclusion)
+                        print(f"[mediareaparr] Deleted series (whole) id={series_id} '{title}' ({year}) age={age_days}")
+                        run_state["deleted"].append(
+                            {
                                 "kind": "series",
                                 "id": series_id,
                                 "title": title,
@@ -821,38 +929,49 @@ def run_job(cfg: Dict[str, Any], state: Dict[str, Any], job: Dict[str, Any]) -> 
                                 "path": path,
                                 "mode": sonarr_mode,
                                 "dry_run": False,
-                            })
+                            }
+                        )
 
-                        elif sonarr_mode in ("episodes_only", "episodes_then_series_if_empty"):
-                            # Delete episode files for the series (if delete_files true),
-                            # else do nothing (we won't unmonitor etc. here).
-                            if not delete_files:
+                    elif sonarr_mode in ("episodes_only", "episodes_then_series_if_empty"):
+                        if not delete_files:
+                            print(f"[mediareaparr] SKIP episode deletion (DELETE_FILES=OFF) series id={series_id} '{title}'")
+                        else:
+                            eps = sonarr_list_episode_files(sonarr_url, api_key, timeout, series_id)
+                            ep_ids: List[int] = []
+                            for ef in eps:
+                                try:
+                                    ep_ids.append(int(ef.get("id")))
+                                except Exception:
+                                    continue
+
+                            for ef_id in ep_ids:
+                                sonarr_delete_episode_file(sonarr_url, api_key, timeout, ef_id)
+
+                            print(f"[mediareaparr] Deleted {len(ep_ids)} episode file(s) for series id={series_id} '{title}'")
+
+                            # Summary for Sonarr-style log
+                            try:
+                                sonarr_summary.append({"series": f"{title} ({year})", "episodes": int(len(ep_ids)), "reason": "Removed empty series"})
+                            except Exception:
+                                pass
+
+                        if sonarr_mode == "episodes_then_series_if_empty":
+                            remaining = sonarr_list_episode_files(sonarr_url, api_key, timeout, series_id)
+                            if not remaining:
+                                sonarr_delete_series(
+                                    sonarr_url,
+                                    api_key,
+                                    timeout,
+                                    series_id,
+                                    delete_files=False,
+                                    add_import_excl=add_import_exclusion,
+                                )
                                 print(
-                                    f"[mediareaparr] SKIP episode deletion (DELETE_FILES=OFF) series id={series_id} '{title}'")
-                            else:
-                                eps = sonarr_list_episode_files(sonarr_url, api_key, timeout, series_id)
-                                ep_ids = []
-                                for ef in eps:
-                                    try:
-                                        ep_ids.append(int(ef.get("id")))
-                                    except Exception:
-                                        continue
-
-                                for ef_id in ep_ids:
-                                    sonarr_delete_episode_file(sonarr_url, api_key, timeout, ef_id)
-
-                                print(
-                                    f"[mediareaparr] Deleted {len(ep_ids)} episode file(s) for series id={series_id} '{title}'")
-
-                            if sonarr_mode == "episodes_then_series_if_empty":
-                                # Re-check whether any episode files remain
-                                remaining = sonarr_list_episode_files(sonarr_url, api_key, timeout, series_id)
-                                if not remaining:
-                                    sonarr_delete_series(sonarr_url, api_key, timeout, series_id, delete_files=False,
-                                                         add_import_excl=add_import_exclusion)
-                                    print(
-                                        f"[mediareaparr] Deleted empty series container id={series_id} '{title}' (after episode delete)")
-                                    run_state["deleted"].append({
+                                    f"[mediareaparr] Deleted empty series container id={series_id} '{title}' "
+                                    f"(after episode delete)"
+                                )
+                                run_state["deleted"].append(
+                                    {
                                         "kind": "series_empty_removed",
                                         "id": series_id,
                                         "title": title,
@@ -861,9 +980,11 @@ def run_job(cfg: Dict[str, Any], state: Dict[str, Any], job: Dict[str, Any]) -> 
                                         "path": path,
                                         "mode": sonarr_mode,
                                         "dry_run": False,
-                                    })
-                                else:
-                                    run_state["deleted"].append({
+                                    }
+                                )
+                            else:
+                                run_state["deleted"].append(
+                                    {
                                         "kind": "episodes_deleted_only",
                                         "id": series_id,
                                         "title": title,
@@ -873,9 +994,11 @@ def run_job(cfg: Dict[str, Any], state: Dict[str, Any], job: Dict[str, Any]) -> 
                                         "mode": sonarr_mode,
                                         "dry_run": False,
                                         "remaining_episode_files": len(remaining),
-                                    })
-                            else:
-                                run_state["deleted"].append({
+                                    }
+                                )
+                        else:
+                            run_state["deleted"].append(
+                                {
                                     "kind": "episodes_deleted_only",
                                     "id": series_id,
                                     "title": title,
@@ -884,45 +1007,63 @@ def run_job(cfg: Dict[str, Any], state: Dict[str, Any], job: Dict[str, Any]) -> 
                                     "path": path,
                                     "mode": sonarr_mode,
                                     "dry_run": False,
-                                })
+                                }
+                            )
 
-                        else:
-                            # Shouldn't happen due to normalization
-                            print(
-                                f"[mediareaparr] Unknown Sonarr mode '{sonarr_mode}', skipping series id={series_id} '{title}'")
+                    else:
+                        print(f"[mediareaparr] Unknown Sonarr mode '{sonarr_mode}', skipping series id={series_id} '{title}'")
 
-                        run_state["deleted_count"] = len(run_state["deleted"])
-                        _persist_run(state, job_id, run_state)
+                    run_state["deleted_count"] = len(run_state["deleted"])
+                    _persist_run(state, job_id, run_state)
 
-                    except Exception as e:
-                        err = f"ERROR Sonarr processing id={series_id} title='{title}': {e}"
-                        print(f"[mediareaparr] {err}", file=sys.stderr)
-                        run_state["errors"].append(err)
-                        _persist_run(state, job_id, run_state)
+                except Exception as e:
+                    err = f"ERROR Sonarr processing id={series_id} title='{title}': {e}"
+                    print(f"[mediareaparr] {err}", file=sys.stderr)
+                    run_state["errors"].append(err)
+                    _persist_run(state, job_id, run_state)
 
-            run_state["status"] = "ok" if not run_state["errors"] else "partial"
-            return run_state
+        run_state["status"] = "ok" if not run_state["errors"] else "partial"
 
-        except Exception as e:
-            run_state["status"] = "error"
-            run_state["errors"].append(str(e))
-            return run_state
-
-        finally:
-            finished = now_utc()
-            run_state["finished_at"] = finished.isoformat()
-            run_state["duration_seconds"] = int((finished - run_started).total_seconds())
-            _persist_run(state, job_id, run_state)
-
-
-    # ----------------------------
-    # CLI
-    # ----------------------------
     except Exception as e:
-        log_error('run_job failed', exc=e, job_id=job_id)
-        return {'ok': False, 'error': str(e), 'job_id': job_id}
+        run_state["status"] = "error"
+        run_state["errors"].append(str(e))
+
+    finally:
+        finished = now_utc()
+        run_state["finished_at"] = finished.isoformat()
+        run_state["duration_seconds"] = int((finished - run_started).total_seconds())
+                # Emit Radarr / Sonarr style summary log
+        try:
+            # Only emit if we have something meaningful to report
+            if (app_key == "radarr" and radarr_summary) or (app_key == "sonarr" and sonarr_summary):
+                log_cleaning_summary(
+                    job_name=job.get("name", "Job"),
+                    app_type=app_key,
+                    dry_run=dry_run,
+                    radarr_items=radarr_summary,
+                    sonarr_items=sonarr_summary,
+                )
+        except Exception:
+            pass
+
+        log_info(
+            "job run finished",
+            job_id=job_id,
+            job_name=job.get("name"),
+            run_id=run_id,
+            run_mode=run_mode,
+            status=run_state.get("status"),
+            deleted_count=run_state.get("deleted_count"),
+            errors=len(run_state.get("errors") or []),
+        )
+        _persist_run(state, job_id, run_state)
+
+    return run_state
 
 
+# ----------------------------
+# CLI
+# ----------------------------
 def main() -> int:
     setup_logging()
     try:
