@@ -3,22 +3,36 @@ import os
 import sys
 import subprocess
 import json
-import uuid
 import threading
 import time
 import atexit
 import signal
-import re
 from html import escape as html_escape
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
 from typing import Optional, Dict, Any, List
 
+import traceback
 import requests
 from flask import (
     Flask, request, redirect, render_template_string,
     flash, get_flashed_messages, send_from_directory, Response, jsonify
 )
+
+from utils import (
+    env_default,
+    clamp_int,
+    now_iso,
+    parse_iso_date,
+    self_test_date_parsing,
+    safe_html,
+    make_job_id,
+    make_app_id,
+    checkbox,
+    schedule_label,
+)
+
+self_test_date_parsing()
 
 """MediaReaparr WebUI (single-file Flask app)
 
@@ -51,7 +65,7 @@ if DEFAULT_LOG_DIR is None:
     if _lp:
         try:
             DEFAULT_LOG_DIR = Path(_lp).expanduser().resolve().parent
-        except Exception:
+        except (OSError, RuntimeError):
             DEFAULT_LOG_DIR = None
 if DEFAULT_LOG_DIR is None:
     DEFAULT_LOG_DIR = CONFIG_DIR
@@ -60,7 +74,8 @@ LOG_FILE_SUFFIX = " mediareaparr.log"
 
 
 def _today_dd_mm_yyyy() -> str:
-    return datetime.now(timezone.utc).strftime("%d-%m-%Y")
+    # Use container-local time (honors TZ) so daily files rotate at local midnight
+    return datetime.now().strftime("%d-%m-%Y")
 
 
 def _is_valid_dd_mm_yyyy(s: str) -> bool:
@@ -70,7 +85,7 @@ def _is_valid_dd_mm_yyyy(s: str) -> bool:
     try:
         datetime.strptime(s, "%d-%m-%Y")
         return True
-    except Exception:
+    except ValueError:
         return False
 
 
@@ -87,9 +102,9 @@ def get_log_path(cfg: Optional[Dict[str, Any]] = None, date_key: Optional[str] =
                 if p:
                     try:
                         log_dir = Path(p).expanduser().resolve().parent
-                    except Exception:
+                    except (OSError, RuntimeError):
                         pass
-    except Exception:
+    except (OSError, RuntimeError, ValueError):
         pass
 
     dk = (date_key or "").strip()
@@ -114,7 +129,7 @@ def list_log_dates(cfg: Optional[Dict[str, Any]] = None) -> List[str]:
         # Newest first
         dates.sort(key=lambda s: datetime.strptime(s, "%d-%m-%Y"), reverse=True)
         return dates
-    except Exception:
+    except (OSError, ValueError):
         return []
 
 
@@ -130,7 +145,7 @@ def tail_file(path: Path, max_lines: int = 500, max_bytes: int = 1024 * 1024) ->
                 f.seek(0, 2)
                 size = f.tell()
                 f.seek(max(0, size - max_bytes), 0)
-            except Exception:
+            except (OSError, ValueError):
                 pass
             data = f.read()
         txt = data.decode("utf-8", errors="replace")
@@ -138,7 +153,7 @@ def tail_file(path: Path, max_lines: int = 500, max_bytes: int = 1024 * 1024) ->
         if max_lines and len(lines) > max_lines:
             lines = lines[-max_lines:]
         return "\n".join(lines)
-    except Exception as e:
+    except (OSError, TypeError) as e:
         return f"(failed to read log) {e}"
 
 
@@ -161,10 +176,10 @@ def append_log_line(msg: str, sev: str = "INFO", label: str = "WebUI") -> None:
         sev_out = s.title()
 
         lbl = (label or "WebUI").strip()
-        lp.open("a", encoding="utf-8").write(f"{ts} [{sev_out}] [{lbl}] {msg}\n")
-    except Exception:
+        with lp.open("a", encoding="utf-8") as _f:
+            _f.write(f"{ts} [{sev_out}] [{lbl}] {msg}\n")
+    except OSError:
         pass
-
 
 
 APP_DIR = Path(__file__).resolve().parent
@@ -172,10 +187,10 @@ APP_IMAGES_DIR = APP_DIR / "images"
 CONFIG_IMAGES_DIR = CONFIG_DIR / "images"
 app = Flask(__name__)
 
+
 # ----------------------------
 # Global 500 handler (prevents blank/opaque 500s)
 # ----------------------------
-from flask import jsonify
 
 
 def _wants_json() -> bool:
@@ -186,7 +201,7 @@ def _wants_json() -> bool:
             return True
         accept = (request.headers.get("Accept") or "").lower()
         return "application/json" in accept
-    except Exception:
+    except RuntimeError:
         return False
 
 
@@ -196,13 +211,13 @@ def handle_unexpected_error(e):
     try:
         tb = traceback.format_exc(limit=25)
         try:
-            append_log_line("UNHANDLED EXCEPTION: " + str(e))
+            append_log_line("UNHANDLED EXCEPTION: " + str(e), sev="ERROR", label="WebUI")
             for line in tb.splitlines()[-25:]:
-                append_log_line(line)
-        except Exception:
+                append_log_line("trace: " + line, sev="ERROR", label="WebUI")
+        except OSError:
             pass
-    except Exception:
-        tb = "traceback unavailable"
+    except RuntimeError:
+        pass
 
     if _wants_json():
         return jsonify({"ok": False, "error": str(e)}), 500
@@ -227,72 +242,7 @@ def handle_unexpected_error(e):
 
 app.secret_key = os.environ.get("FLASK_SECRET_KEY", "mediareaparr-secret")
 
-
-def env_default(name: str, default: str = "") -> str:
-    return os.environ.get(name, default)
-
-
-def clamp_int(v, lo: int, hi: int, default: int) -> int:
-    try:
-        v = int(v)
-    except Exception:
-        return default
-    if v < lo:
-        return lo
-    if v > hi:
-        return hi
-    return v
-
-
-def now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
-
-
-def safe_html(s: Any) -> str:
-    return html_escape(str(s or ""), quote=True)
-
-
-def make_job_id() -> str:
-    return uuid.uuid4().hex[:10]
-
-
-def make_app_id() -> str:
-    return uuid.uuid4().hex[:10]
-
-
-def checkbox(name: str) -> bool:
-    return request.form.get(name) == "on"
-
-
-def schedule_label(day_key: str, hour: int) -> str:
-    day_key = (day_key or "daily").lower()
-    names = {
-        "daily": "Daily",
-        "mon": "Mon",
-        "tue": "Tue",
-        "wed": "Wed",
-        "thu": "Thu",
-        "fri": "Fri",
-        "sat": "Sat",
-        "sun": "Sun",
-    }
-    day_txt = names.get(day_key, "Daily")
-    h = clamp_int(hour, 0, 23, 3)
-    return f"{day_txt} • {h:02d}:00"
-
-
-def parse_iso_date(s: str):
-    if not s:
-        return None
-    try:
-        if s.endswith("Z"):
-            s = s[:-1] + "+00:00"
-        dt = datetime.fromisoformat(s)
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-        return dt.astimezone(timezone.utc)
-    except Exception:
-        return None
+# (helpers imported from utils.py)
 
 
 # ----------------------------
@@ -371,7 +321,7 @@ def is_app_ready(cfg: Dict[str, Any], app_id: str) -> bool:
 def _norm_url_key(url: str, api_key: str) -> tuple:
     u = (url or "").strip().rstrip("/").lower()
     k = (api_key or "").strip()
-    return (u, k)
+    return u, k
 
 
 def find_duplicate_app(apps_list: List[Dict[str, Any]], url: str, api_key: str, exclude_id: str = "") -> Optional[
@@ -476,11 +426,34 @@ def run_now_modal_html() -> str:
 <p class="muted">If you’re not sure, edit the job and enable <b>Dry Run</b> first.</p>
         </div>
         <div class="mf">
-          <button class="btn" type="button" onclick="hideModal('runNowBack')">Cancel</button>
+          <button class="btn cancel" type="button" onclick="hideModal('runNowBack')">Cancel</button>
           <form id="runNowFormConfirm" method="post" action="/jobs/run-now" style="margin:0;">
             <input type="hidden" id="runNowJobId" name="job_id" value="">
             <button class="btn bad" type="button" onclick="runNowSubmitConfirm()">Yes, run now</button>
           </form>
+        </div>
+      </div>
+    </div>
+    """
+
+
+# ----------------------------
+# Generic confirm modal (replaces browser confirm())
+# ----------------------------
+def confirm_modal_html() -> str:
+    return """
+    <div class="modalBack" id="confirmBack" style="display:none;">
+      <div class="modal" role="dialog" aria-modal="true" aria-labelledby="confirmTitle">
+        <div class="mh">
+          <h3 id="confirmTitle">Confirm</h3>
+          <button class="modalCloseX" type="button" onclick="confirmCancel()" aria-label="Close">×</button>
+        </div>
+        <div class="mb">
+          <p id="confirmMessage" style="margin:0;"></p>
+        </div>
+        <div class="mf" style="justify-content:flex-end; gap:10px;">
+          <button class="btn cancel" type="button" id="confirmCancelBtn" onclick="confirmCancel()">Cancel</button>
+          <button class="btn danger" type="button" id="confirmOkBtn" onclick="confirmOk()">OK</button>
         </div>
       </div>
     </div>
@@ -558,7 +531,7 @@ def load_config() -> Dict[str, Any]:
             for k in list(cfg.keys()):
                 if k in data:
                     cfg[k] = data[k]
-        except Exception:
+        except (OSError, json.JSONDecodeError, UnicodeDecodeError):
             pass
 
     # Normalize theme/timeout
@@ -566,20 +539,15 @@ def load_config() -> Dict[str, Any]:
     cfg["UI_THEME"] = t if t in ("dark", "light") else "dark"
     cfg["HTTP_TIMEOUT_SECONDS"] = clamp_int(cfg.get("HTTP_TIMEOUT_SECONDS", 30), 5, 300, 30)
 
-    apps = cfg.get("APPS") or []
-    if not isinstance(apps, list):
-        apps = []
-    cfg["APPS"] = [normalize_app(a) for a in apps]
+    apps_list = cfg.get("APPS") or []
+    if not isinstance(apps_list, list):
+        apps_list = []
+    cfg["APPS"] = [normalize_app(a) for a in apps_list]
 
     jobs = cfg.get("JOBS") or []
     if not isinstance(jobs, list):
         jobs = []
     jobs = [normalize_job(j) for j in jobs]
-    if not jobs:
-        # Keep a default job so UI isn't empty, but it won't be runnable without apps
-        j = job_defaults()
-        j["name"] = "Default Job"
-        jobs = [normalize_job(j)]
     cfg["JOBS"] = jobs
 
     return cfg
@@ -594,7 +562,7 @@ def load_state() -> Dict[str, Any]:
     try:
         if STATE_PATH.exists():
             return json.loads(STATE_PATH.read_text(encoding="utf-8"))
-    except Exception:
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
         pass
     return {}
 
@@ -604,11 +572,43 @@ def save_state(state: Dict[str, Any]) -> None:
     try:
         CONFIG_DIR.mkdir(parents=True, exist_ok=True)
         STATE_PATH.write_text(json.dumps(state, indent=2), encoding="utf-8")
-    except Exception as e:
+    except (OSError, TypeError, ValueError) as e:
         try:
             append_log_line(f"save_state failed: {e}")
-        except Exception:
+        except OSError:
             pass
+
+
+# ----------------------------
+# Running job tracking (disables delete while running)
+# ----------------------------
+def _running_jobs(state: Dict[str, Any]) -> List[str]:
+    rj = state.get("RUNNING_JOBS") or []
+    if isinstance(rj, list):
+        return [str(x) for x in rj if str(x).strip()]
+    return []
+
+
+def is_job_running(job_id: str) -> bool:
+    jid = (job_id or "").strip()
+    if not jid:
+        return False
+    state = load_state()
+    return jid in set(_running_jobs(state))
+
+
+def mark_job_running(job_id: str, running: bool) -> None:
+    jid = (job_id or "").strip()
+    if not jid:
+        return
+    state = load_state()
+    running_jobs = set(_running_jobs(state))
+    if running:
+        running_jobs.add(jid)
+    else:
+        running_jobs.discard(jid)
+    state["RUNNING_JOBS"] = sorted(running_jobs)
+    save_state(state)
 
 
 # ----------------------------
@@ -634,7 +634,7 @@ def _job_due(job: Dict[str, Any], now: datetime) -> bool:
     day = str(job.get("SCHED_DAY") or "daily").strip().lower()
     try:
         hour = int(job.get("SCHED_HOUR", 3))
-    except Exception:
+    except (TypeError, ValueError):
         hour = 3
     if now.hour != hour:
         return False
@@ -653,7 +653,7 @@ def _pid_is_running(pid: int) -> bool:
     except PermissionError:
         # Process exists but we can't signal it
         return True
-    except Exception:
+    except (OSError, TypeError, ValueError):
         return False
 
 
@@ -663,12 +663,12 @@ def _release_scheduler_lock() -> None:
             pid_txt = _SCHED_LOCK_PATH.read_text(encoding="utf-8", errors="ignore").strip()
             try:
                 lock_pid = int(pid_txt.splitlines()[0].strip())
-            except Exception:
+            except (ValueError, IndexError):
                 lock_pid = None
             # Only remove if we own it (or pid is missing)
             if lock_pid in (None, os.getpid()):
                 _SCHED_LOCK_PATH.unlink(missing_ok=True)
-    except Exception:
+    except OSError:
         pass
 
 
@@ -689,10 +689,10 @@ def _acquire_scheduler_lock() -> bool:
             if not _pid_is_running(lock_pid):
                 _SCHED_LOCK_PATH.unlink(missing_ok=True)
                 return _acquire_scheduler_lock()
-        except Exception:
+        except (OSError, ValueError, IndexError):
             pass
         return False
-    except Exception:
+    except OSError:
         # Don't block startup if something odd happens with the lock
         return True
 
@@ -710,10 +710,10 @@ def _scheduler_spawn_job(job_id: str) -> None:
             stderr=f,
             close_fds=True,
         )
-    except Exception as e:
+    except (OSError, ValueError) as e:
         try:
             append_log_line(f"scheduler: failed to spawn job {job_id}: {e}", sev="ERROR", label="Scheduler")
-        except Exception:
+        except OSError:
             pass
 
 
@@ -738,7 +738,7 @@ def _scheduler_loop() -> None:
             for j in jobs:
                 try:
                     jn = normalize_job(j)
-                except Exception:
+                except (TypeError, ValueError):
                     jn = j if isinstance(j, dict) else {}
                 jid = str(jn.get("id") or "").strip()
                 if not jid:
@@ -755,10 +755,10 @@ def _scheduler_loop() -> None:
                 append_log_line(f"scheduler: running job {jid} ({jn.get('name', 'Job')}) window={window}", sev="DEBUG")
                 _scheduler_spawn_job(jid)
 
-        except Exception as e:
+        except (OSError, ValueError, TypeError, RuntimeError) as e:
             try:
                 append_log_line(f"scheduler: loop error: {e}", sev="DEBUG", label="Scheduler")
-            except Exception:
+            except OSError:
                 pass
 
         time.sleep(int(SCHEDULER_TICK_SECONDS))
@@ -768,10 +768,10 @@ def _install_scheduler_lock_cleanup() -> None:
     # Ensure the lock doesn't stick around after container stop/restart.
     try:
         atexit.register(_release_scheduler_lock)
-    except Exception:
+    except RuntimeError:
         pass
 
-    def _handler(signum, frame):
+    def _handler(_signum, _frame):
         try:
             _release_scheduler_lock()
         finally:
@@ -782,7 +782,7 @@ def _install_scheduler_lock_cleanup() -> None:
             continue
         try:
             signal.signal(_sig, _handler)
-        except Exception:
+        except (ValueError, OSError, RuntimeError):
             pass
 
 
@@ -834,7 +834,7 @@ def get_tag_labels(cfg: Dict[str, Any], app_id: str) -> List[str]:
             {t.get("label") for t in (tags or []) if t.get("label")},
             key=lambda x: str(x).lower()
         )
-    except Exception:
+    except (requests.exceptions.RequestException, ValueError):
         # App is offline / timeout / bad gateway / etc.
         return []
 
@@ -851,7 +851,7 @@ def radarr_movie_score_0_100(movie: Dict[str, Any]) -> Optional[int]:
             continue
         try:
             v = float(v)
-        except Exception:
+        except (TypeError, ValueError):
             continue
 
         if 0 <= v <= 10:
@@ -1033,7 +1033,7 @@ BASE_HEAD = """
     --sidebarBackgroundColor:#2a2a2a;
     --scrollbarbackgroundcolor:#595959;
     --BackgroundColor1:#333333;
-    --FieldinptuColor:#595959;
+    --FieldinputColor:#595959;
     --sidebarActiveBackgroundColor:#333333;
     --toolbarBackgroundColor:#262626;
     --pageBackgroundColor:#202020;
@@ -1041,7 +1041,7 @@ BASE_HEAD = """
     --edgehighlight:#9ca3af;
     --rule:#555555;
     --text:#f1f5f9;
-    --line:#212d3d;
+    --line:#333333;
     --line2:#212d3d;
     --inputbox_border:#505d6f;
     --inputbox_background:#1f2937;
@@ -1069,7 +1069,7 @@ BASE_HEAD = """
     --accent:#a7d541;
     --accent2:#16a34a;
     --BackgroundColor1:#ffffff;
-    --FieldinptuColor:#ffffff;
+    --FieldinputColor:#ffffff;
     --inputbox_border:#cbd5e1;
     --inputbox_background:#ffffff;
     --warn:#b45309;
@@ -1106,7 +1106,7 @@ BASE_HEAD = """
      width:100%;
      border:1px solid var(--BackgroundColor1);
      border-radius:8px;
-     background:var(--FieldinptuColor);
+     background:var(--FieldinputColor);
      color:var(--text);
      padding:10px 15px 10px 10px;
      outline:none;
@@ -1141,7 +1141,7 @@ BASE_HEAD = """
      left:0; right:0;
      top:calc(100% + 3px);
      z-index:2000;
-     background:var(--FieldinptuColor);
+     background:var(--FieldinputColor);
      border:1px solid var(--line2);
      box-shadow:var(--shadow);
      max-height:260px;
@@ -1181,58 +1181,6 @@ BASE_HEAD = """
 
   *, *::before, *::after { box-sizing: border-box; }
   html, body{ height: 100%; }
-
-  /* ===========================
-     Themed scrollbars
-     =========================== */
-
-  /* ---------- Firefox ---------- */
-  body[data-theme="dark"] *,
-  body[data-theme="light"] *{
-    scrollbar-width: thin;
-    scrollbar-color: var(--accent) var(--scrollbarbackgroundcolor);
-  }
-
-  /* ---------- WebKit (Chrome / Edge / Safari) ---------- */
-
-  /* Thin scrollbars */
-  ::-webkit-scrollbar{
-    width: 6px;
-    height: 6px;
-  }
-
-  ::-webkit-scrollbar-track{
-    background: var(--scrollbarbackgroundcolor);
-  }
-
-  /* Base thumb (use transparent border + background-clip so it never "turns black" on hover) */
-  ::-webkit-scrollbar-thumb{
-    border-radius: 999px;
-    border: 2px solid transparent;
-    background-clip: padding-box;
-  }
-
-  /* DARK THEME — subtle thumb, glow green on hover */
-  body[data-theme="dark"] ::-webkit-scrollbar-thumb{
-    background-color: rgba(167,213,65,.35);
-  }
-
-  body[data-theme="dark"] ::-webkit-scrollbar-thumb:hover,
-  body[data-theme="dark"] ::-webkit-scrollbar-thumb:active{
-    background-color: rgba(167,213,65,.88) !important;
-    box-shadow: 0 0 0 2px rgba(167,213,65,.22), 0 0 12px rgba(167,213,65,.55);
-  }
-
-  /* LIGHT THEME — neutral thumb, glow green on hover */
-  body[data-theme="light"] ::-webkit-scrollbar-thumb{
-    background-color: rgba(100,116,139,.45);
-  }
-
-  body[data-theme="light"] ::-webkit-scrollbar-thumb:hover,
-  body[data-theme="light"] ::-webkit-scrollbar-thumb:active{
-    background-color: rgba(167,213,65,.75) !important;
-    box-shadow: 0 0 0 2px rgba(167,213,65,.18), 0 0 10px rgba(167,213,65,.45);
-  }
 
   body{
     margin:0;
@@ -1484,48 +1432,279 @@ BASE_HEAD = """
   body[data-theme="light"] .card{
     border: 1px solid var(--line);
   }
-  body[data-theme="light"] .jobCard{
-    border: 1px solid var(--line);
-  }
 
+.jobs-empty-row {
+    display: flex !important;
+    align-items: center;
+    justify-content: center;
+    grid-column: 1 / -1; /* span full jobs grid */
+    min-height: 80px;
+    width: 100%;
+    color: #8fa8a0;
+    font-size: 13px;
+    text-align: center;
+    pointer-events: none;
+}
+/* Jobs list: keep Edit + Run/Dry buttons side-by-side */
+.jobRowActions{
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  white-space: nowrap;
+}
+.jobRowActions form{
+  display: inline-flex;
+  margin: 0;
+}
 
-  .jobCard.addJobCard{
+/* Jobs list: make "Run Now" and "Dry Run" buttons the same size */
+.jobRowActions .btn{
+  min-width: 32px;            /* keeps 'Run Now' and 'Dry Run' aligned */
+  max-width: 65px;
+  justify-content: center;
+}
+  .addJobBar{
+    width: 100%;
+    border: 3px dashed rgba(255,255,255,.18);
+    background: rgba(255,255,255,.03);
+    border-radius: 12px;
+    min-height: 48px;
     display:flex;
     align-items:center;
     justify-content:center;
+    gap: 10px;
     cursor:pointer;
     user-select:none;
-    border:4px dashed rgba(255,255,255,.18);
-    background: rgba(255,255,255,.03);
-    min-height: 120px;
+    transition: background .18s ease, border-color .18s ease, box-shadow .18s ease, transform .18s ease;
+    margin-bottom: 15px;
+    }
+  .addJobBar.disabled{
+    opacity: .55;
+    cursor: not-allowed;
+    border-style: dashed;
+    filter: grayscale(0.2);
   }
-  .jobCard.addJobCard:hover{
-    border-color: rgba(167,213,65,.45);
-    background: rgba(167,213,65,.06);
-  }
-
-  /* --------------------------------
-     Add Job cards: per-app hover color
-     (avoid inline JS; use data-app-type)
-     -------------------------------- */
-  .jobCard.addJobCard{
-    transition: background .18s ease, border-color .18s ease, box-shadow .18s ease;
+  .jobCard.addJobCard.disabled{
+    opacity: .55;
+    cursor: not-allowed;
+    filter: grayscale(0.2);
   }
 
-  /* Sonarr — blue/teal accent */
-  .jobCard.addJobCard[data-app-type="sonarr"]:hover{
+  /* Sonarr — blue */
+  .addJobBar[data-app-type="sonarr"]:hover{
     border-color: #38bdf8;
     background: rgba(56,189,248,.10);
     box-shadow: 0 0 0 3px rgba(56,189,248,.18), var(--shadow);
+    transform: translateY(-1px);
   }
-
-  /* Radarr — yellow accent (theme) */
-  .jobCard.addJobCard[data-app-type="radarr"]:hover{
+  /* Radarr — yellow */
+  .addJobBar[data-app-type="radarr"]:hover{
     border-color: #eeb530;
-    background: rgba(167,213,65,.12);
-    box-shadow: 0 0 0 3px rgba(167,213,65,.20), var(--shadow);
+    background: rgba(238,181,48,.14);
+    box-shadow: 0 0 0 3px rgba(238,181,48,.22), var(--shadow);
+    transform: translateY(-1px);
+  }
+  body[data-theme="light"] .addJobBar{
+    border-color: rgba(0,0,0,.14);
+    background: rgba(0,0,0,.02);
+  }
+  .addJobBar:active{ transform: translateY(0px); }
+  .addJobBar .plus{
+    font-size: 22px;
+    line-height: 1;
+    color: var(--muted);
+    font-weight: 900;
+  }
+  .addJobBar .label{
+    font-weight: 800;
+    color: var(--muted);
   }
 
+  .jobsListWrap{
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    overflow: hidden;
+    background: rgba(0,0,0,.12);
+    margin-bottom: 20px; /* footer gap at bottom of Jobs list */
+  }
+  body[data-theme="light"] .jobsListWrap{ background: rgba(0,0,0,.03); }
+
+  .jobsTable{
+    width: 100%;
+    border-collapse: collapse;
+    table-layout: fixed;
+  }
+  /* Jobs list view layout:
+     - Job name column: 20% (left aligned)
+     - Actions column: fixed width (right aligned)
+     - All other columns share remaining space evenly
+  */
+  .jobsTable th:first-child, .jobsTable td:first-child{ width: 16%; text-align: left; }
+  .jobsTable th:last-child,  .jobsTable td:last-child{ width: 195px; text-align: right; }
+  .jobsTable td.jobsEmptyCell{ text-align: center !important; }
+  /* Center "pill" values in their columns (all non-name, non-actions columns) */
+  .jobsTable th:not(:first-child):not(:last-child),
+  .jobsTable td:not(:first-child):not(:last-child){
+    text-align: center;
+  }
+  .jobsTable th, .jobsTable td{ overflow: hidden; text-overflow: ellipsis; }
+  .jobsTable thead th{
+    text-transform: uppercase;
+    letter-spacing: .08em;
+    font-size: 11px;
+    color: rgba(255,255,255,.70);
+    background: rgba(255,255,255,.06);
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--line);
+    white-space: nowrap;
+  }
+  body[data-theme="light"] .jobsTable thead th{
+    color: rgba(0,0,0,.65);
+    background: rgba(0,0,0,.04);
+  }
+  .jobsTable tbody td{
+    padding: 12px 12px;
+    border-bottom: 1px solid rgba(255,255,255,.06);
+    vertical-align: middle;
+  }
+  .jobsTable tbody tr:nth-child(odd) td{
+  background: rgba(255,255,255,0.02);
+  }
+    .jobsTable tbody tr:nth-child(even) td{
+    background: transparent;
+  }
+  body[data-theme="light"] .jobsTable tbody tr:nth-child(odd) td{
+    background: rgba(0,0,0,0.03);
+  }
+  body[data-theme="light"] .jobsTable tbody td{
+    border-bottom: 1px solid rgba(0,0,0,.06);
+  }
+  .jobsTable tbody tr:hover td{
+    background: rgba(255,255,255,.03);
+  }
+
+/* Jobs list: icon-only delete button */
+.jobDeleteBtn{
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  width: 29px;
+  height: 29px;
+  border-radius: 10px;
+  border-color: #ff00007a;
+  background: #ff454554;
+  color: #ffffff;
+  cursor: pointer;
+  padding: 0;
+  line-height: 1;
+}
+
+.jobDeleteBtn:disabled{
+  opacity: .45;
+  cursor: not-allowed;
+}
+
+/* Jobs list: icon-only edit button */
+.btn.iconOnly{
+  width: 29px;
+  height: 29px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+}
+
+.jobDeleteBtn:hover{ background: rgba(239,68,68,0.22); }
+.jobDeleteBtn:active{ background: rgba(239,68,68,0.30); }
+.jobDeleteBtn span{ font-size: 16px; }
+
+
+
+  .jobPill{
+    display:inline-flex;
+    align-items:center;
+    justify-content:center;
+    padding: 5px 12px;
+    border-radius: 15px;
+    font-size: 12px;
+    font-weight: 700;
+    border: 1px solid rgba(255,255,255,.18);
+    color: rgba(255,255,255,92);
+    background: rgba(255,255,255,.06);
+    white-space: nowrap;
+    cursor:default;
+  }
+  body[data-theme="light"] .jobPill{
+    color: #111827;
+    border-color: rgba(0,0,0,.12);
+    background: rgba(0,0,0,.04);
+  }
+
+  /* App-colored job pills in Jobs → List view */
+  .jobPill.radarr{
+    border-color: rgba(255, 208, 0, .55);
+    background: rgba(249, 189, 49, 30%);
+  }
+  body[data-theme="light"] .jobPill.radarr{
+    border-color: rgba(255, 208, 0, .55);
+    background: rgba(249, 189, 49, 30%);
+  }
+
+  .jobPill.sonarr{
+    border-color: rgba(59, 130, 246, .55);
+    background: rgba(0, 161, 254, 30%);
+  }
+  body[data-theme="light"] .jobPill.sonarr{
+    border-color: rgba(59, 130, 246, .55);
+    background: rgba(0, 161, 254, 30%);
+  }
+
+  .jobPill.muted{
+    border-color: #434343;
+    background: #272727;
+    color: #ffffff;
+  }
+  body[data-theme="light"] .jobPill.muted{
+    border-color: rgba(0,0,0,12);
+    background: rgba(0,0,0,04);
+    color: rgba(0,0,0,62);
+  }
+
+  .jobNameCell{
+    display:flex;
+    align-items:center;
+    gap: 10px;
+    min-width: 220px;
+  }
+  .jobRowIcon{
+    width: 18px;
+    height: 18px;
+    display:inline-flex;
+    align-items:center;
+    justify-content:center;
+    flex: 0 0 auto;
+  }
+  .jobRowIcon img{
+    width: 18px;
+    height: 18px;
+    display:block;
+  }
+  body[data-theme="light"] .jobRowIcon{
+    border-color: rgba(0,0,0,.35);
+  }
+  body[data-theme="light"]   .jobRowActions{
+    display:flex;
+    gap: 10px;
+    justify-content:flex-end;
+    align-items:center;
+    flex-wrap: nowrap;
+    white-space: nowrap;
+  }
+  .jobsTable .btn{
+    padding: 8px 14px;
+    border-radius: 10px;
+  }
 
 .card .hd{
     padding: 14px 16px;
@@ -1563,8 +1742,8 @@ BASE_HEAD = """
   .btnrow{ display:flex; gap:10px; flex-wrap: wrap; align-items:center; }
 
   .btn{
-    border: 1px solid var(--line2);
-    background: var(--HeaderBackgroundColor);
+    border: 1px solid #4f4e4e;
+    background: #272727;
     color: var(--text);
     padding: var(--btn-py) var(--btn-px);
     font-weight: 600;
@@ -1605,17 +1784,64 @@ BASE_HEAD = """
     background: linear-gradient(135deg, rgba(34,197,94,.26), rgba(34,197,94,.10));
   }
   .btn.good{
-    border-color: rgba(34,197,94,.45);
-    background: linear-gradient(135deg, rgba(34,197,94,.20), rgba(34,197,94,.08));
+    border-color: #22c55e8c;
+    background: #16a34a54;
   }
   .btn.warn{
     border-color: rgba(245,158,11,.55);
     background: linear-gradient(135deg, rgba(245,158,11,.22), rgba(245,158,11,.08));
   }
-  .btn.bad{
-    border-color: rgba(239,68,68,.55);
-    background: linear-gradient(135deg, rgba(239,68,68,.20), rgba(239,68,68,.08));
+
+
+  .btn.cancel{
+    border-color: rgba(148,163,184,.50);
+    background: linear-gradient(135deg, rgba(148,163,184,.18), rgba(148,163,184,.08));
+    color: var(--text);
   }
+  .btn.cancel:hover{
+    border-color: rgba(148,163,184,.70);
+    box-shadow: 0 0 0 3px rgba(148,163,184,.18), 0 10px 22px rgba(0,0,0,.22);
+  }
+  .btn.cancel:active{
+    box-shadow: 0 0 0 2px rgba(148,163,184,.14), 0 6px 14px rgba(0,0,0,.18);
+  }
+
+.btn.bad{
+    border-color: #ff00007a;
+    background: #ff454554;
+  }
+
+  /* Add instance button (separate from .btn) */
+  .addInstanceBtn{
+    border: 1px solid rgba(124,255,178,.55);
+    background: rgba(124,255,178,.10);
+    color: var(--accent);
+    padding: var(--btn-py) var(--btn-px);
+    font-weight: 700;
+    font-size: var(--btn-fs);
+    gap: var(--btn-gap);
+    border-radius: 8px;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    text-decoration: none;
+    transition: box-shadow .18s ease, border-color .18s ease, transform .18s ease, filter .18s ease;
+  }
+  .addInstanceBtn:hover{
+    border-color: rgba(124,255,178,.85);
+    box-shadow: 0 0 0 3px rgba(124,255,178,.18), 0 10px 22px rgba(0,0,0,.22);
+    transform: translateY(-1px);
+    text-decoration: none;
+  }
+  .addInstanceBtn:active{
+    transform: translateY(0);
+    box-shadow: 0 0 0 2px rgba(124,255,178,.12), 0 6px 14px rgba(0,0,0,.18);
+  }
+  body[data-theme="light"] .addInstanceBtn:hover{
+    box-shadow: 0 0 0 3px rgba(167,213,65,.16), 0 10px 18px rgba(2,6,23,.10);
+  }
+
 
   .field{
     padding: 4px 7px;
@@ -1631,9 +1857,19 @@ BASE_HEAD = """
   body[data-theme="light"] .field select,
   body[data-theme="light"] .field textarea{
     border-color: var(--line2);
-    background: var(--FieldinptuColor);
+    background: var(--FieldinputColor);
     color: var(--text);
   }
+/* ---- Remove number input arrows (all browsers) ---- */
+input[type="number"]::-webkit-inner-spin-button,
+input[type="number"]::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+input[type="number"] {
+  -moz-appearance: textfield;
+}
+
 
   .field label{ display:block; font-size: 14px; color: var(--text); margin-bottom: 8px; }
 
@@ -1647,7 +1883,7 @@ BASE_HEAD = """
     min-width: 0;
     border: 1px solid var(--BackgroundColor1);
     border-radius: 8px;
-    background: var(--FieldinptuColor);
+    background: var(--FieldinputColor);
     color: var(--text);
     padding: 10px 10px;
     outline: none;
@@ -1691,39 +1927,42 @@ BASE_HEAD = """
     cursor: not-allowed;
   }
 
-  /* Radarr score filter row (match existing field/check styling) */
-  .scoreRow{
+    /* Radarr score filter row (match screenshot: compact checkbox + pill number) */
+  .field .scoreRow{
     display:flex;
-    gap:10px;
     align-items:center;
-    flex-wrap:wrap;
+    gap:12px;
+    flex-wrap:nowrap;
   }
-  /* Keep checkbox + number aligned on one line when there is space */
-  @media (min-width: 520px){
-    .scoreRow{ flex-wrap:nowrap; }
-  }
-  .scoreInline{
+  .field .scoreRow label.check{
     display:flex;
     align-items:center;
     gap:10px;
-    margin:0;
-    flex:1 1 auto;
-    padding: 0;          /* override .check padding */
-    background: transparent;
+    padding: 0;
+    margin: 0;
+  }
+  /* Don't scale the checkbox in this row */
+  .field .scoreRow label.check input[type=checkbox]{
+    transform: none;
+  }
+  .field .scoreRow .scoreNumInput{
+    width: 65px;
+    height: 32px;
+    min-width: 60px;
+    max-width: 65px;
+    padding: 10px 10px;
+    border-radius: 10px;
+    border: 1px solid var(--BackgroundColor1);
+    background: var(--FieldinputColor);
+    color: var(--text);
+    text-align: left;
+  }
+  /* On very small widths allow wrapping so the number doesn't crush the label */
+  @media (max-width: 420px){
+    .field .scoreRow{ flex-wrap:wrap; }
+    .field .scoreRow .scoreNumInput{ margin-left: 0; }
   }
 
-  .scoreNumInput{
-    width:90px;
-    min-width:90px;
-  }
-  .scoreRow .scoreCheck{
-    flex: 1 1 260px;
-    min-width: 240px;
-  }
-  .scoreRow .scoreNum{
-    width: 140px;
-    min-width: 140px;
-  }
   .switch{ position: relative; width: var(--switch-w); height: var(--switch-h); display: inline-block; flex: 0 0 auto; }
   .switch input{ opacity: 0; width: 0; height: 0; }
   .slider{
@@ -1773,10 +2012,9 @@ BASE_HEAD = """
     width: 100%;
   }
 
-  .jobCard:has(input[type="checkbox"]:not(:checked))
   .jobName{
     color: var(--text);
-    font-size: 18px;
+    font-size: 12px;
     font-weight: 800;
     letter-spacing: .3px;
 
@@ -1814,10 +2052,10 @@ BASE_HEAD = """
   .jobsSection{ display:block; width:100%; margin-top: 18px; clear: both; }
   .jobsSectionHeader{
     display:flex; align-items:center; gap: 14px;
-    margin: 12px 0 14px;
+    margin: 18px 0 18px;
   }
   .jobsSectionHeader .title{
-    font-size: 18px; font-weight: 700; color: var(--text);
+    font-size: 15px; font-weight: 700; color: var(--text);
   }
   .jobsSectionHeader .rule{
     flex:1; height: 2px; background: var(--muted);
@@ -1852,7 +2090,7 @@ BASE_HEAD = """
 
   .jobName{
     color: var(--text);
-    font-size: 18px;
+    font-size: 12px;
     font-weight: 800;
     letter-spacing: .3px;
     max-width: 16ch;
@@ -1969,12 +2207,27 @@ BASE_HEAD = """
   @media (max-width: 1100px){ .appsGrid{ grid-template-columns: repeat(2, 300px); } }
   @media (max-width: 760px){ .appsGrid{ grid-template-columns: 1fr; } }
 
+
+/* App card hover accents (match Sonarr blue / Radarr yellow) */
+.appCard{
+  transition: box-shadow .18s ease, border-color .18s ease, transform .18s ease;
+}
+.appCard[data-app-type="sonarr"]:hover{
+  border-color:#38bdf8;
+  box-shadow:0 0 0 1px rgba(56,189,248,.6),0 0 0px rgba(56,189,248,.5),0 0 18px rgba(56,189,248,.35);
+}
+.appCard[data-app-type="radarr"]:hover{
+  border-color:#eeb530;
+  box-shadow:0 0 0 1px rgba(238,181,48,.7),0 0 0px rgba(238,181,48,.55),0 0 18px rgba(238,181,48,.4);
+}
+
+
 .appCard{
   width: 300px;
   height: 150px;
   border-radius: 12px !important;
   overflow: hidden;
-  border: 3px solid var(--BackgroundColor1);
+  border: 1px solid var(--BackgroundColor1);
   background: var(--BackgroundColor1);
   box-shadow: var(--shadow);
   display: flex;
@@ -1983,6 +2236,7 @@ BASE_HEAD = """
   padding: 0; /* Job cards use section padding (header/body) */
   position: relative;
   user-select: none;
+  cursor:pointer;
 }
 
   .appCardTop{
@@ -2010,10 +2264,28 @@ BASE_HEAD = """
   font-size: 12px;
   opacity: .85;
 }
-  .appTitle{
-    font-size: 18px;
+
+  /* App card body (meta + status) */
+  .appCardBody{
+    padding: 6px 12px 12px 12px !important; /* tighter to divider */
+    display:flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+  .appCardBody .appMeta{
+    margin: 0;
+    padding: 0;
+    font-size: 12px;
+    color: var(--muted);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    line-height: 2.3;
+  }
+.appTitle{
+    font-size: 12px;
     font-weight: 600;
-    line-height: 1.12;
+    line-height: 2.4;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -2045,6 +2317,9 @@ BASE_HEAD = """
     font-size: 11px;
     font-weight: 700;
     background: rgba(34,197,94,.12);
+  }
+  .jobsTable td .pill{
+    justify-content: center;
   }
   .pill.good{ border-color: rgba(34,197,94,.45); }
   .pill.bad{ border-color: rgba(239,68,68,.55); background: rgba(239,68,68,.10); }
@@ -2100,8 +2375,8 @@ BASE_HEAD = """
     .pickGrid{ grid-template-columns: 1fr; }
   }
   .pickTile{
-    border: 1px solid var(--line);
-    background: var(--panel2);
+    border: 2px solid #717171;
+    background: #4d4b4b;
     box-shadow: var(--shadow);
     padding: 14px 14px;
     cursor: pointer;
@@ -2110,12 +2385,13 @@ BASE_HEAD = """
     flex-direction: column;
     gap: 8px;
     min-height: 110px;
+    border-radius: 10px;
   }
 
   [data-theme="light"] .pickTile{ background: #ffffff; }
   .pickTile:hover{
-    border-color: rgba(34,197,94,.55);
-    box-shadow: 0 0 0 3px rgba(34,197,94,.10), 0 10px 22px rgba(0,0,0,.22);
+    border-color: #9f9f9f;
+    box-shadow: #9f9f9f;
     transform: translateY(-1px);
   }
   .pickTop{
@@ -2336,9 +2612,9 @@ BASE_HEAD = """
     width: 100%;
     max-width: 100%;
     min-width: 0;
-    border: 3px solid var(--inputbox_border);
+    border: 1px solid var(--BackgroundColor1);
     border-radius: 8px;
-    background: var(--inputbox_background);
+    background: var(--FieldinputColor);
     color: var(--text);
     padding: 10px 10px;
     outline: none;
@@ -2373,8 +2649,19 @@ BASE_HEAD = """
     gap: 10px;
   }
 
+    /* App add/edit footer — equal height buttons */
+  .appFooter .btn,
+  .appFooterRight .btn{
+    height: 30px;              /* single source of truth */
+    min-height: 30px;
+    padding: 0 14px;           /* horizontal only */
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    line-height: 1;
+  }
 
-  /* ---------------------------
+/* ---------------------------
      Settings: header tabs
      --------------------------- */
   .settingsTabs{
@@ -2559,12 +2846,205 @@ BASE_HEAD = """
     line-height: 1.35;
   }
 
+
+
+  /* ------------------------------------------------
+     True custom scrollbar (JS-driven; no ::-webkit-scrollbar theming)
+     ------------------------------------------------ */
+  .csWrap{
+    display: grid;
+    grid-template-columns: 1fr 12px;
+    gap: 8px;
+    align-items: stretch;
+    min-height: 0;
+  }
+
+  /* When a scroll area is disabled (no overflow), collapse the bar gap */
+  .csWrap.csNoScroll{
+    grid-template-columns: 1fr 0px;
+    gap: 0px;
+  }
+
+  .csViewport{
+    min-height: 0;
+    overflow: hidden !important; /* we translate content; no native scrollbars */
+    position: relative;
+    -webkit-overflow-scrolling: auto;
+    scrollbar-width: none;
+  }
+
+  .csContent{
+    will-change: transform;
+    /* Add bottom padding so the last item isn't clipped (margins don't count toward scrollHeight) */
+    padding-bottom: 16px;
+    box-sizing: border-box;
+  }
+
+  /* Dropdown menus need less bottom padding */
+  .csMenuViewport .csContent{
+    padding-bottom: 6px;
+  }
+
+  .csBar{
+    position: relative;
+    width: 12px;
+    min-width: 12px;
+    padding: 2px;
+    opacity: .85;
+    transition: opacity .15s ease;
+    user-select: none;
+    touch-action: none;
+  }
+  .csWrap:hover .csBar{ opacity: 1; }
+
+  .csTrack{
+    position: absolute;
+    top: 2px; bottom: 2px; left: 2px; right: 2px;
+    border-radius: 999px;
+    background: rgba(0,0,0,22);
+  }
+  body[data-theme="light"] .csTrack{
+    background: rgba(0,0,0,10);
+    border-color: rgba(0,0,0,12);
+  }
+
+  .csThumb{
+    position: absolute;
+    left: 2px;
+    right: 2px;
+    top: 2px;
+    height: 48px;
+    border-radius: 999px;
+    background: rgba(167,213,65,55);
+    border: 1px solid rgba(167,213,65,65);
+    box-shadow: 0 0 0 0 rgba(167,213,65,0);
+    cursor: pointer;
+    transition: background .12s ease, box-shadow .12s ease, transform .12s ease;
+  }
+
+  .csWrap:hover .csThumb{
+    background: rgba(167,213,65,72);
+  }
+
+  .csThumb:hover,
+  .csThumb:active{
+    background: rgba(167,213,65,88);
+    box-shadow: 0 0 0 0px rgba(167,213,65,18), 0 0 8px rgba(167,213,65,45);
+  }
+
+  /* Make the bar blend on dark background using your scrollbar background variable */
+  body[data-theme="dark"] .csTrack{
+    background: rgba(89,89,89,55);
+    border-color: rgba(255,255,255,10);
+  }
+
+  /* Reduce visual weight for tiny areas (dropdown menus etc.) */
+  .fakeSelectMenu .csBar{ opacity: .65; }
+  .fakeSelectMenu:hover .csBar{ opacity: .9; }
+
+  /* Dropdown menus: keep absolute positioning; build scrollbar INSIDE the menu */
+  .csMenuHost{
+    padding: 0 !important;
+    overflow: hidden !important;
+  }
+  .csMenuHost .csMenuWrap{
+    height: auto;
+  }
+  .csMenuHost .csMenuWrap.csNoScroll{
+    grid-template-columns: 1fr 0px;
+    gap: 0px;
+  }
+  .csMenuHost .csMenuWrap{
+    grid-template-columns: 1fr 10px;
+    gap: 6px;
+  }
+  .csMenuHost .csMenuBar{
+    width: 10px;
+    min-width: 10px;
+  }
+  .csMenuHost .csTrack{
+    left: 1px; right: 1px; top: 2px; bottom: 2px;
+  }
+
+  /* Dropdown menu scrollbar track override */
+  .csMenuHost .csTrack{
+    background: #7d7b7b !important;
+  }
+  .csMenuHost .csThumb{
+    left: 1px; right: 1px;
+  }
+  .csMenuHost .csMenuViewport{
+    height: auto;
+    max-height: 260px;
+    padding: 4px;
+    box-sizing: border-box;
+  }
+
+
+  /* Validation: red outline for required empty inputs */
+  .invalidField{
+    border-color: rgba(239,68,68,0.9) !important;
+    box-shadow: 0 0 0 3px rgba(239,68,68,0.25) !important;
+  }
+
 </style>
 
 <script>
   function $(id){ return document.getElementById(id); }
   function setVal(id, v){ const el = $(id); if (el) el.value = v; }
   function setChecked(id, v){ const el = $(id); if (el) el.checked = !!v; }
+
+  // -----------------------
+  // Custom confirm modal (replaces browser confirm())
+  // -----------------------
+  window.__CONFIRM_RESOLVE = null;
+
+  function customConfirm(message, opts){
+    opts = opts || {};
+    const title = opts.title || "Confirm";
+    const okText = opts.okText || "OK";
+    const cancelText = opts.cancelText || "Cancel";
+    const danger = !!opts.danger;
+
+    const titleEl = $("confirmTitle");
+    const msgEl = $("confirmMessage");
+    const okBtn = $("confirmOkBtn");
+    const cancelBtn = $("confirmCancelBtn");
+
+    if (titleEl) titleEl.textContent = title;
+    if (msgEl) msgEl.textContent = message || "";
+
+    if (okBtn) okBtn.textContent = okText;
+    if (cancelBtn) cancelBtn.textContent = cancelText;
+
+    if (okBtn){
+      okBtn.classList.toggle("danger", danger);
+      okBtn.classList.toggle("primary", !danger);
+    }
+
+    showModal("confirmBack");
+    // Focus OK by default for delete confirms, otherwise Cancel
+    setTimeout(() => {
+      try {
+        if (danger && okBtn) okBtn.focus();
+        else if (cancelBtn) cancelBtn.focus();
+      } catch(e){}
+    }, 0);
+
+    return new Promise((resolve) => {
+      window.__CONFIRM_RESOLVE = resolve;
+    });
+  }
+
+  function _confirmFinish(val){
+    const r = window.__CONFIRM_RESOLVE;
+    window.__CONFIRM_RESOLVE = null;
+    hideModal("confirmBack");
+    try { if (r) r(!!val); } catch(e){}
+  }
+
+  function confirmOk(){ _confirmFinish(true); }
+  function confirmCancel(){ _confirmFinish(false); }
 
    // -----------------------
    // FakeSelect (custom dropdown) - keeps native <select> hidden for form submit
@@ -2615,8 +3095,11 @@ function initFakeSelect(fake){
        if (native.disabled) return;
        buildMenu();
        fake.classList.add("open");
+       try { if (window.__initMenuScrollbar) window.__initMenuScrollbar(menu); } catch(e){}
        if (btn) btn.setAttribute("aria-expanded", "true");
        if (menu) menu.focus();
+       // Ensure dropdown menu gets its internal custom scrollbar once visible
+       try { if (window.__initCustomScrollbars) setTimeout(window.__initCustomScrollbars, 0); } catch(e){}
      }
 
      function setSelectedByValue(v){
@@ -2657,6 +3140,9 @@ function initFakeSelect(fake){
        // button text
        const cur = native.options[native.selectedIndex];
        if (val) val.textContent = cur ? cur.textContent : "-- Select --";
+
+       // Init/refresh internal custom scrollbar for this dropdown menu (menu is rebuilt often)
+       try { if (window.__initMenuScrollbar) window.__initMenuScrollbar(menu); } catch(e){}
      }
 
      // initial
@@ -2848,7 +3334,7 @@ function initFakeSelect(fake){
     window.__APP_MODAL_DIRTY[prefix] = (snap !== window.__APP_MODAL_INITIAL[prefix]);
   }
 
-  function maybeCloseAppModal(prefix){
+  async function maybeCloseAppModal(prefix){
     const back = (prefix === "r") ? $("appBackRadarr") : $("appBackSonarr");
     if (!back || back.style.display !== "flex") {
       hideModal(prefix === "r" ? "appBackRadarr" : "appBackSonarr");
@@ -2856,7 +3342,8 @@ function initFakeSelect(fake){
     }
     appModalUpdateDirty(prefix);
     if (window.__APP_MODAL_DIRTY[prefix]){
-      if (!confirm("Discard changes to this application?")) return;
+      const ok = await customConfirm("Discard changes to this application?", {title:"Discard changes?", okText:"Discard", cancelText:"Keep editing"});
+      if (!ok) return;
     }
     hideModal(prefix === "r" ? "appBackRadarr" : "appBackSonarr");
   }
@@ -2974,10 +3461,11 @@ function initFakeSelect(fake){
     setTimeout(() => appModalMarkClean("r"), 0);
   }
 
-  function submitDeleteApp(prefix){
+  async function submitDeleteApp(prefix){
     const id = ($("app_id_" + prefix)?.value || "").trim();
     if (!id) return;
-    if (!confirm("Delete this app? Jobs using it must be updated first.")) return;
+    const ok = await customConfirm("Delete this app? Jobs using it must be updated first.", {title:"Delete application?", okText:"Delete", cancelText:"Cancel", danger:true});
+    if (!ok) return;
     const f = $("appDeleteForm");
     const hid = $("app_delete_id");
     if (hid) hid.value = id;
@@ -2991,14 +3479,52 @@ function initFakeSelect(fake){
   // - If URL/API changes, reset test_ok -> 0
   // -----------------------
   function refreshAppButtons(prefix){
-    const url = (($("app_url_" + prefix)?.value || "") + "").trim();
-    const key = (($("app_key_" + prefix)?.value || "") + "").trim();
+    const nameEl = $("app_name_" + prefix);
+    const urlEl  = $("app_url_" + prefix);
+    const keyEl  = $("app_key_" + prefix);
+
+    const name = ((nameEl?.value || "") + "").trim();
+    const url  = ((urlEl?.value || "") + "").trim();
+    const key  = ((keyEl?.value || "") + "").trim();
+
     const testBtn = $("appTestBtn_" + prefix);
     const saveBtn = $("appSaveBtn_" + prefix);
     const testOk = ($("app_test_ok_" + prefix)?.value || "") === "1";
 
-    if (testBtn) testBtn.disabled = (url === "" || key === "");
-    if (saveBtn) saveBtn.disabled = !testOk;
+    // Best-effort: only show red outline while the modal is open
+    let modalOpen = true;
+    try{
+      const back = (prefix === "s") ? $("appBackSonarr") : $("appBackRadarr");
+      modalOpen = !!(back && window.getComputedStyle(back).display !== "none");
+    }catch(e){}
+
+    // Reset visuals
+    if (modalOpen){
+      [nameEl, urlEl, keyEl].forEach(el => { if (el) el.classList.remove("invalidField"); });
+    }
+    if (saveBtn) saveBtn.removeAttribute("title");
+
+    // Test gating: require all fields present
+    if (testBtn) testBtn.disabled = (name === "" || url === "" || key === "");
+
+    // Save gating: require all fields + Test OK
+    let reason = "";
+    if (name === "") reason = "App Name is required";
+    else if (url === "") reason = "App URL is required";
+    else if (key === "") reason = "API Key is required";
+    else if (!testOk) reason = "Run Test to enable Save";
+
+    if (saveBtn){
+      saveBtn.disabled = (reason !== "");
+      if (reason) saveBtn.title = reason;
+    }
+
+    if (modalOpen && reason){
+      // highlight the first failing field
+      if (name === "" && nameEl) nameEl.classList.add("invalidField");
+      else if (url === "" && urlEl) urlEl.classList.add("invalidField");
+      else if (key === "" && keyEl) keyEl.classList.add("invalidField");
+    }
   }
 
   function invalidateAppTest(prefix){
@@ -3085,7 +3611,7 @@ function initFakeSelect(fake){
     window.__JOB_MODAL_DIRTY = (snap !== window.__JOB_MODAL_INITIAL);
   }
 
-  function maybeCloseJobModal(){
+  async function maybeCloseJobModal(){
     const back = $("jobBack");
     if (!back || back.style.display !== "flex") {
       hideModal("jobBack");
@@ -3093,7 +3619,8 @@ function initFakeSelect(fake){
     }
     jobModalUpdateDirty();
     if (window.__JOB_MODAL_DIRTY){
-      if (!confirm("Discard changes to this job?")) return;
+      const ok = await customConfirm("Discard changes to this job?", {title:"Discard changes?", okText:"Discard", cancelText:"Keep editing"});
+      if (!ok) return;
     }
     hideModal("jobBack");
   }
@@ -3345,14 +3872,7 @@ function updateSonarrModeVisibility(appId){
     }
   }
 
-function openAddJobCard(appType){
-    // appType should be "radarr" or "sonarr"
-    openNewJob(appType);
-    // keep fake select label in sync when opening
-    if (typeof syncFakeSelect === "function") syncFakeSelect("job_app");
-  }
-
-function openNewJob(preferredType){
+async function openNewJob(preferredType){
     const form = $("jobForm");
     if (!form) return;
 
@@ -3362,6 +3882,24 @@ function openNewJob(preferredType){
 
     const appSel = $("job_app");
     const defApp = appSel?.getAttribute("data-default-app") || "";
+
+    // If the requested app type has no connected instances, offer to jump to Apps settings
+    const want = (preferredType || "").toString().toLowerCase();
+    const typesMap = (window.__APP_TYPES || {});
+    const connectedCount = Object.values(typesMap).filter(v => (v || "").toString().toLowerCase() === want).length;
+
+    if ((want === "sonarr" || want === "radarr") && connectedCount === 0){
+      const label = (want === "sonarr") ? "Sonarr" : "Radarr";
+      const ok = await customConfirm(
+        `${label} not configured. Would you like to do this now?`,
+        { title: `${label} not configured`, okText: "Go to Apps", cancelText: "Not now" }
+      );
+      if (ok){
+        window.location.href = "/settings?tab=apps";
+      }
+      return;
+    }
+
 
     // Filter app list to the section type (Sonarr card shows Sonarr apps, etc.)
     filterJobAppOptions(preferredType, defApp);
@@ -3406,6 +3944,7 @@ setChecked("job_excl", false);
     setJobModalTitle(actualApp || preferredType, false);
     showModal("jobBack");
     setTimeout(jobModalMarkClean, 0);
+    try{ setTimeout(refreshJobSaveButton, 0); }catch(e){}
   }
 
   function openEditJob(btn){
@@ -3455,7 +3994,9 @@ setChecked("job_excl", false);
 
     setJobModalTitle(jobType || appId, true);
     showModal("jobBack");
+    try{ setTimeout(validateJobForm, 0); }catch(e){}
     setTimeout(jobModalMarkClean, 0);
+    try{ setTimeout(refreshJobSaveButton, 0); }catch(e){}
   }
 
   function openRunNowConfirm(jobId, opts){
@@ -3533,10 +4074,7 @@ setChecked("job_excl", false);
       const el = e.target.closest("[data-action]");
       if (!el) return;
       const act = el.getAttribute("data-action");
-      if (act === "job-new") {
-        e.preventDefault();
-        openNewJob();
-      } else if (act === "job-add-card") {
+      if (act === "job-add-card") {
         e.preventDefault();
         const t = el.getAttribute("data-app-type") || "";
         openNewJob(t);
@@ -3563,37 +4101,28 @@ setChecked("job_excl", false);
       openNewJob(t);
     });
 
-    // Confirm before deleting a job
-    document.addEventListener("submit", (e) => {
+    // Confirm before deleting a job (Sonarr/Radarr specific + includes job name)
+    document.addEventListener("submit", async (e) => {
       const form = e.target;
       if (!(form instanceof HTMLFormElement)) return;
       if (!form.classList.contains("jobDeleteForm")) return;
-      if (!confirm("Delete this job?")) {
-        e.preventDefault();
-        return;
-      }
-    });
+      e.preventDefault();
 
-    // Auto-submit enable toggle
-    document.addEventListener("change", (e) => {
-      const cb = e.target;
-      if (!(cb instanceof HTMLInputElement)) return;
-      if (cb.getAttribute("data-action") !== "job-enable") return;
-      const form = cb.closest("form");
-      if (form) form.submit();
+      const rawJobName = form.getAttribute("data-job-name") || "";
+      const jobName = rawJobName ? unescHtml(rawJobName) : "";
+      const appType = (form.getAttribute("data-app-type") || "").toLowerCase();
+      const appLabel = (appType === "sonarr") ? "Sonarr" : ((appType === "radarr") ? "Radarr" : "App");
+
+      const title = `Delete ${appLabel} job`;
+      let msg = jobName ? `Delete ${appLabel} job "${jobName}"?` : `Delete this ${appLabel} job?`;
+      msg += " This cannot be undone.";
+
+      const ok = await customConfirm(msg, {title: title, okText:"Delete", cancelText:"Cancel", danger:true});
+      if (ok) { try { form.submit(); } catch(err){} }
     });
 
     // Job name overflow fade (only when overflowing)
-    function updateJobNameFades(){
-      document.querySelectorAll(".jobName").forEach(el => {
-        const isOverflowing = el.scrollWidth > el.clientWidth + 1;
-        el.classList.toggle("is-overflowing", isOverflowing);
-      });
-    }
-    updateJobNameFades();
-    window.addEventListener("resize", updateJobNameFades);
-
-    try {
+try {
       const v = localStorage.getItem("sbCollapsed");
       if (v === "1") document.body.classList.add("sbCollapsed");
     } catch(e){}
@@ -3750,7 +4279,533 @@ setChecked("job_excl", false);
         const host = $("toastHost");
     if (host) setTimeout(() => { try { host.remove(); } catch(e){} }, 6000);
   });
+
+  // ------------------------------------------------
+  // True custom scrollbar (no ::-webkit-scrollbar theming)
+  // ------------------------------------------------
+  (function(){
+    const CS_SEL = [
+      ".pageContent .grid > .card:only-child > .bd",
+      ".modal .mb",
+      ".tablewrap",      ".logBox",
+      ".logTableBody"
+    ].join(",");
+
+    function clamp(v, a, b){ return Math.max(a, Math.min(b, v)); }
+
+
+    function initCore(viewport, content, wrap, bar, thumb){
+      let scrollTop = 0;
+      let maxScroll = 0;
+      let dragging = false;
+      let dragStartY = 0;
+      let dragStartScroll = 0;
+
+      function updateMetrics(){
+        const vh = viewport.clientHeight || 0;
+        const ch = content.scrollHeight || 0;
+        maxScroll = Math.max(0, ch - vh);
+
+        scrollTop = clamp(scrollTop, 0, maxScroll);
+
+        if (maxScroll <= 0){
+          wrap.classList.add("csNoScroll");
+        } else {
+          wrap.classList.remove("csNoScroll");
+        }
+
+        content.style.transform = "translate3d(0," + (-scrollTop) + "px,0)";
+
+        const trackH = bar.clientHeight - 4;
+        const thumbMin = 22;
+        const thumbH = (maxScroll <= 0 || ch <= 0) ? trackH : Math.max(thumbMin, Math.round((vh / ch) * trackH));
+        thumb.style.height = thumbH + "px";
+
+        const travel = Math.max(0, trackH - thumbH);
+        const tt = (maxScroll <= 0) ? 0 : (scrollTop / maxScroll);
+        const top = 2 + Math.round(travel * tt);
+        thumb.style.top = top + "px";
+      }
+
+      function scrollBy(delta){
+        if (maxScroll <= 0) return false;
+        const next = clamp(scrollTop + delta, 0, maxScroll);
+        if (next === scrollTop) return false;
+        scrollTop = next;
+        updateMetrics();
+        return true;
+      }
+
+      viewport.addEventListener("wheel", (e) => {
+        if (maxScroll <= 0) return;
+        const dy = e.deltaY || 0;
+        if ((dy < 0 && scrollTop <= 0) || (dy > 0 && scrollTop >= maxScroll)){
+          return;
+        }
+        const handled = scrollBy(dy);
+        if (handled){
+          e.preventDefault();
+          e.stopPropagation();
+        }
+      }, { passive: false });
+
+      function onMove(e){
+        if (!dragging) return;
+        const y = (e.touches && e.touches[0]) ? e.touches[0].clientY : e.clientY;
+        const trackH = bar.clientHeight - 4;
+        const thumbH = thumb.getBoundingClientRect().height;
+        const travel = Math.max(0, trackH - thumbH);
+        const dy = y - dragStartY;
+        const ratio = (travel <= 0) ? 0 : (dy / travel);
+        scrollTop = clamp(dragStartScroll + ratio * maxScroll, 0, maxScroll);
+        updateMetrics();
+        e.preventDefault();
+      }
+      function onUp(){
+        if (!dragging) return;
+        dragging = false;
+        document.removeEventListener("pointermove", onMove);
+        document.removeEventListener("pointerup", onUp);
+      }
+
+      thumb.addEventListener("pointerdown", (e) => {
+        if (maxScroll <= 0) return;
+        dragging = true;
+        thumb.setPointerCapture(e.pointerId);
+        dragStartY = e.clientY;
+        dragStartScroll = scrollTop;
+        document.addEventListener("pointermove", onMove, { passive: false });
+        document.addEventListener("pointerup", onUp);
+        e.preventDefault();
+        e.stopPropagation();
+      });
+
+      bar.addEventListener("pointerdown", (e) => {
+        if (maxScroll <= 0) return;
+        if (e.target === thumb) return;
+        const r = bar.getBoundingClientRect();
+        const y = e.clientY - r.top - 2;
+        const trackH = bar.clientHeight - 4;
+        const thumbH = thumb.getBoundingClientRect().height;
+        const travel = Math.max(0, trackH - thumbH);
+        const tt = clamp((y - (thumbH / 2)) / (travel || 1), 0, 1);
+        scrollTop = tt * maxScroll;
+        updateMetrics();
+        e.preventDefault();
+      });
+
+      thumb.addEventListener("keydown", (e) => {
+        if (maxScroll <= 0) return;
+        const key = e.key || "";
+        let handled = false;
+        if (key === "ArrowDown"){ handled = scrollBy(32); }
+        else if (key === "ArrowUp"){ handled = scrollBy(-32); }
+        else if (key === "PageDown"){ handled = scrollBy(viewport.clientHeight * 0.9); }
+        else if (key === "PageUp"){ handled = scrollBy(-viewport.clientHeight * 0.9); }
+        else if (key === "Home"){ scrollTop = 0; updateMetrics(); handled = true; }
+        else if (key === "End"){ scrollTop = maxScroll; updateMetrics(); handled = true; }
+        if (handled){ e.preventDefault(); e.stopPropagation(); }
+      });
+
+      try{
+        const ro = new ResizeObserver(() => updateMetrics());
+        ro.observe(viewport);
+        ro.observe(content);
+      }catch(e){}
+
+      try{
+        const mo = new MutationObserver(() => updateMetrics());
+        mo.observe(content, { childList: true, subtree: true, characterData: true });
+      }catch(e){}
+
+      setTimeout(updateMetrics, 0);
+    }
+
+    function initMenu(menuEl){
+      if (!menuEl) return;
+      // If buildMenu rebuilt the menu (innerHTML reset), csMenuWrap disappears but csInit stays.
+      // Allow re-init in that case so the scrollbar doesn't "work once then vanish".
+      if (menuEl.dataset.csInit === "1" && menuEl.querySelector(".csMenuWrap")){
+        // refresh height constraint
+        try{
+          const cs = getComputedStyle(menuEl);
+          const mh = (cs && cs.maxHeight && cs.maxHeight !== "none") ? cs.maxHeight : "260px";
+          const vp = menuEl.querySelector(".csMenuViewport");
+          if (vp) vp.style.maxHeight = mh;
+        }catch(e){}
+        return;
+      }
+
+      // only init once visible
+      try{
+        const cs = getComputedStyle(menuEl);
+        if (cs && (cs.display === "none" || cs.visibility === "hidden")) return;
+      }catch(e){}
+
+      menuEl.dataset.csInit = "1";
+      menuEl.classList.add("csMenuHost");
+
+      // If we've already built the internal structure, bail
+      if (menuEl.querySelector(".csMenuWrap")) return;
+
+      const wrap = document.createElement("div");
+      wrap.className = "csWrap csMenuWrap";
+
+      const viewport = document.createElement("div");
+      viewport.className = "csViewport csMenuViewport";
+
+      const content = document.createElement("div");
+      content.className = "csContent";
+
+      // Move existing children into content
+      while (menuEl.firstChild) content.appendChild(menuEl.firstChild);
+      viewport.appendChild(content);
+
+      const bar = document.createElement("div");
+      bar.className = "csBar csMenuBar";
+      bar.setAttribute("aria-hidden", "true");
+
+      const track = document.createElement("div");
+      track.className = "csTrack";
+
+      const thumb = document.createElement("div");
+      thumb.className = "csThumb";
+      thumb.tabIndex = 0;
+
+      bar.appendChild(track);
+      bar.appendChild(thumb);
+
+      wrap.appendChild(viewport);
+      wrap.appendChild(bar);
+      menuEl.appendChild(wrap);
+
+      // Ensure viewport has a real height constraint (percentage heights won't resolve on max-height menus)
+      try{
+        const cs = getComputedStyle(menuEl);
+        const mh = (cs && cs.maxHeight && cs.maxHeight !== "none") ? cs.maxHeight : "260px";
+        viewport.style.maxHeight = mh;
+        viewport.style.height = "auto";
+        wrap.style.height = "auto";
+      }catch(e){}
+
+      initCore(viewport, content, wrap, bar, thumb);
+    }
+
+function initOne(el){
+      if (!el || el.dataset.csInit === "1") return;
+
+      // If the element is currently hidden, don't wrap it (wrapping would leave the bar visible)
+      // We'll try again when it becomes visible.
+      try{
+        const cs = getComputedStyle(el);
+        if (cs && cs.display === "none") return;
+      }catch(e){}
+
+      // Dropdown menus must keep their absolute positioning; use an internal scrollbar instead of wrapping
+      if (el.classList && el.classList.contains("fakeSelectMenu")){ initMenu(el); return; }
+
+      el.dataset.csInit = "1";
+
+      const parent = el.parentNode;
+      if (!parent) return;
+
+      const wrap = document.createElement("div");
+      wrap.className = "csWrap";
+
+      const bar = document.createElement("div");
+      bar.className = "csBar";
+      bar.setAttribute("aria-hidden", "true");
+
+      const track = document.createElement("div");
+      track.className = "csTrack";
+
+      const thumb = document.createElement("div");
+      thumb.className = "csThumb";
+      thumb.tabIndex = 0;
+
+      bar.appendChild(track);
+      bar.appendChild(thumb);
+
+      parent.replaceChild(wrap, el);
+      wrap.appendChild(el);
+      wrap.appendChild(bar);
+
+      // Turn the original element into a viewport and move its children into csContent
+      el.classList.add("csViewport");
+      const content = document.createElement("div");
+      content.className = "csContent";
+      while (el.firstChild) content.appendChild(el.firstChild);
+      el.appendChild(content);
+
+      let scrollTop = 0;
+      let maxScroll = 0;
+      let dragging = false;
+      let dragStartY = 0;
+      let dragStartScroll = 0;
+
+      function updateMetrics(){
+        const vh = el.clientHeight || 0;
+        const ch = content.scrollHeight || 0;
+        maxScroll = Math.max(0, ch - vh);
+
+        scrollTop = clamp(scrollTop, 0, maxScroll);
+
+        // Toggle bar visibility + spacing
+        if (maxScroll <= 0){
+          wrap.classList.add("csNoScroll");
+        } else {
+          wrap.classList.remove("csNoScroll");
+        }
+
+        // Apply transform
+        content.style.transform = "translate3d(0," + (-scrollTop) + "px,0)";
+
+        // Thumb sizing + position
+        const trackH = bar.clientHeight - 4; // padding accounted
+        const thumbMin = 26;
+        const thumbH = (maxScroll <= 0 || ch <= 0) ? trackH : Math.max(thumbMin, Math.round((vh / ch) * trackH));
+        thumb.style.height = thumbH + "px";
+
+        const travel = Math.max(0, trackH - thumbH);
+        const t = (maxScroll <= 0) ? 0 : (scrollTop / maxScroll);
+        const top = 2 + Math.round(travel * t);
+        thumb.style.top = top + "px";
+      }
+
+      function scrollBy(delta){
+        if (maxScroll <= 0) return false;
+        const next = clamp(scrollTop + delta, 0, maxScroll);
+        if (next === scrollTop) return false;
+        scrollTop = next;
+        updateMetrics();
+        return true;
+      }
+
+      // Wheel / trackpad
+      el.addEventListener("wheel", (e) => {
+        if (maxScroll <= 0) return;
+        const dy = e.deltaY || 0;
+
+        // Let outer scroll areas handle if we're at the ends
+        if ((dy < 0 && scrollTop <= 0) || (dy > 0 && scrollTop >= maxScroll)){
+          return;
+        }
+
+        const handled = scrollBy(dy);
+        if (handled){
+          e.preventDefault();
+          e.stopPropagation();
+        }
+      }, { passive: false });
+
+      // Thumb drag
+      function onMove(e){
+        if (!dragging) return;
+        const y = (e.touches && e.touches[0]) ? e.touches[0].clientY : e.clientY;
+        const trackH = bar.clientHeight - 4;
+        const thumbH = thumb.getBoundingClientRect().height;
+        const travel = Math.max(0, trackH - thumbH);
+        const dy = y - dragStartY;
+        const ratio = (travel <= 0) ? 0 : (dy / travel);
+        scrollTop = clamp(dragStartScroll + ratio * maxScroll, 0, maxScroll);
+        updateMetrics();
+        e.preventDefault();
+      }
+      function onUp(){
+        if (!dragging) return;
+        dragging = false;
+        document.removeEventListener("pointermove", onMove);
+        document.removeEventListener("pointerup", onUp);
+      }
+
+      thumb.addEventListener("pointerdown", (e) => {
+        if (maxScroll <= 0) return;
+        dragging = true;
+        thumb.setPointerCapture(e.pointerId);
+        dragStartY = e.clientY;
+        dragStartScroll = scrollTop;
+        document.addEventListener("pointermove", onMove, { passive: false });
+        document.addEventListener("pointerup", onUp);
+        e.preventDefault();
+        e.stopPropagation();
+      });
+
+      // Track click
+      bar.addEventListener("pointerdown", (e) => {
+        if (maxScroll <= 0) return;
+        if (e.target === thumb) return;
+        const r = bar.getBoundingClientRect();
+        const y = e.clientY - r.top - 2;
+        const trackH = bar.clientHeight - 4;
+        const thumbH = thumb.getBoundingClientRect().height;
+        const travel = Math.max(0, trackH - thumbH);
+        const t = clamp((y - (thumbH / 2)) / (travel || 1), 0, 1);
+        scrollTop = t * maxScroll;
+        updateMetrics();
+        e.preventDefault();
+      });
+
+      // Keyboard (when thumb focused)
+      thumb.addEventListener("keydown", (e) => {
+        if (maxScroll <= 0) return;
+        const key = e.key || "";
+        let handled = false;
+        if (key === "ArrowDown"){ handled = scrollBy(40); }
+        else if (key === "ArrowUp"){ handled = scrollBy(-40); }
+        else if (key === "PageDown"){ handled = scrollBy(el.clientHeight * 0.9); }
+        else if (key === "PageUp"){ handled = scrollBy(-el.clientHeight * 0.9); }
+        else if (key === "Home"){ scrollTop = 0; updateMetrics(); handled = true; }
+        else if (key === "End"){ scrollTop = maxScroll; updateMetrics(); handled = true; }
+        if (handled){ e.preventDefault(); e.stopPropagation(); }
+      });
+
+      // Watch for size/content changes
+      try{
+        const ro = new ResizeObserver(() => updateMetrics());
+        ro.observe(el);
+        ro.observe(content);
+      }catch(e){}
+
+      try{
+        const mo = new MutationObserver(() => updateMetrics());
+        mo.observe(content, { childList: true, subtree: true, characterData: true });
+      }catch(e){}
+
+      // Initial
+      setTimeout(updateMetrics, 0);
+    }
+
+    function initAll(){
+      document.querySelectorAll(CS_SEL).forEach(initOne);
+    }
+
+    // expose for pages that inject content dynamically
+    window.__initCustomScrollbars = initAll;
+    window.__initMenuScrollbar = initMenu;
+
+    document.addEventListener("DOMContentLoaded", () => {
+      initAll();
+    });
+
+    // Re-init when modals open/close
+    document.addEventListener("click", (e) => {
+      const t = e.target;
+      if (!t) return;
+      // common modal open triggers: add job/app, edit buttons etc.
+      if (t.closest && (t.closest(".addJobBar") || t.closest(".addAppCard") || t.closest(".jobEditBtn") || t.closest(".btn"))){
+        setTimeout(initAll, 0);
+      }
+    }, true);
+
+  })();
+
 </script>
+
+
+
+
+<script>
+/* --- Combined Job Form Validator (UI-only)
+   Rules:
+   - Job Name required (always)
+   - Days Old required (always)
+   - If Score Filter is ON -> Score required
+   UX:
+   - Add .invalidField red outline to empty fields
+   - Disable Save and set tooltip explaining the first failing rule
+*/
+(function(){
+  function _isVisible(el){
+    return !!(el && el.offsetParent !== null);
+  }
+  function _isModalOpen(modal){
+    if (!modal) return false;
+    try{
+      return window.getComputedStyle(modal).display !== "none";
+    }catch(e){
+      return true;
+    }
+  }
+
+  function validateJobForm(){
+    const modal = document.getElementById("jobBack");
+    const saveBtn = document.getElementById("jobSaveBtn");
+    if (!saveBtn) return true;
+    if (modal && !_isModalOpen(modal)) return true; // don't interfere when modal closed
+
+    const nameInput  = document.getElementById("job_name");
+    const daysInput  = document.getElementById("job_days");
+    const scoreEn    = document.getElementById("job_score_enabled");
+    const scoreInput = document.getElementById("job_score_min");
+
+    // reset visuals + tooltip
+    [nameInput, daysInput, scoreInput].forEach(el => { if (el) el.classList.remove("invalidField"); });
+    saveBtn.removeAttribute("title");
+
+    // 1) Job Name required
+    if (nameInput && _isVisible(nameInput) && nameInput.value.trim() === ""){
+      saveBtn.disabled = true;
+      nameInput.classList.add("invalidField");
+      saveBtn.title = "Job Name is required";
+      return false;
+    }
+
+    // 2) Days Old required
+    if (daysInput && _isVisible(daysInput) && daysInput.value.trim() === ""){
+      saveBtn.disabled = true;
+      daysInput.classList.add("invalidField");
+      saveBtn.title = "Days Old is required";
+      return false;
+    }
+
+    // 3) Score required only when enabled
+    const scoreGateOn = !!(scoreEn && !scoreEn.disabled && scoreEn.checked);
+    if (scoreGateOn){
+      if (scoreInput && _isVisible(scoreInput) && !scoreInput.disabled && scoreInput.value.trim() === ""){
+        saveBtn.disabled = true;
+        scoreInput.classList.add("invalidField");
+        saveBtn.title = "Score is required";
+        return false;
+      }
+    }
+
+    // Also validate open App modals (Apps form fields)
+    try{ refreshAppButtons("s"); }catch(e){}
+    try{ refreshAppButtons("r"); }catch(e){} 
+
+    // Valid
+    saveBtn.disabled = false;
+    return true;
+  }
+
+  // Expose globally (useful for openNewJob/openEditJob)
+  window.validateJobForm = validateJobForm;
+
+  // Live events
+  document.addEventListener("input", (e) => {
+    const id = e.target && e.target.id;
+    if (id === "job_name" || id === "job_days" || id === "job_score_min" || id === "app_name_s" || id === "app_url_s" || id === "app_key_s" || id === "app_name_r" || id === "app_url_r" || id === "app_key_r") validateJobForm();
+  });
+  document.addEventListener("change", (e) => {
+    const id = e.target && e.target.id;
+    if (id === "job_score_enabled" || id === "job_app" || id === "app_test_ok_s" || id === "app_test_ok_r") validateJobForm();
+  });
+  document.addEventListener("keyup", (e) => {
+    const id = e.target && e.target.id;
+    if (id === "job_name" || id === "job_days" || id === "job_score_min" || id === "app_name_s" || id === "app_url_s" || id === "app_key_s" || id === "app_name_r" || id === "app_url_r" || id === "app_key_r") validateJobForm();
+  });
+
+  // Re-check whenever the modal opens/closes
+  const modal = document.getElementById("jobBack");
+  if (modal && window.MutationObserver){
+    const mo = new MutationObserver(() => { try{ validateJobForm(); }catch(e){} });
+    mo.observe(modal, { attributes:true, attributeFilter:["style","class"] });
+  }
+
+  document.addEventListener("DOMContentLoaded", () => { try{ validateJobForm(); }catch(e){} });
+})();
+</script>
+
 """
 
 
@@ -3764,7 +4819,6 @@ def shell(page_title: str, active: str, body: str):
         cls = "sbItem active" if active == key else "sbItem"
         return f'<a class="{cls}" href="{href}"><span class="sbText">{safe_html(name)}</span></a>'
 
-    next_theme = "light" if theme == "dark" else "dark"
     next_label = "Light" if theme == "dark" else "Dark"
 
     theme_btn_sidebar = f"""
@@ -3821,6 +4875,7 @@ def shell(page_title: str, active: str, body: str):
       </div>
     </div>
   </div>
+  {confirm_modal_html()}
   {render_toasts()}
 </body>
 </html>
@@ -3844,7 +4899,7 @@ def serve_images(filename: str):
     """
     filename = (filename or "").strip()
     if not filename or ".." in filename.replace("\\", "/"):
-        return ("", 404)
+        return "", 404
 
     def _cache_static(resp):
         # Cache for 1 hour; browsers will revalidate using ETag/Last-Modified.
@@ -3852,7 +4907,7 @@ def serve_images(filename: str):
             resp.cache_control.public = True
             resp.cache_control.max_age = 3600
             resp.cache_control.must_revalidate = True
-        except Exception:
+        except (AttributeError, TypeError):
             resp.headers["Cache-Control"] = "public, max-age=3600, must-revalidate"
         return resp
 
@@ -3868,7 +4923,7 @@ def serve_images(filename: str):
         if p.exists() and p.is_file():
             return _cache_static(send_from_directory(str(APP_IMAGES_DIR), filename))
 
-    return ("", 404)
+    return "", 404
 
 
 @app.get("/favicon.ico")
@@ -3943,12 +4998,14 @@ def settings():
               </div>
               <div style="min-width:0;">
                 <div class="appTitle">{safe_html(title)}</div>
-                <div class="appSub">{safe_html(type_label)} • {safe_html(url or 'No URL')}</div>
               </div>
             </div>
             {ext}
           </div>
-          <div>{pill}</div>
+          <div class="appCardBody">
+            <div class="appMeta">{safe_html(type_label)} • {safe_html(url or 'No URL')}</div>
+            <div>{pill}</div>
+          </div>
         </div>
         """
 
@@ -4105,7 +5162,7 @@ def app_modals_html(cfg: Dict[str, Any], usage: Dict[str, int]) -> str:
           </div>
         </div>
         <div class="mf">
-          <button class="btn" type="button" onclick="hideModal('appPickBack')">Cancel</button>
+          <button class="btn cancel" type="button" onclick="hideModal('appPickBack')">Cancel</button>
         </div>
       </div>
     </div>
@@ -4154,7 +5211,7 @@ def app_modals_html(cfg: Dict[str, Any], usage: Dict[str, int]) -> str:
               <button class="btn bad" type="button" id="appDeleteBtn_r" style="display:none;" onclick="submitDeleteApp('r')">Delete</button>
               <div class="appFooterRight">
                 <button class="btn good" id="appTestBtn_r" type="button" onclick="submitAppTest('r')">Test</button>
-                <button class="btn" type="button" onclick="maybeCloseAppModal('r')">Cancel</button>
+                <button class="btn cancel" type="button" onclick="maybeCloseAppModal('r')">Cancel</button>
                 <button class="btn primary" id="appSaveBtn_r" type="submit" disabled>Save</button>
               </div>
             </div>
@@ -4206,7 +5263,7 @@ def app_modals_html(cfg: Dict[str, Any], usage: Dict[str, int]) -> str:
               <button class="btn bad" type="button" id="appDeleteBtn_s" style="display:none;" onclick="submitDeleteApp('s')">Delete</button>
               <div class="appFooterRight">
                 <button class="btn good" id="appTestBtn_s" type="button" onclick="submitAppTest('s')">Test</button>
-                <button class="btn" type="button" onclick="maybeCloseAppModal('s')">Cancel</button>
+                <button class="btn cancel" type="button" onclick="maybeCloseAppModal('s')">Cancel</button>
                 <button class="btn primary" id="appSaveBtn_s" type="submit" disabled>Save</button>
               </div>
             </div>
@@ -4234,18 +5291,18 @@ def _system_status(url: str, api_key: str, timeout_s: int) -> Dict[str, Any]:
     r.raise_for_status()
     try:
         return r.json()
-    except Exception:
+    except ValueError:
         return {}
 
 
-def detect_app_type_from_status(status: Dict[str, Any]) -> Optional[str]:
-    if not isinstance(status, dict):
+def detect_app_type_from_status(status_payload: Dict[str, Any]) -> Optional[str]:
+    if not isinstance(status_payload, dict):
         return None
     candidates = [
-        status.get("appName"),
-        status.get("applicationName"),
-        status.get("name"),
-        status.get("instanceName"),
+        status_payload.get("appName"),
+        status_payload.get("applicationName"),
+        status_payload.get("name"),
+        status_payload.get("instanceName"),
     ]
     txt = " ".join([str(x) for x in candidates if x]).lower()
     if "sonarr" in txt:
@@ -4265,6 +5322,17 @@ def apps_save():
     url = (request.form.get("APP_URL") or "").strip().rstrip("/")
     api_key = (request.form.get("APP_API_KEY") or "").strip()
     test_ok = (request.form.get("APP_TEST_OK") or "0").strip() == "1"
+
+    # Basic required fields (mirror client-side validation)
+    if not name:
+        flash("App Name is required.", "error")
+        return redirect("/apps")
+    if not url:
+        flash("App URL is required.", "error")
+        return redirect("/apps")
+    if not api_key:
+        flash("API Key is required.", "error")
+        return redirect("/apps")
 
     if app_type not in ("radarr", "sonarr"):
         flash("Unknown app type.", "error")
@@ -4355,8 +5423,8 @@ def apps_test():
     kind = "Radarr" if app_type == "radarr" else "Sonarr"
 
     try:
-        status = _system_status(url, api_key, int(cfg.get("HTTP_TIMEOUT_SECONDS", 30)))
-        detected = detect_app_type_from_status(status) or app_type
+        system_status = _system_status(url, api_key, int(cfg.get("HTTP_TIMEOUT_SECONDS", 30)))
+        detected = detect_app_type_from_status(system_status) or app_type
 
         if is_ajax:
             # Do NOT close modal; JS will decide whether to accept test_ok based on detected_type
@@ -4394,7 +5462,7 @@ def apps_test():
         msg = f"{kind} connection failed: timeout connecting to the host."
     except requests.exceptions.ConnectionError:
         msg = f"{kind} connection failed: could not connect (URL/host/network)."
-    except Exception as e:
+    except (requests.exceptions.RequestException, OSError, ValueError) as e:
         msg = f"{kind} connection failed: {e}"
 
     if is_ajax:
@@ -4411,13 +5479,13 @@ def apps_ping():
     Returns: {"status": {"<app_id>": true/false, ...}}
     """
     cfg = load_config()
-    apps = cfg.get("APPS") or []
-    status: Dict[str, bool] = {}
+    apps_list = cfg.get("APPS") or []
+    status_by_app: Dict[str, bool] = {}
 
     # Keep this quick to avoid UI hangs
     timeout = clamp_int(cfg.get("HTTP_TIMEOUT_SECONDS", 5), 1, 60, 5)
 
-    for a in apps:
+    for a in apps_list:
         a = normalize_app(a or {})
         app_id = str(a.get("id") or "")
         url = str(a.get("url") or "").strip().rstrip("/")
@@ -4425,16 +5493,16 @@ def apps_ping():
         if not app_id:
             continue
         if not url or not api_key:
-            status[app_id] = False
+            status_by_app[app_id] = False
             continue
         try:
             r = _system_status(url, api_key, timeout_s=timeout)
             # If we got a JSON back, the request succeeded; treat as connected
-            status[app_id] = True if isinstance(r, dict) else True
-        except Exception:
-            status[app_id] = False
+            status_by_app[app_id] = True if isinstance(r, dict) else True
+        except (requests.exceptions.RequestException, PermissionError, ValueError):
+            status_by_app[app_id] = False
 
-    return jsonify({"status": status})
+    return jsonify({"status": status_by_app})
 
 
 @app.post("/apps/delete")
@@ -4471,7 +5539,7 @@ def jobs_toggle_enabled():
     if not job_id:
         return redirect("/jobs")
 
-    enabled = checkbox("enabled")
+    enabled = checkbox(request.form, "enabled")
 
     jobs = cfg.get("JOBS") or []
     for i, j in enumerate(jobs):
@@ -4489,8 +5557,6 @@ def jobs_toggle_enabled():
 @app.get("/jobs")
 def jobs_page():
     cfg = load_config()
-    state = load_state()
-    last_runs = state.get("last_runs") if isinstance(state.get("last_runs"), dict) else {}
 
     apps_all = [normalize_app(a) for a in (cfg.get("APPS") or [])]
     ready_apps = [a for a in apps_all if is_app_ready(cfg, a["id"])]
@@ -4561,7 +5627,7 @@ def jobs_page():
                  <b id="job_app_empty_title">App not configured</b><br>
                  <span id="job_app_empty_msg">No instances configured.</span>
                  <div style="margin-top:8px;">
-                   <a class="btn" href="/settings?tab=apps" onclick="hideModal('jobBack');">Add instance</a>
+                   <a class="addInstanceBtn" href="/settings?tab=apps" onclick="hideModal('jobBack');">Add instance</a>
                  </div>
                </div>
             </div>
@@ -4588,7 +5654,6 @@ def jobs_page():
             <!-- Radarr-only: score filter (styled like existing fields/checks) -->
              <div class="field" id="radarrScoreField" style="display:none; margin-bottom:12px;">
                <label>Radarr score filter</label>
-               <div class="sectionDesc">Optional safety gate for Radarr jobs. When enabled, only movies scoring below your threshold are eligible.</div>
                <div class="scoreRow">
                  <label class="check scoreInline">
                    <input type="checkbox" id="job_score_enabled" name="RADARR_SCORE_FILTER_ENABLED">
@@ -4606,6 +5671,7 @@ def jobs_page():
                    class="scoreNumInput"
                  >
                </div>
+               <div class="sectionDesc">Optional safety gate for Radarr jobs. When enabled, only movies scoring below your threshold are eligible.</div>
              </div>
 
             <div class="field" id="sonarrDeleteModeField" style="display:none; margin-bottom:12px;">
@@ -4700,7 +5766,7 @@ def jobs_page():
           </div>
 
           <div class="mf">
-            <button class="btn" type="button" onclick="maybeCloseJobModal()">Cancel</button>
+            <button class="btn cancel" type="button" onclick="maybeCloseJobModal()">Cancel</button>
             <button class="btn primary" id="jobSaveBtn" type="submit">Save Job</button>
           </div>
 
@@ -4709,10 +5775,9 @@ def jobs_page():
       </div>
     </div>
     """
-
-    sonarr_cards = []
-    radarr_cards = []
-    other_cards = []
+    sonarr_rows = []
+    radarr_rows = []
+    other_rows = []
     for j0 in cfg["JOBS"]:
         j = normalize_job(j0)
         a = find_app(cfg, j.get("APP_ID"))
@@ -4723,67 +5788,16 @@ def jobs_page():
             app_kind = "radarr"
             app_label = "Missing app"
 
-        icon_html = ""
-        if app_kind == "radarr":
-            icon_html = """
-              <span class="appIcon" title="Radarr" aria-hidden="true">
-                <img src="/images/radarr_icon.svg" alt="">
-              </span>
-            """
-        elif app_kind == "sonarr":
-            icon_html = """
-              <span class="appIcon" title="Sonarr" aria-hidden="true">
-                <img src="/images/sonarr_icon.svg" alt="">
-              </span>
-            """
-
-        radarr_score_line = ""
-        if a and a.get("type") == "radarr":
-            if j.get("RADARR_SCORE_FILTER_ENABLED"):
-                radarr_score_line = f"""
-                  <div class="metaRow">
-                   <div class="metaLabel">Score filter:</div>
-                   <div class="metaVal"><b>ON</b> • delete if &lt; <b>{int(j.get("RADARR_MIN_AVG_SCORE", 60))}</b></div>
-                  </div>
-                """
-            else:
-                radarr_score_line = """
-                  <div class="metaRow">
-                    <div class="metaLabel">Score filter:</div>
-                    <div class="metaVal"><b>OFF</b></div>
-                  </div>
-                """
-
-        lr = last_runs.get(j.get("id")) if isinstance(last_runs, dict) else None
-        lr_status = (str(lr.get("status")) if isinstance(lr, dict) else "").upper()
-        lr_avg = None
-        if isinstance(lr, dict):
-            for k in ("avg_score", "average_score", "avg_score_0_100", "average_score_0_100",
-                      "average_score_0_100_int"):
-                if k in lr and lr.get(k) is not None:
-                    lr_avg = lr.get(k)
-                    break
-
         sched = schedule_label(j["SCHED_DAY"], j["SCHED_HOUR"])
         tag_val = j.get("TAG_LABEL") or "—"
 
-        dry_val = "ON" if j.get("DRY_RUN") else "OFF"
-        excl_val = "ON" if j.get("ADD_IMPORT_EXCLUSION") else "OFF"
-
-        sonarr_mode_line = ""
-        if a and a.get("type") == "sonarr":
-            sonarr_mode_line = f"""
-              <div class="metaRow">
-                <div class="metaLabel">Removal Type:</div>
-                <div class="metaVal"><b>{safe_html(sonarr_delete_mode_label(j.get("SONARR_DELETE_MODE")))}</b></div>
-              </div>
-            """
-
         edit_btn = f"""
-          <button class="btn jobEditBtn"
+          <button class="btn jobEditBtn iconOnly"
                   type="button"
+                  title="Edit job"
+                  aria-label="Edit job"
                   data-action="job-edit"
-                                    data-id="{safe_html(j["id"])}"
+                  data-id="{safe_html(j["id"])}"
                   data-name="{safe_html(j["name"])}"
                   data-enabled="{'1' if j["enabled"] else '0'}"
                   data-app-id="{safe_html(j.get("APP_ID", ""))}"
@@ -4795,86 +5809,124 @@ def jobs_page():
                   data-day="{safe_html(j["SCHED_DAY"])}"
                   data-hour="{j["SCHED_HOUR"]}"
                   data-dry="{'1' if j["DRY_RUN"] else '0'}"
-                  data-excl="{'1' if j["ADD_IMPORT_EXCLUSION"] else '0'}">Edit</button>
+                  data-excl="{'1' if j["ADD_IMPORT_EXCLUSION"] else '0'}">
+            🔧
+          </button>
         """
 
-        delete_btn = f"""
-          <form method="post" action="/jobs/delete" style="margin:0;" class="jobDeleteForm" data-action="job-delete">
-            <input type="hidden" name="job_id" value="{safe_html(j["id"])}">
-            <button class="btn bad" type="submit">Delete</button>
-          </form>
-        """
+        # List view row (table layout)
+        # Per app: Sonarr shows Removal Type; Radarr shows Score Below (when enabled)
+        days_pill = f'<span class="jobPill {app_kind}">{int(j["DAYS_OLD"])}</span>'
+        tag_pill = f'<span class="jobPill {app_kind}">{safe_html(tag_val)}</span>'
+        sched_pill = f'<span class="jobPill {app_kind}">{safe_html(sched)}</span>'
+        excl_pill = f'<span class="jobPill {app_kind}">{"YES" if j.get("ADD_IMPORT_EXCLUSION") else "NO"}</span>'
 
-        card_html = f"""
-          <div class="jobCard">
-            <div class="jobHeader">
-              <div class="jobHeaderLeft">
-                <div class="jobTitleRow">{icon_html}<div class="jobName muted" title="{safe_html(j["name"])}">{safe_html(j["name"])}</div></div>
-              </div>
+        removal_pill = '<span class="jobPill muted">—</span>'
+        score_pill = '<span class="jobPill muted">—</span>'
 
-              <div class="jobHeaderRight">
-                <form method="post" action="/jobs/toggle-enabled" style="margin:0;">
-                  <input type="hidden" name="job_id" value="{safe_html(j["id"])}">
-                  <div class="enableWrap">
-                    <label class="switch" title="Enable/Disable Job">
-                      <input type="checkbox" name="enabled" {"checked" if j["enabled"] else ""} data-action="job-enable">
-                      <span class="slider"></span>
-                    </label>
-                  </div>
-                </form>
-              </div>
-            </div>
+        if a and a.get("type") == "sonarr":
+            removal_pill = f'<span class="jobPill sonarr">{safe_html(sonarr_delete_mode_label(j.get("SONARR_DELETE_MODE")))}</span>'
+        if a and a.get("type") == "radarr":
+            if j.get("RADARR_SCORE_FILTER_ENABLED"):
+                score_pill = f'<span class="jobPill radarr">{int(j.get("RADARR_MIN_AVG_SCORE", 60))}</span>'
 
-            <div class="jobBody">
-              <div class="metaStack">
-                <div class="metaRow">
-                  <div class="metaLabel">App:</div>
-                  <div class="metaVal"><b>{safe_html(app_label)}</b></div>
-                </div>
+        # Primary run button for list view (no Preview button here to keep it compact)
+        jid2 = safe_html(j["id"])
+        enabled2 = "true" if bool(j.get("enabled", True)) else "false"
+        delete_files2 = "true" if bool(j.get("DELETE_FILES", True)) else "false"
+        app_lbl2 = safe_html(app_label)
 
-                <div class="metaRow">
-                  <div class="metaLabel">Tag:</div>
-                  <div class="metaVal"><b>{safe_html(tag_val)}</b></div>
-                </div>
+        if not j["enabled"]:
+            run_btn_list = '<button class="btn" type="button" disabled title="Enable this job to run">Run Now</button>'
+        elif j.get("DRY_RUN", True):
+            run_btn_list = f'''
+              <form method="post" action="/jobs/run-dry" style="margin:0;">
+                <input type="hidden" name="job_id" value="{jid2}">
+                <button class="btn good" type="submit" title="Dry Run — no changes will be made (writes to logs)">Dry Run</button>
+              </form>
+            '''
+        else:
+            run_btn_list = f'''
+              <button class="btn bad" type="button"
+                data-action="run-now"
+                data-job-id="{jid2}"
+                data-app-label="{app_lbl2}"
+                data-dry-run="0"
+                data-delete-files="{delete_files2}"
+                data-enabled="{enabled2}">
+                Run Now
+              </button>
+            '''
 
-                <div class="metaRow">
-                  <div class="metaLabel">Older than:</div>
-                  <div class="metaVal"><b>{int(j["DAYS_OLD"])} days</b></div>
-                </div>
-
-                {sonarr_mode_line}
-                {radarr_score_line}
-
-                <div class="metaRow">
-                  <div class="metaLabel">Schedule:</div>
-                  <div class="metaVal"><b>{safe_html(sched)}</b></div>
-                </div>
-
-                <div class="metaRow">
-                  <div class="metaLabel">Import Exclusion:</div>
-                  <div class="metaVal"><b>{excl_val}</b></div>
-                </div>
-              </div>
-
-              <div class="jobRail">
-                {run_now_button_html(j, app_label)}
-                {edit_btn}
-                {delete_btn}
-              </div>
-            </div>
+        row_icon_src = "/images/sonarr_icon.svg" if app_kind == "sonarr" else (
+            "/images/radarr_icon.svg" if app_kind == "radarr" else "")
+        row_icon_html = f'<img src="{row_icon_src}" alt="" />' if row_icon_src else ""
+        job_name_cell = f'''
+          <div class="jobNameCell">
+            <span class="jobRowIcon" aria-hidden="true">{row_icon_html}</span>
+            <span class="jobRowName">{safe_html(j["name"])}</span>
           </div>
-        """
+        '''
+
+        running2 = is_job_running(j["id"])
+        delete_disabled = 'disabled="disabled"' if running2 else ""
+        delete_title = "Job is running" if running2 else "Delete job"
+
+        actions_cell = f'''
+          <div class="jobRowActions">
+            {edit_btn}
+            {run_btn_list}
+            <form method="post" action="/jobs/delete" style="margin:0;" class="jobDeleteForm"
+                  title="{delete_title}" data-app-type="{safe_html(app_kind)}" data-job-name="{safe_html(j["name"])}">
+              <input type="hidden" name="job_id" value="{jid2}">
+              <button class="jobDeleteBtn" type="submit" aria-label="Delete job" {delete_disabled}>
+                <span aria-hidden="true">🗑</span>
+              </button>
+            </form>
+          </div>
+        '''
 
         if app_kind == "sonarr":
-            sonarr_cards.append(card_html)
+            row_html = f'''
+              <tr>
+                <td>{job_name_cell}</td>
+                <td>{tag_pill}</td>
+                <td>{days_pill}</td>
+                <td>{removal_pill}</td>
+                <td>{excl_pill}</td>
+                <td>{sched_pill}</td>
+                <td style="text-align:right;">{actions_cell}</td>
+              </tr>
+            '''
+            sonarr_rows.append(row_html)
         elif app_kind == "radarr":
-            radarr_cards.append(card_html)
+            row_html = f'''
+              <tr>
+                <td>{job_name_cell}</td>
+                <td>{tag_pill}</td>
+                <td>{days_pill}</td>
+                <td>{score_pill}</td>
+                <td>{excl_pill}</td>
+                <td>{sched_pill}</td>
+                <td style="text-align:right;">{actions_cell}</td>
+              </tr>
+            '''
+            radarr_rows.append(row_html)
         else:
-            other_cards.append(card_html)
+            row_html = f'''
+              <tr>
+                <td>{job_name_cell}</td>
+                <td>{tag_pill}</td>
+                <td>{days_pill}</td>
+                <td><span class="jobPill muted">—</span></td>
+                <td>{excl_pill}</td>
+                <td>{sched_pill}</td>
+                <td style="text-align:right;">{actions_cell}</td>
+              </tr>
+            '''
+            other_rows.append(row_html)
 
     can_add_job = len(ready_apps) > 0
-    add_job_disabled_attr = "" if can_add_job else "disabled"
-    add_job_title = "Add Job" if can_add_job else "Connect an app in Apps (Test + Save) to add a job."
 
     hint_html = ""
     if not can_add_job:
@@ -4885,69 +5937,85 @@ def jobs_page():
           </div>
         """
 
-    sonarr_section_html = ""
-    radarr_section_html = ""
     other_section_html = ""
 
-    if sonarr_cards:
-        sonarr_section_html = f'''
-          <div class="jobsSection">
-            <div class="jobsSectionHeader"><div class="title">Sonarr Jobs</div><div class="rule"></div></div>
-            <div class="jobsGrid">
-              <div class="jobCard addJobCard" role="button" tabindex="0"
-                   data-action="job-add-card" data-app-type="sonarr"
-                   title="Add Sonarr job">
-                <div style="text-align:center;">
-                  <div style="font-size:42px; line-height:1; color:var(--muted);">+</div>
-                  <div class="muted" style="margin-top:6px; font-weight:700;">Add Sonarr Job</div>
-                </div>
-              </div>
-              {''.join(sonarr_cards)}
-            </div>
-          </div>
-        '''
-    else:
-        sonarr_section_html = '''
-          <div class="jobsSection">
-            <div class="jobsSectionHeader"><div class="title">Sonarr Jobs</div><div class="rule"></div></div>
-            <div class="muted">No Sonarr jobs yet.</div>
-          </div>
-        '''
+    # Always render the "Add Job" UI, even when no jobs exist (empty state)
+    add_job_action = 'data-action="job-add-card"' if can_add_job else ''
+    add_job_tab = 'tabindex="0"' if can_add_job else 'tabindex="-1" aria-disabled="true"'
+    add_job_extra_cls = '' if can_add_job else ' disabled'
 
-    if radarr_cards:
-        radarr_section_html = f'''
-          <div class="jobsSection">
-            <div class="jobsSectionHeader"><div class="title">Radarr Jobs</div><div class="rule"></div></div>
-            <div class="jobsGrid">
-              <div class="jobCard addJobCard" role="button" tabindex="0"
-                   data-action="job-add-card" data-app-type="radarr"
-                   title="Add Radarr job">
-                <div style="text-align:center;">
-                  <div style="font-size:42px; line-height:1; color:var(--muted);">+</div>
-                  <div class="muted" style="margin-top:6px; font-weight:700;">Add Radarr Job</div>
-                </div>
-              </div>
-              {''.join(radarr_cards)}
-            </div>
-          </div>
-        '''
-    else:
-        radarr_section_html = '''
-          <div class="jobsSection">
-            <div class="jobsSectionHeader"><div class="title">Radarr Jobs</div><div class="rule"></div></div>
-            <div class="muted">No Radarr jobs yet.</div>
-          </div>
-        '''
+    sonarr_empty_row = ''
+    if not sonarr_rows:
+        sonarr_empty_row = '<tr><td colspan="7" class="muted jobsEmptyCell">No Sonarr jobs yet.</td></tr>'
 
-    if other_cards:
-        other_section_html = f'''
-          <div class="jobsSection">
-            <div class="jobsSectionHeader"><div class="title">Other Jobs</div><div class="rule"></div></div>
-            <div class="jobsGrid">
-              {''.join(other_cards)}
-            </div>
+    sonarr_section_html = f'''
+      <div class="jobsSection">
+        <div class="jobsSectionHeader"><div class="title">Sonarr Jobs</div><div class="rule"></div></div>
+        <div class="jobsViewList jobsView">
+          <div class="addJobBar{add_job_extra_cls}" role="button" {add_job_tab}
+               {add_job_action} data-app-type="sonarr"
+               title="Add Sonarr job">
+            <span class="plus">+</span><span class="label">Add Sonarr Job</span>
           </div>
-        '''
+          <div class="jobsListWrap">
+            <table class="jobsTable">
+              <thead>
+                <tr>
+                  <th>Job Name</th>
+                  <th>Tag</th>
+                  <th>If Older Then</th>
+                  <th>Removal Type</th>
+                  <th>Import Exclusion</th>
+                  <th>Schedule</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody>
+                {sonarr_empty_row}{''.join(sonarr_rows)}
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+      </div>
+    '''
+
+    radarr_empty_row = ''
+    if not radarr_rows:
+        radarr_empty_row = '<tr><td colspan="7" class="muted jobsEmptyCell">No Radarr jobs yet.</td></tr>'
+
+    radarr_section_html = f'''
+      <div class="jobsSection">
+        <div class="jobsSectionHeader"><div class="title">Radarr Jobs</div><div class="rule"></div></div>
+
+        <div class="jobsViewList jobsView">
+          <div class="addJobBar{add_job_extra_cls}" role="button" {add_job_tab}
+               {add_job_action} data-app-type="radarr"
+               title="Add Radarr job">
+            <span class="plus">+</span><span class="label">Add Radarr Job</span>
+          </div>
+          <div class="jobsListWrap">
+            <table class="jobsTable">
+              <thead>
+                <tr>
+                  <th>Job Name</th>
+                  <th>Tag</th>
+                  <th>If Older Then</th>
+                  <th>If Score Below</th>
+                  <th>Import Exclusion</th>
+                  <th>Schedule</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody>
+                {radarr_empty_row}{''.join(radarr_rows)}
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+      </div>
+    '''
 
     body = f"""
       {tags_js}
@@ -4956,8 +6024,7 @@ def jobs_page():
         <div class="card">
           <div class="hd">
             <h2>Jobs</h2>
-            <div class="btnrow">
-</div>
+            <div class="btnrow">            </div>
           </div>
 
           <div class="bd">
@@ -4999,7 +6066,7 @@ def jobs_save():
             sonarr_mode = "episodes_only"
 
         # Radarr score filter (only meaningful for radarr jobs)
-        score_enabled = checkbox("RADARR_SCORE_FILTER_ENABLED")
+        score_enabled = checkbox(request.form, "RADARR_SCORE_FILTER_ENABLED")
         score_min = clamp_int(request.form.get("RADARR_MIN_AVG_SCORE") or 60, 0, 100, 60)
 
         if app_obj.get("type") != "radarr":
@@ -5017,9 +6084,9 @@ def jobs_save():
             "RADARR_MIN_AVG_SCORE": score_min,
             "SCHED_DAY": (request.form.get("SCHED_DAY") or "daily").lower(),
             "SCHED_HOUR": clamp_int(request.form.get("SCHED_HOUR") or 3, 0, 23, 3),
-            "DRY_RUN": checkbox("DRY_RUN"),
+            "DRY_RUN": checkbox(request.form, "DRY_RUN"),
             "DELETE_FILES": True,
-            "ADD_IMPORT_EXCLUSION": checkbox("ADD_IMPORT_EXCLUSION"),
+            "ADD_IMPORT_EXCLUSION": checkbox(request.form, "ADD_IMPORT_EXCLUSION"),
         }
         job = normalize_job(job)
 
@@ -5039,20 +6106,21 @@ def jobs_save():
         flash("Job saved ✔", "success")
         return redirect("/jobs")
 
-    except Exception as e:
+    except (ValueError, TypeError, OSError) as e:
         flash(str(e), "error")
         return redirect("/jobs")
 
 
 @app.post("/jobs/delete")
 def jobs_delete():
-    cfg = load_config()
     job_id = (request.form.get("job_id") or "").strip()
+
+    if is_job_running(job_id):
+        flash("Job is currently running and cannot be deleted.", "error")
+        return redirect("/jobs")
+
+    cfg = load_config()
     jobs = [j for j in (cfg.get("JOBS") or []) if str(j.get("id")) != job_id]
-    if not jobs:
-        j = job_defaults()
-        j["name"] = "Default Job"
-        jobs = [normalize_job(j)]
 
     cfg["JOBS"] = [normalize_job(j) for j in jobs]
     save_config(cfg)
@@ -5096,8 +6164,9 @@ def jobs_run_now():
     append_log_line(f"Run Now: launching {cmd!r}")
 
     try:
+        mark_job_running(job_id, True)
         with log_path.open("a", encoding="utf-8") as lf:
-            subprocess.Popen(
+            p = subprocess.Popen(
                 cmd,
                 stdout=lf,
                 stderr=lf,
@@ -5105,9 +6174,19 @@ def jobs_run_now():
                 env={**os.environ, "CONFIG_DIR": str(CONFIG_DIR), "LOG_PATH": str(log_path)},
                 start_new_session=True,
             )
+
+        def _wait_and_clear():
+            try:
+                p.wait()
+            finally:
+                mark_job_running(job_id, False)
+
+        threading.Thread(target=_wait_and_clear, daemon=True).start()
+
         flash("Run Now started ✔ (watch Status → Logs)", "success")
-    except Exception as e:
+    except (OSError, ValueError) as e:
         append_log_line(f"Run Now: failed to launch job_id={job_id}: {e}")
+        mark_job_running(job_id, False)
         flash(f"Failed to start job: {e}", "error")
 
     return redirect("/dashboard")
@@ -5149,8 +6228,9 @@ def jobs_run_dry():
     append_log_line(f"Dry Run: launching {cmd!r}")
 
     try:
+        mark_job_running(job_id, True)
         with log_path.open("a", encoding="utf-8") as lf:
-            subprocess.Popen(
+            p = subprocess.Popen(
                 cmd,
                 stdout=lf,
                 stderr=lf,
@@ -5158,9 +6238,19 @@ def jobs_run_dry():
                 env={**os.environ, "CONFIG_DIR": str(CONFIG_DIR), "LOG_PATH": str(log_path), "FORCE_DRY_RUN": "1"},
                 start_new_session=True,
             )
+
+        def _wait_and_clear():
+            try:
+                p.wait()
+            finally:
+                mark_job_running(job_id, False)
+
+        threading.Thread(target=_wait_and_clear, daemon=True).start()
+
         flash("Dry Run started ✔ (watch Status → Logs)", "success")
-    except Exception as e:
+    except (OSError, ValueError) as e:
         append_log_line(f"Dry Run: failed to launch job_id={job_id}: {e}")
+        mark_job_running(job_id, False)
         flash(f"Failed to start dry run: {e}", "error")
 
     return redirect("/dashboard")
@@ -5217,7 +6307,7 @@ def preview():
             if is_sonarr:
                 rows += f"""
                   <tr>
-                    <td>{c["age_days"]}</td>
+                    <td>{safe_html(str(c.get("age_days", "")))}</td>
                     <td>{safe_html(c.get("title", ""))}</td>
                     <td>{safe_html(str(c.get("year", "")))}</td>
                     <td><code>{safe_html(c.get("added", ""))}</code></td>
@@ -5227,10 +6317,10 @@ def preview():
                 """
             else:
                 score = c.get("score")
-                score_txt = safe_html(score) if score is not None else "—"
+                score_txt = safe_html(str(score)) if score is not None else "—"
                 rows += f"""
                   <tr>
-                    <td>{c["age_days"]}</td>
+                    <td>{safe_html(str(c.get("age_days", "")))}</td>
                     <td>{score_txt}</td>
                     <td>{safe_html(c.get("title", ""))}</td>
                     <td>{safe_html(str(c.get("year", "")))}</td>
@@ -5286,7 +6376,7 @@ def preview():
         """
         return render_template_string(shell("mediareaparr • Preview", "jobs", body))
 
-    except Exception as e:
+    except (requests.exceptions.RequestException, ValueError, TypeError) as e:
         flash(f"Preview failed: {e}", "error")
         return redirect("/dashboard")
 
@@ -5375,7 +6465,6 @@ def status_log_dates():
 @app.get("/status")
 def status():
     cfg = load_config()
-    state = load_state()
 
     cfg_for_view = dict(cfg)
     cfg_for_view["APPS"] = []
@@ -5776,24 +6865,24 @@ function reloadLogs(){{
 if __name__ == "__main__":
     import argparse
 
-    p = argparse.ArgumentParser()
-    p.add_argument("--host", default="0.0.0.0")
-    p.add_argument("--port", type=int, default=int(os.environ.get("WEBUI_PORT", "7575")))
-    args = p.parse_args()
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--host", default="0.0.0.0")
+    parser.add_argument("--port", type=int, default=int(os.environ.get("WEBUI_PORT", "7575")))
+    args = parser.parse_args()
     start_internal_scheduler()
 
     app.run(host=args.host, port=args.port)
-
 
 # ----------------------------
 # Log line parsing (canonical format)
 # ----------------------------
 _CANONICAL_LOG_RE = re.compile(
     r'^(?P<ts>[A-Z][a-z]{2} \d{2}, \d{4}, \d{2}:\d{2}:\d{2} (?:AM|PM)) '
-    r'\[(?P<sev>[^\]]+)\] '
-    r'\[(?P<label>[^\]]+)\] '
+    r'\[(?P<sev>[^]]+)] '
+    r'\[(?P<label>[^]]+)] '
     r'(?P<msg>.*)$'
 )
+
 
 def parse_log_line(line: str):
     s = line.rstrip("\n")
