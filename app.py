@@ -1,3 +1,4 @@
+
 #!/usr/bin/env python3
 """
 MediaReaparr - app.py
@@ -18,18 +19,28 @@ Still supports LEGACY env/global schema:
 """
 
 import os
-import sys
 import json
 import argparse
 import uuid
 from pathlib import Path
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta
 from typing import Any, Dict, List, Optional, Tuple
 
 import requests
-import logging
-import threading
-import time
+
+from utils import (
+    clamp_int,
+    normalize_bool,
+    http_timeout_seconds,
+    now_utc,
+    now_iso,
+    parse_iso_date,
+    self_test_date_parsing,
+    append_log_line,
+)
+
+self_test_date_parsing()
+
 
 # ----------------------------
 # Paths
@@ -41,151 +52,23 @@ STATE_PATH = CONFIG_DIR / "state.json"
 # ----------------------------
 # Logging
 # ----------------------------
-LOG_DIR = Path(os.environ.get("LOG_DIR", str(CONFIG_DIR / "logs")))
-def _dated_log_name(dt: "datetime") -> str:
-    # Filename format required: "dd:mm:yyyy mediareaparr.log"
-    return dt.strftime("%d-%m-%Y") + " mediareaparr.log"
-def current_log_path() -> Path:
-    return LOG_DIR / _dated_log_name(datetime.now(timezone.utc))
-LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO").upper().strip()
 
-_LOGGER: Optional[logging.Logger] = None
+# app.py logs directly to the same daily log files the WebUI reads.
+# (Filename: '<dd-mm-yyyy> mediareaparr.log')
 
-
-
-class TitleCaseFormatter(logging.Formatter):
-    def format(self, record):
-        try:
-            record.levelname = str(record.levelname).title()
-        except Exception:
-            pass
-        if not hasattr(record, "label"):
-            record.label = "App"
-        return super().format(record)
-
-class DailyDatedFileHandler(logging.Handler):
-    """Writes logs to a date-stamped file and rolls over at midnight (UTC)."""
-    def __init__(self, log_dir: Path, encoding: str = "utf-8"):
-        super().__init__()
-        self.log_dir = Path(log_dir)
-        self.encoding = encoding
-        self._lock = threading.RLock()
-        self._date = None
-        self._fp = None
-        self._open_for(datetime.now(timezone.utc))
-
-    def _path_for(self, dt: "datetime") -> Path:
-        return self.log_dir / _dated_log_name(dt)
-
-    def _open_for(self, dt: "datetime"):
-        self.log_dir.mkdir(parents=True, exist_ok=True)
-        d = dt.strftime("%Y-%m-%d")
-        if self._fp:
-            try:
-                self._fp.close()
-            except Exception:
-                pass
-        self._date = d
-        p = self._path_for(dt)
-        self._fp = open(p, "a", encoding=self.encoding)
-
-    def rollover_if_needed(self):
-        now = datetime.now(timezone.utc)
-        d = now.strftime("%Y-%m-%d")
-        if d != self._date:
-            self._open_for(now)
-
-    def rollover_now(self):
-        self._open_for(datetime.now(timezone.utc))
-
-    def emit(self, record):
-        try:
-            msg = self.format(record)
-            with self._lock:
-                self.rollover_if_needed()
-                self._fp.write(msg + "\n")
-                self._fp.flush()
-        except Exception:
-            self.handleError(record)
-
-def _start_midnight_rollover_thread(handler: DailyDatedFileHandler):
-    def _worker():
-        while True:
-            now = datetime.now(timezone.utc)
-            nxt = (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
-            sleep_s = max(1.0, (nxt - now).total_seconds())
-            time.sleep(sleep_s)
-            try:
-                handler.rollover_now()
-                p = current_log_path()
-                p.parent.mkdir(parents=True, exist_ok=True)
-                p.touch(exist_ok=True)
-            except Exception:
-                pass
-    t = threading.Thread(target=_worker, name="mediareaparr-log-rotate", daemon=True)
-    t.start()
-
-
-def setup_logging() -> logging.Logger:
-    """Configure rotating file + console logging (singleton)."""
-    global _LOGGER
-    if _LOGGER is not None:
-        try:
-            _LOGGER.setLevel(getattr(logging, LOG_LEVEL, logging.INFO))
-        except Exception:
-            _LOGGER.setLevel(logging.INFO)
-        return _LOGGER
-
+def log_event(severity: str, message: str, label: str = "App", exc: Optional[BaseException] = None, **fields: Any) -> None:
     try:
-        LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
-    except Exception:
+        extra = ""
+        if fields:
+            # keep it compact and stable
+            parts = [f"{k}={v}" for k, v in fields.items() if v is not None]
+            if parts:
+                extra = " " + " ".join(parts)
+        if exc is not None:
+            extra = extra + f" exc={exc}"
+        append_log_line(f"{message}{extra}", severity=severity, label=label, default_dir=CONFIG_DIR)
+    except (OSError, ValueError):
         pass
-
-    logger = logging.getLogger("mediareaparr.app")
-    logger.propagate = False
-
-    level = getattr(logging, LOG_LEVEL, logging.INFO)
-    logger.setLevel(level)
-
-    fmt = TitleCaseFormatter("%(asctime)s [%(levelname)s] [%(label)s] [%(message)s]", datefmt="%b %d, %Y, %I:%M:%S %p")
-
-    if not any(isinstance(h, DailyDatedFileHandler) for h in logger.handlers):
-        dh = DailyDatedFileHandler(LOG_DIR)
-        dh.setFormatter(fmt)
-        logger.addHandler(dh)
-        _start_midnight_rollover_thread(dh)
-    # Console logging disabled (WebUI captures job output and would duplicate lines)
-
-    _LOGGER = logger
-    return logger
-
-
-def log_event(level: str, message: str, label: str = "App", exc: Optional[BaseException] = None, **fields: Any) -> None:
-    logger = setup_logging()
-    suffix = ""
-    if fields:
-        parts = []
-        for k in sorted(fields.keys()):
-            v = fields.get(k)
-            if v is None:
-                continue
-            parts.append(f"{k}={v}")
-        if parts:
-            suffix = " | " + " ".join(parts)
-    msg = f"{message}{suffix}"
-    lvl = level.upper().strip()
-    fn = {
-        "DEBUG": logger.debug,
-        "INFO": logger.info,
-        "WARNING": logger.warning,
-        "WARN": logger.warning,
-        "ERROR": logger.error,
-        "CRITICAL": logger.critical,
-    }.get(lvl, logger.info)
-    if exc is not None:
-        fn(msg, exc_info=exc)
-    else:
-        fn(msg)
 
 
 def log_debug(message: str, label: str = "App", **fields: Any) -> None:
@@ -221,7 +104,6 @@ def log_cleaning_summary(
     dry_run: bool,
     radarr_items: list,
     sonarr_items: list,
-    max_items: int = 5,
 ):
     """Write ONE summary line per run using the canonical log format.
 
@@ -240,7 +122,7 @@ def log_cleaning_summary(
             f"job run finished | job_name={job_name} dry_run={dry_run} deleted_count={deleted_count} errors={errors}",
             label=label,
         )
-    except Exception:
+    except (TypeError, ValueError):
         pass
 
 # ----------------------------
@@ -257,7 +139,7 @@ def load_config() -> Dict[str, Any]:
             data = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
             if isinstance(data, dict):
                 cfg.update(data)
-        except Exception:
+        except (json.JSONDecodeError, OSError, ValueError):
             pass
     # normalize lists
     if not isinstance(cfg.get("APPS"), list):
@@ -273,7 +155,7 @@ def load_state() -> Dict[str, Any]:
             data = json.loads(STATE_PATH.read_text(encoding="utf-8"))
             if isinstance(data, dict):
                 return data
-        except Exception:
+        except (json.JSONDecodeError, OSError, ValueError):
             pass
     return {}
 
@@ -438,7 +320,7 @@ def api_post(base_url: str, api_key: str, timeout_s: int, path: str, payload: Di
     r.raise_for_status()
     try:
         return r.json()
-    except Exception:
+    except ValueError:
         return {}
 
 
@@ -446,18 +328,21 @@ def api_post(base_url: str, api_key: str, timeout_s: int, path: str, payload: Di
 # Ratings / score helpers (Radarr)
 # ----------------------------
 def _score_to_0_100(v: Any) -> Optional[float]:
-    try:
-        if v is None:
-            return None
-        f = float(v)
-        # 0–10 -> 0–100
-        if 0.0 <= f <= 10.0:
-            return f * 10.0
-        # 0–100 already
-        if 0.0 <= f <= 100.0:
-            return f
-    except Exception:
+    if v is None:
         return None
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return None
+
+    # 0–10 -> 0–100
+    if 0.0 <= f <= 10.0:
+        return f * 10.0
+
+    # 0–100 already
+    if 0.0 <= f <= 100.0:
+        return f
+
     return None
 
 
@@ -493,40 +378,88 @@ def radarr_avg_score_0_100(movie: Dict[str, Any]) -> Optional[float]:
 # ----------------------------
 # Tag maps
 # ----------------------------
-def radarr_tags_map(base: str, key: str, timeout_s: int) -> Tuple[Dict[str, int], Dict[int, str]]:
+
+def tags_map(base: str, key: str, timeout_s: int) -> Tuple[Dict[str, int], Dict[int, str]]:
+    """Return (label->id, id->label) for /api/v3/tag."""
     tags = api_get(base, key, timeout_s, "/api/v3/tag")
     label_to_id: Dict[str, int] = {}
     id_to_label: Dict[int, str] = {}
     for t in (tags or []):
+        if not isinstance(t, dict):
+            continue
         try:
             tid = int(t.get("id"))
             lab = str(t.get("label") or "").strip()
-            if lab:
-                label_to_id[lab] = tid
-                id_to_label[tid] = lab
-        except Exception:
+        except (TypeError, ValueError):
             continue
-    return label_to_id, id_to_label
-
-
-def sonarr_tags_map(base: str, key: str, timeout_s: int) -> Tuple[Dict[str, int], Dict[int, str]]:
-    tags = api_get(base, key, timeout_s, "/api/v3/tag")
-    label_to_id: Dict[str, int] = {}
-    id_to_label: Dict[int, str] = {}
-    for t in (tags or []):
-        try:
-            tid = int(t.get("id"))
-            lab = str(t.get("label") or "").strip()
-            if lab:
-                label_to_id[lab] = tid
-                id_to_label[tid] = lab
-        except Exception:
-            continue
+        if lab:
+            label_to_id[lab] = tid
+            id_to_label[tid] = lab
     return label_to_id, id_to_label
 
 
 # ----------------------------
+# App connection helpers
+# ----------------------------
+
+def resolve_app_connection(app_key: str, cfg: Dict[str, Any], app_obj: Optional[Dict[str, Any]]) -> Tuple[str, str]:
+    """Resolve (base_url, api_key) from WebUI app object first, then legacy cfg/env."""
+    app_key = (app_key or "").strip().lower()
+    if isinstance(app_obj, dict):
+        base = str(app_obj.get("url") or "").rstrip("/")
+        key = str(app_obj.get("api_key") or "").strip()
+        return base, key
+
+    if app_key == "radarr":
+        base = str(cfg.get("RADARR_URL", os.environ.get("RADARR_URL", ""))).rstrip("/")
+        key = str(cfg.get("RADARR_API_KEY", os.environ.get("RADARR_API_KEY", ""))).strip()
+        return base, key
+
+    base = str(cfg.get("SONARR_URL", os.environ.get("SONARR_URL", ""))).rstrip("/")
+    key = str(cfg.get("SONARR_API_KEY", os.environ.get("SONARR_API_KEY", ""))).strip()
+    return base, key
+
+
+def require_connection(app_key: str, base: str, key: str) -> None:
+    if not base:
+        raise RuntimeError(f"{app_key.upper()}_URL is required (or configure an App in WebUI).")
+    if not key:
+        raise RuntimeError(f"{app_key.upper()}_API_KEY is required (or configure an App in WebUI).")
+
+
+def log_run_header(
+    *,
+    app_key: str,
+    job: Dict[str, Any],
+    job_id: str,
+    base_url: str,
+    tag_label: str,
+    days_old: int,
+    cutoff_iso: str,
+    dry_run: bool,
+    delete_files: bool,
+    add_import_exclusion: bool,
+    sonarr_mode: str,
+    radarr_score_enabled: bool,
+    radarr_min_avg_score: int,
+) -> None:
+    if app_key == "radarr":
+        log_info(f"Running Radarr job '{job.get('name')}' ({job_id})", label="Radarr Cleaning")
+        log_debug(f"RADARR_URL={base_url}", label="Radarr Connection")
+        log_debug(f"TAG_LABEL={tag_label} DAYS_OLD={days_old} CUTOFF={cutoff_iso}", label="Radarr Cleaning")
+        log_debug(f"DRY_RUN={dry_run} DELETE_FILES={delete_files} ADD_IMPORT_EXCLUSION={add_import_exclusion}", label="Radarr Cleaning")
+        log_debug(f"SCORE_FILTER={radarr_score_enabled} MIN_AVG_SCORE={radarr_min_avg_score}", label="Radarr Cleaning")
+    else:
+        log_info(f"Running Sonarr job '{job.get('name')}' ({job_id})", label="Sonarr Cleaning")
+        log_debug(f"SONARR_URL={base_url}", label="Sonarr Connection")
+        log_debug(f"TAG_LABEL={tag_label} DAYS_OLD={days_old} CUTOFF={cutoff_iso}", label="Sonarr Cleaning")
+        log_debug(f"DRY_RUN={dry_run} DELETE_FILES={delete_files} ADD_IMPORT_EXCLUSION={add_import_exclusion}", label="Sonarr Cleaning")
+        log_debug(f"SONARR_DELETE_MODE={sonarr_mode}", label="Sonarr Cleaning")
+
+
+# ----------------------------
 # Sonarr delete operations
+
 # ----------------------------
 def sonarr_list_series(base: str, key: str, timeout_s: int) -> List[Dict[str, Any]]:
     return api_get(base, key, timeout_s, "/api/v3/series") or []
@@ -607,9 +540,6 @@ def radarr_delete_movie_strict(base: str, key: str, timeout_s: int, movie_id: in
 # ----------------------------
 # Runner
 # ----------------------------
-# ----------------------------
-# Runner
-# ----------------------------
 def run_job(cfg: Dict[str, Any], state: Dict[str, Any], job: Dict[str, Any]) -> Dict[str, Any]:
     job_id = str(job.get("id") or "unknown").strip() or "unknown"
     timeout = http_timeout_seconds(cfg)
@@ -646,13 +576,10 @@ def run_job(cfg: Dict[str, Any], state: Dict[str, Any], job: Dict[str, Any]) -> 
     dry_run = bool(job["DRY_RUN"])
 
     # Button overrides (WebUI can force dry/full without changing saved job)
-    try:
-        if str(os.environ.get("FORCE_DRY_RUN", "")).strip().lower() in ("1", "true", "yes", "on"):
-            dry_run = True
-        if str(os.environ.get("FORCE_FULL_RUN", "")).strip().lower() in ("1", "true", "yes", "on"):
-            dry_run = False
-    except Exception:
-        pass
+    if normalize_bool(os.environ.get("FORCE_DRY_RUN", "")):
+        dry_run = True
+    if normalize_bool(os.environ.get("FORCE_FULL_RUN", "")):
+        dry_run = False
 
     sonarr_mode = str(job.get("SONARR_DELETE_MODE") or "episodes_only").strip().lower()
     if sonarr_mode not in SONARR_DELETE_MODES:
@@ -709,25 +636,16 @@ def run_job(cfg: Dict[str, Any], state: Dict[str, Any], job: Dict[str, Any]) -> 
         cutoff = now_utc() - timedelta(days=days_old)
 
         if app_key == "radarr":
-            # Prefer per-app config from WebUI, fallback to legacy env/config
-            if isinstance(app_obj, dict):
-                radarr_url = str(app_obj.get("url") or "").rstrip("/")
-                api_key = str(app_obj.get("api_key") or "").strip()
-            else:
-                radarr_url = str(cfg.get("RADARR_URL", os.environ.get("RADARR_URL", ""))).rstrip("/")
-                api_key = str(cfg.get("RADARR_API_KEY", os.environ.get("RADARR_API_KEY", ""))).strip()
+            radarr_url, api_key = resolve_app_connection("radarr", cfg, app_obj)
+            require_connection("radarr", radarr_url, api_key)
+            log_run_header(
+                app_key="radarr", job=job, job_id=job_id, base_url=radarr_url,
+                tag_label=tag_label, days_old=days_old, cutoff_iso=cutoff.isoformat(),
+                dry_run=dry_run, delete_files=delete_files, add_import_exclusion=add_import_exclusion,
+                sonarr_mode=sonarr_mode, radarr_score_enabled=radarr_score_enabled, radarr_min_avg_score=radarr_min_avg_score,
+            )
 
-            if not radarr_url:
-                raise RuntimeError("RADARR_URL is required (or configure an App in WebUI).")
-            if not api_key:
-                raise RuntimeError("RADARR_API_KEY is required (or configure an App in WebUI).")
-            log_info(f"Running Radarr job '{job.get('name')}' ({job_id})", label="Radarr Cleaning")
-            log_debug(f"RADARR_URL={radarr_url}", label="Radarr Connection")
-            log_debug(f"TAG_LABEL={tag_label} DAYS_OLD={days_old} CUTOFF={cutoff.isoformat()}", label="Radarr Cleaning")
-            log_debug(f"DRY_RUN={dry_run} DELETE_FILES={delete_files} ADD_IMPORT_EXCLUSION={add_import_exclusion}", label="Radarr Cleaning")
-            log_debug(f"SCORE_FILTER={radarr_score_enabled} MIN_AVG_SCORE={radarr_min_avg_score}", label="Radarr Cleaning")
-
-            label_to_id, _ = radarr_tags_map(radarr_url, api_key, timeout)
+            label_to_id, _ = tags_map(radarr_url, api_key, timeout)
             tag_id = label_to_id.get(tag_label)
             if not tag_id:
                 raise RuntimeError(f"Tag '{tag_label}' not found in Radarr. Create it and tag movies first.")
@@ -738,7 +656,7 @@ def run_job(cfg: Dict[str, Any], state: Dict[str, Any], job: Dict[str, Any]) -> 
             for m in movies:
                 if tag_id not in (m.get("tags") or []):
                     continue
-                added = parse_radarr_date(str(m.get("added") or ""))
+                added = parse_iso_date(str(m.get("added") or ""))
                 if not added:
                     continue
                 if added < cutoff:
@@ -826,7 +744,7 @@ def run_job(cfg: Dict[str, Any], state: Dict[str, Any], job: Dict[str, Any]) -> 
                     )
                     run_state["deleted_count"] = len(run_state["deleted"])
                     _persist_run(state, job_id, run_state)
-                except Exception as e:
+                except (requests.RequestException, PermissionError, ValueError, TypeError, KeyError) as e:
                     err = f"ERROR Radarr deleting id={movie_id} title='{title}': {e}"
                     log_error(str(err), label="App")
                     run_state["errors"].append(err)
@@ -839,24 +757,16 @@ def run_job(cfg: Dict[str, Any], state: Dict[str, Any], job: Dict[str, Any]) -> 
 
         else:
             # Sonarr
-            if isinstance(app_obj, dict):
-                sonarr_url = str(app_obj.get("url") or "").rstrip("/")
-                api_key = str(app_obj.get("api_key") or "").strip()
-            else:
-                sonarr_url = str(cfg.get("SONARR_URL", os.environ.get("SONARR_URL", ""))).rstrip("/")
-                api_key = str(cfg.get("SONARR_API_KEY", os.environ.get("SONARR_API_KEY", ""))).strip()
+            sonarr_url, api_key = resolve_app_connection("sonarr", cfg, app_obj)
+            require_connection("sonarr", sonarr_url, api_key)
+            log_run_header(
+                app_key="sonarr", job=job, job_id=job_id, base_url=sonarr_url,
+                tag_label=tag_label, days_old=days_old, cutoff_iso=cutoff.isoformat(),
+                dry_run=dry_run, delete_files=delete_files, add_import_exclusion=add_import_exclusion,
+                sonarr_mode=sonarr_mode, radarr_score_enabled=radarr_score_enabled, radarr_min_avg_score=radarr_min_avg_score,
+            )
 
-            if not sonarr_url:
-                raise RuntimeError("SONARR_URL is required (or configure an App in WebUI).")
-            if not api_key:
-                raise RuntimeError("SONARR_API_KEY is required (or configure an App in WebUI).")
-            log_info(f"Running Sonarr job '{job.get('name')}' ({job_id})", label="Sonarr Cleaning")
-            log_debug(f"SONARR_URL={sonarr_url}", label="Sonarr Connection")
-            log_debug(f"TAG_LABEL={tag_label} DAYS_OLD={days_old} CUTOFF={cutoff.isoformat()}", label="Sonarr Cleaning")
-            log_debug(f"DRY_RUN={dry_run} DELETE_FILES={delete_files} ADD_IMPORT_EXCLUSION={add_import_exclusion}", label="Sonarr Cleaning")
-            log_debug(f"SONARR_DELETE_MODE={sonarr_mode}", label="Sonarr Cleaning")
-
-            label_to_id, _ = sonarr_tags_map(sonarr_url, api_key, timeout)
+            label_to_id, _ = tags_map(sonarr_url, api_key, timeout)
             tag_id = label_to_id.get(tag_label)
             if not tag_id:
                 raise RuntimeError(f"Tag '{tag_label}' not found in Sonarr. Create it and tag series first.")
@@ -931,7 +841,7 @@ def run_job(cfg: Dict[str, Any], state: Dict[str, Any], job: Dict[str, Any]) -> 
                             for ef in eps:
                                 try:
                                     ep_ids.append(int(ef.get("id")))
-                                except Exception:
+                                except (TypeError, ValueError):
                                     continue
 
                             for ef_id in ep_ids:
@@ -942,7 +852,7 @@ def run_job(cfg: Dict[str, Any], state: Dict[str, Any], job: Dict[str, Any]) -> 
                             # Summary for Sonarr-style log
                             try:
                                 sonarr_summary.append({"series": f"{title} ({year})", "episodes": int(len(ep_ids)), "reason": "Removed empty series"})
-                            except Exception:
+                            except (TypeError, ValueError):
                                 pass
 
                         if sonarr_mode == "episodes_then_series_if_empty":
@@ -1006,7 +916,7 @@ def run_job(cfg: Dict[str, Any], state: Dict[str, Any], job: Dict[str, Any]) -> 
                     run_state["deleted_count"] = len(run_state["deleted"])
                     _persist_run(state, job_id, run_state)
 
-                except Exception as e:
+                except (requests.RequestException, PermissionError, ValueError, TypeError, KeyError) as e:
                     err = f"ERROR Sonarr processing id={series_id} title='{title}': {e}"
                     log_error(str(err), label="App")
                     run_state["errors"].append(err)
@@ -1014,7 +924,7 @@ def run_job(cfg: Dict[str, Any], state: Dict[str, Any], job: Dict[str, Any]) -> 
 
         run_state["status"] = "ok" if not run_state["errors"] else "partial"
 
-    except Exception as e:
+    except (requests.RequestException, PermissionError, ValueError, TypeError, KeyError) as e:
         run_state["status"] = "error"
         run_state["errors"].append(str(e))
 
@@ -1033,7 +943,7 @@ def run_job(cfg: Dict[str, Any], state: Dict[str, Any], job: Dict[str, Any]) -> 
                     radarr_items=radarr_summary,
                     sonarr_items=sonarr_summary,
                 )
-        except Exception:
+        except (TypeError, ValueError):
             pass
 
         log_info(
@@ -1055,7 +965,6 @@ def run_job(cfg: Dict[str, Any], state: Dict[str, Any], job: Dict[str, Any]) -> 
 # CLI
 # ----------------------------
 def main() -> int:
-    setup_logging()
     try:
         p = argparse.ArgumentParser()
         p.add_argument("--job-id", default="", help="Run a specific job id from config.json")
@@ -1068,18 +977,15 @@ def main() -> int:
 
         if not job_id:
             log_error("--job-id is required (cron uses it).")
-            log_error("--job-id is required (cron uses it).", label="App")
             return 2
 
         job = find_job_by_id(cfg, job_id)
         if not job:
             log_error("Job not found", job_id=job_id)
-            log_error(f"Job not found: {job_id}", label="App")
             return 2
 
         if not job.get("enabled", False):
             log_warning("Job is disabled", job_id=job_id, job_name=job.get("name"))
-            log_warning(f"Job is disabled: {job_id} ({job.get('name')})", label="App")
             # still record a run so dashboard shows something useful
             run_state = {
                 "job_id": job_id,
@@ -1095,7 +1001,7 @@ def main() -> int:
         run_job(cfg, state, job)
         return 0
 
-    except Exception as e:
+    except (OSError, ValueError, requests.RequestException, PermissionError) as e:
         log_error('fatal error in main', exc=e)
         return 1
 
